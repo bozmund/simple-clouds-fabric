@@ -57,3 +57,15 @@ missing clouds. Removing the dithering was a misdiagnosis. Task 1 below restores
    stay fixed in the world when the player moves up or down.
 3. Then the remaining stubs from `PORTING.md`, in this order: transparency, storm
    fog, shadow map, world effects/rain, config screens, commands, 3D previewer, DH support.
+
+## 4. Update from Claude (2026-09-11, evening)
+
+**Dev loop (`dev-relaunch.sh`), changed:**
+- It now stops **only this project's dev client**. The old version ran `pkill -f KnotClient`, which also matches Jan's real Modrinth game. Never kill processes by that name.
+- The dev client runs as the user unit `simpleclouds-devclient`. It keeps running after the script ends (Jan can play-test it); the next run replaces it; stop it with `systemctl --user stop simpleclouds-devclient`.
+- Results are `PASS`, `FAIL (build)` (the mod does not compile) or `FAIL (runtime)` (render warnings or GLSL errors in the log).
+- Screenshot: the mod takes its own shot (`client/DevShot.java`). The camera looks straight up and after 240 frames the level is saved to `run/screenshots/devshot.png` (copied to `/tmp/sc-latest.png`). No HUD, and no window can cover it. Read it after every PASS.
+
+**Git:** this project is now a git repository (baseline commit `f528271`). Jan approved (2026-09-11) that after a task is **verified on screen** you run exactly `git add -A` and `git commit -m "<task>: <what changed>"` in this folder. No other git operations here (no reset, checkout, rebase, push). If a change turns out wrong, use `git diff` and `git log` to see what changed instead of guessing.
+
+**Reliability guard, changed:** a call is blocked only when the *same action* (same tool and target) has failed with the *same error* twice. A build that fails with a new error each time is progress and is never blocked. Read-only commands (`grep`, `cat`, `ls`, `javap`, `git status/log/diff`, ...) are never blocked. `symbiote_reassess` now needs a `prediction`; after the check, say whether it matched. Three blocked calls in a row trigger a reminder; six stop the run and notify Jan.

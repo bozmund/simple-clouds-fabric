@@ -51,6 +51,8 @@ public class MixinLevelRenderer
 			float partialTick = mc.getDeltaTracker() != null ? mc.getDeltaTracker().getGameTimeDeltaPartialTick(false) : 0.0F;
 
 			SimpleCloudsRenderer.getInstance().renderBeforeLevel(null, null, partialTick, pos.x, pos.y, pos.z);
+			// Dev-only deterministic screenshot for dev-relaunch.sh (no-op without run/devshot.request).
+			dev.nonamecrackers2.simpleclouds.client.DevShot.onWorldFrame();
 		}
 		catch (Throwable t)
 		{

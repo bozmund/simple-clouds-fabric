@@ -1,67 +1,92 @@
 #!/usr/bin/env bash
 # One-shot dev test loop for the Simple Clouds port.
-#   ./dev-relaunch.sh            stop stale clients, build + launch ONE dev client,
-#                                wait for the first cloud draw, check the log, screenshot
+#   ./dev-relaunch.sh            stop the previous DEV client, build + launch ONE dev
+#                                client, wait for the first cloud draw, check the log,
+#                                take a deterministic in-game screenshot
 #   ./dev-relaunch.sh --install  same, and on PASS also build the jar and copy it into
 #                                the real profile's mods/ folder
-# Ends with PASS or FAIL. PASS only means the log is clean -- you must still READ the
-# screenshot: "first draw, N instances" never proved the clouds were visible.
+# Ends with PASS, FAIL (build) or FAIL (runtime). PASS only means the log is clean --
+# you must still READ the screenshot: "first draw, N instances" never proved the
+# clouds were visible.
 set -u
 cd "$(dirname "$0")"
+PROJECT="$(pwd)"
 ENVF="$HOME/.cache/simpleclouds/launch.env"   # env of a known-good launch (display, Vulkan, libs)
 OUT="$HOME/.cache/simpleclouds/run.out"
 LOG=run/logs/latest.log
+REQUEST=run/devshot.request   # read by the mod (client/DevShot.java)
+DEVSHOT=run/screenshots/devshot.png
 SHOT=/tmp/sc-latest.png
+UNIT=simpleclouds-devclient
+FRAMES=240                    # rendered frames after joining the world before the shot
 JAR=build/libs/simple-clouds-0.7.3+26.2-fabric.jar
 MODS="../../mods"
 
 load_env() { while IFS= read -r -d "" kv; do export "$kv"; done < "$ENVF"; }
 
-# 1. Never run two clients: a stale one silently keeps showing an old build.
-#    The [K]/[G] brackets stop pkill from matching this script's own command line.
-pkill -f "[K]notClient" 2>/dev/null
-pkill -f "[G]radleWrapperMain" 2>/dev/null
+# 1. Stop the previous DEV client only. Never match "KnotClient": the real
+#    Modrinth game is a KnotClient too, and killing it would end Jan's session.
+systemctl --user stop "$UNIT" 2>/dev/null
+systemctl --user reset-failed "$UNIT" 2>/dev/null
+pkill -f "simple-clouds/[.]gradle/loom-cache/launch[.]cfg" 2>/dev/null
+pkill -f "simple-clouds/gradle/wrapper/gradle-wrapper[.]jar" 2>/dev/null
 sleep 3
 
-# 2. Launch (runClient compiles first).
+# 2. Launch as its own user unit: it survives the symbiote_job that ran this
+#    script (so Jan can play-test), and the fixed unit name makes a second
+#    concurrent dev client impossible.
+mkdir -p run/screenshots
+rm -f "$DEVSHOT"
+echo "$FRAMES" > "$REQUEST"
 T0=$(date +%s)
-setsid bash -c 'while IFS= read -r -d "" kv; do export "$kv"; done < "$1"; exec ./gradlew runClient --console=plain --args="--quickPlaySingleplayer CloudClean"' _ "$ENVF" \
-  > "$OUT" 2>&1 < /dev/null &
-echo "launched at $(date +%H:%M:%S); waiting for the first cloud draw..."
+systemd-run --user --unit="$UNIT" --collect --quiet --property=WorkingDirectory="$PROJECT" \
+  bash -c 'while IFS= read -r -d "" kv; do export "$kv"; done < "$1"; exec ./gradlew runClient --console=plain --args="--quickPlaySingleplayer CloudClean" > "$2" 2>&1' _ "$ENVF" "$OUT" \
+  || { echo "FAIL (launch): could not start user unit $UNIT"; exit 1; }
+echo "launched at $(date +%H:%M:%S) as user unit $UNIT; waiting for the first cloud draw..."
 
-# 3. Wait for the first draw (or a build failure / crash).
-drawn=0
+# 3. Wait for the first draw, telling a compile failure apart from a runtime one.
+stage=build; drawn=0
 for i in $(seq 1 100); do
   sleep 4
-  if grep -qE "BUILD FAILED|error:" "$OUT"; then
-    echo "FAIL: build failed"; grep -E "error:|\.java:[0-9]+|BUILD FAILED" "$OUT" | head -30; exit 1
+  if [ "$stage" = build ] && grep -qE "BUILD FAILED|\.java:[0-9]+: error:" "$OUT" 2>/dev/null; then
+    echo "FAIL (build): the mod does not compile"
+    grep -E "\.java:[0-9]+: error:|What went wrong|BUILD FAILED" -A2 "$OUT" | head -30; exit 1
   fi
-  if [ -f "$LOG" ] && [ "$(stat -c %Y "$LOG")" -ge "$T0" ] && grep -q "first draw" "$LOG"; then drawn=1; break; fi
-  if [ "$i" -gt 8 ] && ! pgrep -f "[K]notClient|[G]radleWrapperMain" >/dev/null; then
-    echo "FAIL: client exited before drawing"; tail -40 "$OUT"; exit 1
+  if [ -f "$LOG" ] && [ "$(stat -c %Y "$LOG")" -ge "$T0" ]; then stage=runtime; fi
+  if [ "$stage" = runtime ] && grep -q "first draw" "$LOG"; then drawn=1; break; fi
+  if [ "$i" -gt 8 ] && ! systemctl --user is-active --quiet "$UNIT"; then
+    echo "FAIL ($stage): the client exited before drawing clouds"; tail -40 "$OUT"; exit 1
   fi
 done
-if [ "$drawn" -ne 1 ]; then echo "FAIL: no cloud draw within 400s"; tail -30 "$OUT"; exit 1; fi
-sleep 8   # let the world settle before judging
+if [ "$drawn" -ne 1 ]; then echo "FAIL ($stage): no cloud draw within 400s"; tail -30 "$OUT"; exit 1; fi
 
-# 4. Log check: these must be absent. "unsupported uniform" means a shader uses a
-#    uniform block the pipeline did not declare -- it is silently NOT bound.
+# 4. The mod takes its own screenshot (camera straight up, no HUD) once FRAMES
+#    frames have rendered, so window stacking cannot hide the game.
+for i in $(seq 1 45); do [ -s "$DEVSHOT" ] && break; sleep 2; done
+
+# 5. Log check. "unsupported uniform" means a shader uses a uniform block the
+#    pipeline did not declare -- it is silently NOT bound. GLSL errors look like
+#    "0:12(3): error: ...".
 grep "first draw" "$LOG" | tail -1
-BAD=$(grep -iE "unsupported uniform|render pass failed|missing sampler|compil.*(error|fail)|simpleclouds.*(ERROR|Exception)" "$LOG" \
+BAD=$(grep -iE "unsupported uniform|render pass failed|missing sampler|compil.*(error|fail)|[0-9]+:[0-9]+\([0-9]+\): error|simpleclouds.*(ERROR|Exception)" "$LOG" \
       | grep -vE "Unknown registry key|Could not find root Simple Clouds config" | head -20)
 
-# 5. Screenshot of the whole desktop (the game window must be in front).
-load_env
-spectacle -b -n -o "$SHOT" >/dev/null 2>&1
+if [ -s "$DEVSHOT" ]; then
+  cp "$DEVSHOT" "$SHOT"; SRC="in-game devshot: camera straight up, no HUD"
+else
+  load_env; spectacle -b -n -o "$SHOT" >/dev/null 2>&1
+  SRC="desktop capture (no devshot within 90s -- the game window may be covered)"
+fi
 
 if [ -n "$BAD" ]; then
-  echo "FAIL: render warnings in the log:"; echo "$BAD"; echo "screenshot: $SHOT"; exit 1
+  echo "FAIL (runtime): render warnings in the log:"; echo "$BAD"; echo "screenshot ($SRC): $SHOT"; exit 1
 fi
 
 if [ "${1:-}" = "--install" ]; then
   ./gradlew build -x test --console=plain > "$HOME/.cache/simpleclouds/build.out" 2>&1 \
     && cp "$JAR" "$MODS/" && echo "installed $JAR into the real profile mods/" \
-    || { echo "FAIL: jar build/install failed"; tail -20 "$HOME/.cache/simpleclouds/build.out"; exit 1; }
+    || { echo "FAIL (build): jar build/install failed"; tail -20 "$HOME/.cache/simpleclouds/build.out"; exit 1; }
 fi
 
-echo "PASS (log clean). Now READ $SHOT and confirm what you changed is actually visible."
+echo "PASS (log clean). Screenshot: $SHOT ($SRC). READ it and confirm what you changed is actually visible."
+echo "The dev client keeps running as user unit $UNIT for play-testing (stop it: systemctl --user stop $UNIT)."
