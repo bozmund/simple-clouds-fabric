@@ -1,0 +1,106 @@
+package nonamecrackers2.crackerslib.client.gui.widget;
+
+import java.util.function.Consumer;
+
+import org.jetbrains.annotations.Nullable;
+
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.Font;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.components.ObjectSelectionList;
+import net.minecraft.client.input.MouseButtonEvent;
+import net.minecraft.network.chat.Component;
+import nonamecrackers2.crackerslib.client.util.CommonColors;
+
+/**
+ * 26.2 port: ObjectSelectionList(mc, x, y, width, height); extractContent; extractListBackground.
+ */
+public class SelectableNamedObjectList<T> extends ObjectSelectionList<SelectableNamedObjectList.Entry<T>>
+{
+	private @Nullable Consumer<T> onObjectSelected;
+
+	public SelectableNamedObjectList(Minecraft pMinecraft, int pWidth, int pHeight, int pY0, int pY1)
+	{
+		super(pMinecraft, 0, pY0, pWidth, pY1 - pY0);
+		// 26.2: setRenderBackground/setRenderTopAndBottom removed
+	}
+
+	public void setOnObjectSelectedCallback(Consumer<T> callback)
+	{
+		this.onObjectSelected = callback;
+	}
+
+	public void addObject(Component name, T object)
+	{
+		this.addEntry(new SelectableNamedObjectList.Entry<>(this, name, object));
+	}
+
+	@Override
+	public int getRowWidth()
+	{
+		return this.getWidth();
+	}
+
+	public @Nullable T getSelectedObject()
+	{
+		if (this.getSelected() != null)
+			return this.getSelected().object;
+		else
+			return null;
+	}
+
+	@Override
+	protected void extractListBackground(GuiGraphicsExtractor stack)
+	{
+		stack.fill(0, this.getY(), this.getRowWidth(), this.getY() + this.getHeight(), CommonColors.BACKGROUND);
+	}
+
+	@Override
+	public void setSelected(Entry<T> pSelected)
+	{
+		if (this.onObjectSelected != null && pSelected != null)
+			this.onObjectSelected.accept(pSelected.object);
+		super.setSelected(pSelected);
+	}
+
+	public static class Entry<T> extends ObjectSelectionList.Entry<SelectableNamedObjectList.Entry<T>>
+	{
+		private final SelectableNamedObjectList<T> list;
+		private final Component text;
+		private final T object;
+
+		public Entry(SelectableNamedObjectList<T> list, Component text, T object)
+		{
+			this.list = list;
+			this.text = text;
+			this.object = object;
+		}
+
+		@Override
+		public void extractContent(GuiGraphicsExtractor stack, int mouseX, int mouseY, boolean selected, float partialTick)
+		{
+			Font font = Minecraft.getInstance().font;
+			stack.text(font, this.text, this.getX() + 2, this.getY() + this.getHeight() / 2 - font.lineHeight / 2, CommonColors.WHITE);
+		}
+		
+		@Override
+		public Component getNarration()
+		{
+			return this.text;
+		}
+
+		@Override
+		public boolean mouseClicked(MouseButtonEvent event, boolean isPrimary)
+		{
+			if (event.button() == 0) // 26.2: button() returns int; 0 == LEFT
+			{
+				this.list.setSelected(this);
+				return true;
+			}
+			else
+			{
+				return false;
+			}
+		}
+	}
+}

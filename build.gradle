@@ -1,0 +1,68 @@
+// Simple Clouds — Fabric 26.2 port.
+// Uses the NON-REMAP Loom plugin (Minecraft >= 26.1 ships unobfuscated).
+// Contains BOTH crackerslib and simple-clouds sources in one project
+// (Simple Clouds bundles crackerslib via jar-in-jar upstream; we combine here).
+plugins {
+    id 'net.fabricmc.fabric-loom' version "${loom_version}"
+    id 'java'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+repositories {
+    mavenCentral()
+    maven {
+        url = "https://api.modrinth.com/maven"
+    }
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+    // night-config: required by the vendored ForgeConfigSpec (config foundation).
+    // Bundled into the jar (via include) so the mod is self-contained — without it
+    // the mod crashes on load in a real profile with NoClassDefFoundError.
+    // Bundled at 3.8.1 (NOT 3.6.7): the pack's forgeconfigapiport (SootyChimneys et al.)
+    // references WritingMode.REPLACE_ATOMIC which only exists in 3.8+. With 3.6.7 (or
+    // Iceberg's 2.x) first-launch config writes crash with NoSuchFieldError. 3.8.x is
+    // backward compatible with our 3.6.7-compiled code.
+    implementation "com.electronwill.night-config:core:3.8.1"
+    implementation "com.electronwill.night-config:toml:3.8.1"
+    include "com.electronwill.night-config:core:3.8.1"
+    include "com.electronwill.night-config:toml:3.8.1"
+    // Maven artifact versioning: used for API/OpenGL version checks (SimpleCloudsMod
+    // references it at entrypoint — must be bundled or the game crashes on load).
+    implementation "org.apache.maven:maven-artifact:3.9.9"
+    include "org.apache.maven:maven-artifact:3.9.9"
+    // Distant Horizons API: used by the DH compat handler.
+    compileOnly "maven.modrinth:DistantHorizonsApi:3.0.0"
+}
+
+processResources {
+    inputs.property "version", project.version
+    filesMatching("fabric.mod.json") {
+        expand "version": project.version
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    it.options.release = 25
+}
+
+java {
+    withSourcesJar()
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
+}
+
+jar {
+    from("LICENSE") {
+        rename { "${it}_${project.archives_base_name}" }
+    }
+}

@@ -1,0 +1,62 @@
+{
+	"distant_thunder": {
+		"category": "weather",
+		"subtitle": "simpleclouds.subtitle.distant_thunder",
+		"sounds": [
+			{
+    			"name": "simpleclouds:thunder/distant/thunder1"
+			},
+			{
+    			"name": "simpleclouds:thunder/distant/thunder2"
+			},
+			{
+    			"name": "simpleclouds:thunder/distant/thunder3"
+			},
+			{
+    			"name": "simpleclouds:thunder/distant/thunder4"
+			},
+			{
+    			"name": "simpleclouds:thunder/distant/thunder5"
+			},
+			{
+    			"name": "simpleclouds:thunder/distant/thunder6"
+			},
+			{
+    			"name": "simpleclouds:thunder/distant/thunder7"
+			},
+			{
+    			"name": "simpleclouds:thunder/distant/thunder8"
+			},
+			{
+    			"name": "simpleclouds:thunder/distant/thunder9"
+			},
+			{
+    			"name": "simpleclouds:thunder/distant/thunder10"
+			},
+			{
+    			"name": "simpleclouds:thunder/distant/thunder11"
+			},
+			{
+    			"name": "simpleclouds:thunder/distant/thunder12"
+			},
+			{
+    			"name": "simpleclouds:thunder/distant/thunder13"
+			}
+		]
+	},
+	"close_thunder": {
+		"category": "weather",
+		"subtitle": "simpleclouds.subtitle.close_thunder",
+		"sounds": [
+			{
+    			"name": "simpleclouds:thunder/close/thunder1"
+			},
+			{
+    			"name": "simpleclouds:thunder/close/thunder2"
+			},
+			{
+    			"name": "simpleclouds:thunder/close/thunder3"
+			}
+		]
+	}
+}
