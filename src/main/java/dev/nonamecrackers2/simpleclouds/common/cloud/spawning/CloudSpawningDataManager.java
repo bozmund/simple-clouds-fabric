@@ -60,6 +60,7 @@ public class CloudSpawningDataManager extends SimplePreparableReloadListener<Map
 	{
 		return this.config;
 	}
+	
 
 	@Override
 	protected Map<Identifier, JsonElement> prepare(ResourceManager manager, ProfilerFiller filler)
@@ -97,10 +98,6 @@ public class CloudSpawningDataManager extends SimplePreparableReloadListener<Map
 			return;
 		}
 		
-		// Singleplayer load-order artifact: the first resource reload can run before
-		// the cloud_types listener has applied (its data is then only [EMPTY]). The
-		// entries are id-keyed and re-loaded on every /reload, so trust the type
-		// references for this round and re-validate once the types exist.
 		CloudTypeSource validator = this.source;
 		if (this.source.getIndexedCloudTypes().length <= 1)
 		{

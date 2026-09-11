@@ -61,7 +61,14 @@ public class CloudTypeDataManager extends SimplePreparableReloadListener<Map<Ide
 			try
 			{
 				JsonElement element = GSON.fromJson(resource.openAsReader(), JsonElement.class);
-				builder.put(id, element);
+				// 26.2 listResources keys are the FULL resource path
+				// (ns:cloud_types/file.json); the rest of the mod (spawn config
+				// "type" fields, config defaults, synced region ids) uses
+				// ns:<filename-without-extension> -- the key form 1.20.1's
+				// SimpleJsonResourceReloadListener produced. Normalize to that.
+				String path = id.getPath();
+				String name = path.substring(path.lastIndexOf('/') + 1, path.length() - ".json".length());
+				builder.put(Identifier.fromNamespaceAndPath(id.getNamespace(), name), element);
 			}
 			catch (Exception e)
 			{
@@ -91,8 +98,13 @@ public class CloudTypeDataManager extends SimplePreparableReloadListener<Map<Ide
 			}
 		}
 		
+		// 1.20.1 parity: EMPTY is always part of the type set (first, sorted by id).
+		this.indexedCloudTypes = Streams.concat(
+				Stream.of(SimpleCloudsConstants.EMPTY),
+				types.values().stream().sorted(Comparator.comparing(t -> t.id().toString()))).toArray(i -> new CloudType[i]);
+		types.put(SimpleCloudsConstants.EMPTY.id(), SimpleCloudsConstants.EMPTY);
 		this.cloudTypes = ImmutableMap.copyOf(types);
-		this.indexedCloudTypes = types.values().stream().toArray(CloudType[]::new);
+		LOGGER.info("Loaded {} cloud types", this.cloudTypes.size());
 	}
 
 	public Stream<CloudType> getCloudTypes()

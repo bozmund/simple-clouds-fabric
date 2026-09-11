@@ -8,6 +8,7 @@ import org.jetbrains.annotations.Nullable;
 
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonSyntaxException;
 import com.mojang.serialization.JsonOps;
@@ -23,7 +24,9 @@ import net.minecraft.util.random.WeightedList;
 import net.minecraft.util.valueproviders.ConstantFloat;
 import net.minecraft.util.valueproviders.ConstantInt;
 import net.minecraft.util.valueproviders.FloatProvider;
+import net.minecraft.util.valueproviders.FloatProviders;
 import net.minecraft.util.valueproviders.IntProvider;
+import net.minecraft.util.valueproviders.IntProviders;
 
 public class CloudSpawningConfig
 {
@@ -56,7 +59,10 @@ public class CloudSpawningConfig
 	{
 		if (entries.isEmpty())
 			return EMPTY;
-		IntProvider spawnInterval = net.minecraft.util.valueproviders.ConstantInt.MAP_CODEC.codec().parse(JsonOps.INSTANCE, Objects.requireNonNull(object.get("spawn_interval"))).resultOrPartial(e -> {
+		// 1.20.1 parity: IntProvider.NON_NEGATIVE_CODEC (26.2: moved to IntProviders).
+		// unwrapProvider() accepts both the 1.20.1 wrapped format
+		// ({"type":...,"value":{...}}) and the flat 26.2 format ({"type":...,...fields}).
+		IntProvider spawnInterval = IntProviders.NON_NEGATIVE_CODEC.parse(JsonOps.INSTANCE, Objects.requireNonNull(unwrapProvider(object.get("spawn_interval")))).resultOrPartial(e -> {
 			throw new JsonSyntaxException(e);
 		}).get();
 		int maxCloudRegions = GsonHelper.getAsInt(object, "max_formations");
@@ -85,29 +91,47 @@ public class CloudSpawningConfig
 			throw new IllegalArgumentException("Unknown cloud type with id '" + id + "'");
 		
 		int weight = GsonHelper.getAsInt(object, "weight");
+		if (weight < 0)
+			throw new IllegalArgumentException("Weight must be >= 0");
 		
-		FloatProvider speed = net.minecraft.util.valueproviders.ConstantFloat.MAP_CODEC.codec().parse(JsonOps.INSTANCE, object.get("speed")).resultOrPartial(e -> {
+		// 1.20.1 parity: FloatProvider.codec(0.0F, 10.0F). 26.2's bounded
+		// FloatProviders.codec(min, max) does not accept the typed-provider JSON
+		// ({"type":"minecraft:uniform","value":{...}}), so use the full dispatch
+		// CODEC and validate the bounds afterwards.
+		FloatProvider speed = FloatProviders.CODEC.parse(JsonOps.INSTANCE, unwrapProvider(object.get("speed"))).resultOrPartial(e -> {
 			throw new JsonSyntaxException(e);
 		}).get();
+		if (speed.min() < 0.0F || speed.max() > 10.0F)
+			throw new IllegalArgumentException("Speed must be in [0, 10]");
 		
-		IntProvider radius = net.minecraft.util.valueproviders.ConstantInt.MAP_CODEC.codec().parse(JsonOps.INSTANCE, object.get("radius")).resultOrPartial(e -> {
+		IntProvider radius = IntProviders.NON_NEGATIVE_CODEC.parse(JsonOps.INSTANCE, unwrapProvider(object.get("radius"))).resultOrPartial(e -> {
 			throw new JsonSyntaxException(e);
 		}).get();
+		if (radius.minInclusive() < 0 || radius.maxInclusive() < 0)
+			throw new IllegalArgumentException("Radius must be non-negative");
 		
-		IntProvider existTicks = net.minecraft.util.valueproviders.ConstantInt.MAP_CODEC.codec().parse(JsonOps.INSTANCE, object.get("exist_ticks")).resultOrPartial(e -> {
+		IntProvider existTicks = IntProviders.NON_NEGATIVE_CODEC.parse(JsonOps.INSTANCE, unwrapProvider(object.get("exist_ticks"))).resultOrPartial(e -> {
 			throw new JsonSyntaxException(e);
 		}).get();
+		if (existTicks.minInclusive() < 0 || existTicks.maxInclusive() < 0)
+			throw new IllegalArgumentException("Exist ticks must be non-negative");
 		
-		IntProvider growTicks = net.minecraft.util.valueproviders.ConstantInt.MAP_CODEC.codec().parse(JsonOps.INSTANCE, object.get("grow_ticks")).resultOrPartial(e -> {
+		// 1.20.1 parity: IntProvider.codec(0, existTicks.getMaxValue())
+		IntProvider growTicks = IntProviders.CODEC.parse(JsonOps.INSTANCE, unwrapProvider(object.get("grow_ticks"))).resultOrPartial(e -> {
 			throw new JsonSyntaxException(e);
 		}).get();
+		if (growTicks.minInclusive() < 0 || growTicks.maxInclusive() > existTicks.maxInclusive())
+			throw new IllegalArgumentException("Grow ticks must be in [0, exist_ticks max]");
 		
 		FloatProvider stretchFactor;
 		if (object.has("stretch_factor"))
 		{
-			stretchFactor = net.minecraft.util.valueproviders.ConstantFloat.MAP_CODEC.codec().parse(JsonOps.INSTANCE, object.get("stretch_factor")).resultOrPartial(e -> {
+			// 1.20.1 parity: FloatProvider.codec(0.01F, Float.MAX_VALUE) (dispatch CODEC + bound check)
+			stretchFactor = FloatProviders.CODEC.parse(JsonOps.INSTANCE, unwrapProvider(object.get("stretch_factor"))).resultOrPartial(e -> {
 				throw new JsonSyntaxException(e);
 			}).orElse(ConstantFloat.of(1.0F));
+			if (stretchFactor.min() < 0.01F)
+				throw new IllegalArgumentException("Stretch factor must be >= 0.01");
 		}
 		else
 		{
@@ -205,5 +229,30 @@ public class CloudSpawningConfig
 			
 			return object;
 		}
+	}
+	
+	/**
+	 * 26.2 dropped the {"type":..., "value":{...}} wrapper used by 1.20.1
+	 * typed providers (the type's fields now sit next to "type"). Accept both:
+	 * if "value" is present, inline its fields so the 26.2 dispatch codec sees
+	 * the flat shape. Plain numbers and already-flat objects pass through.
+	 */
+	private static JsonElement unwrapProvider(JsonElement element)
+	{
+		if (element != null && element.isJsonObject() && element.getAsJsonObject().has("value"))
+		{
+			JsonObject wrapper = element.getAsJsonObject();
+			JsonObject value = wrapper.get("value").getAsJsonObject();
+			JsonObject flat = new JsonObject();
+			for (Map.Entry<String, JsonElement> entry : wrapper.entrySet())
+			{
+				if (!"value".equals(entry.getKey()))
+					flat.add(entry.getKey(), entry.getValue());
+			}
+			for (Map.Entry<String, JsonElement> entry : value.entrySet())
+				flat.add(entry.getKey(), entry.getValue());
+			return flat;
+		}
+		return element;
 	}
 }

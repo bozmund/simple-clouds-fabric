@@ -9,6 +9,7 @@ import org.apache.logging.log4j.Logger;
 import dev.nonamecrackers2.simpleclouds.SimpleCloudsMod;
 import dev.nonamecrackers2.simpleclouds.client.cloud.ClientSideCloudTypeManager;
 import dev.nonamecrackers2.simpleclouds.client.dh.SimpleCloudsDhCompatHandler;
+import dev.nonamecrackers2.simpleclouds.common.world.CloudManager;
 import dev.nonamecrackers2.simpleclouds.client.cloud.spawning.ClientSideCloudSpawningManager;
 import dev.nonamecrackers2.simpleclouds.client.command.ClientCloudCommandHelper;
 import dev.nonamecrackers2.simpleclouds.client.command.profiling.ProfilingCommands;
@@ -179,6 +180,15 @@ public class SimpleCloudsClientEvents
 				}
 				if (SimpleCloudsRenderer.getOptionalInstance().isEmpty())
 					initRetryCounter = 40;
+			}
+
+			// Tick the client cloud manager (region movement/growth/death; the original
+			// ticked every level's manager, client and server, from the level tick event).
+			if (client.level != null)
+			{
+				CloudManager<?> cm = CloudManager.get(client.level);
+				if (cm != null)
+					cm.tick();
 			}
 
 			SimpleCloudsRenderer.getOptionalInstance().ifPresent(renderer ->

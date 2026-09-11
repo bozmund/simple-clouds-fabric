@@ -326,11 +326,20 @@ public class CloudsDrawPipeline implements AutoCloseable
 		}
 	}
 
-	/** Uploads new per-instance data (replacing the previous). */
+	/** Uploads new per-instance data (replacing the previous). A null buffer means "no
+	 * instances" (the generation can be empty for a frame) -- keep an empty valid buffer
+	 * so the draw's buffer bind stays legal. */
 	public void setInstances(ByteBuffer instanceData, int count)
 	{
 		if (this.instanceBuffer != null)
 			this.instanceBuffer.close();
+		if (instanceData == null)
+		{
+			// A zero-byte buffer is rejected by createBuffer; use one dummy float (0
+			// instances are drawn, so its content never matters).
+			instanceData = ByteBuffer.allocateDirect(4).order(java.nio.ByteOrder.nativeOrder());
+			count = 0;
+		}
 		this.instanceBuffer = RenderSystem.getDevice().createBuffer(() -> "simpleclouds.instances", GpuBuffer.USAGE_VERTEX, instanceData);
 		this.instanceCount = count;
 	}

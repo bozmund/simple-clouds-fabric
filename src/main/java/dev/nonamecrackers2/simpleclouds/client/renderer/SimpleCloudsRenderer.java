@@ -179,6 +179,8 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		List<CpuCloudGenerator.CloudLayerGroup> out = new java.util.ArrayList<>();
 		for (CloudType type : ClientSideCloudTypeManager.getInstance().getIndexedCloudTypes())
 		{
+			if (!hasRenderableLayers(type))
+				continue;
 			NoiseSettings settings = type.noiseConfig();
 			List<CpuCloudGenerator.NoiseLayer> layers = new java.util.ArrayList<>();
 			if (settings instanceof StaticLayeredNoise layered)
@@ -210,11 +212,85 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 				layer.getParam(AbstractNoiseSettings.Param.VALUE_SCALE));
 	}
 
+	private static boolean hasRenderableLayers(CloudType type)
+	{
+		NoiseSettings settings = type.noiseConfig();
+		if (settings instanceof StaticLayeredNoise layered)
+			return !layered.getNoiseLayers().isEmpty();
+		return settings instanceof StaticNoiseSettings;
+	}
+
+	/**
+	 * Maps each cloud type id that gets a group in {@link #dataDrivenGroups()} to its
+	 * group index (same iteration order, same filter), so formation footprints can be
+	 * tied to the group of their cloud type.
+	 */
+	public static java.util.Map<net.minecraft.resources.Identifier, Integer> dataDrivenGroupIndices()
+	{
+		java.util.Map<net.minecraft.resources.Identifier, Integer> out = new java.util.HashMap<>();
+		int i = 0;
+		for (CloudType type : ClientSideCloudTypeManager.getInstance().getIndexedCloudTypes())
+		{
+			if (hasRenderableLayers(type))
+				out.put(type.id(), i++);
+		}
+		return out;
+	}
+
+	/**
+	 * Formation footprints for the CPU generator (port of MultiRegionCloudMeshGenerator's
+	 * region upload): the partial-tick position/radius + rotation/stretch transform, in
+	 * cloud units (8 world blocks), tied to the formation's type group.
+	 */
+	private List<CpuCloudGenerator.RegionMask> buildRegionMasks(java.util.Map<net.minecraft.resources.Identifier, Integer> typeToGroup, float partialTick)
+	{
+		if (this.cloudManager == null)
+			return List.of();
+		var clouds = this.cloudManager.getClouds();
+		if (clouds.isEmpty())
+			return List.of();
+		java.util.List<CpuCloudGenerator.RegionMask> out = new java.util.ArrayList<>(clouds.size());
+		for (dev.nonamecrackers2.simpleclouds.common.cloud.region.CloudRegion region : clouds)
+		{
+			Integer gi = typeToGroup.get(region.getCloudTypeId());
+			if (gi == null)
+				continue; // type unknown to the client (not synced / data mismatch)
+			org.joml.Matrix2f t = region.createTransform(partialTick);
+			out.add(new CpuCloudGenerator.RegionMask(
+					region.getPosX(partialTick), region.getPosZ(partialTick), region.getRadius(partialTick),
+					t.m00, t.m01, t.m10, t.m11, gi));
+		}
+		return out;
+	}
+
+	/**
+	 * Cheap per-frame fingerprint of the formation set (positions/radii/stretches/rotations
+	 * quantized to 1/4 cloud unit, 1/100 rad); the mesh is only regenerated when this or
+	 * the band origin changes.
+	 */
+	private long regionSignature(float partialTick)
+	{
+		if (this.cloudManager == null)
+			return 0L;
+		long sig = 1L;
+		for (dev.nonamecrackers2.simpleclouds.common.cloud.region.CloudRegion region : this.cloudManager.getClouds())
+		{
+			sig = 31L * sig + region.getCloudTypeId().hashCode();
+			sig = 31L * sig + (long) (region.getPosX(partialTick) * 4.0F);
+			sig = 31L * sig + (long) (region.getPosZ(partialTick) * 4.0F);
+			sig = 31L * sig + (long) (region.getRadius(partialTick) * 4.0F);
+			sig = 31L * sig + (long) (region.getStretch(partialTick) * 100.0F);
+			sig = 31L * sig + (long) (region.getRotation(partialTick) * 100.0F);
+		}
+		return sig;
+	}
+
 	// Generation cache: the cloud field is world-fixed; the expensive CPU band is only
 	// regenerated when the band origin (a 2-block grid cell) or the data-driven group
 	// set changes.
 	private int cacheX0 = Integer.MIN_VALUE, cacheY0 = Integer.MIN_VALUE, cacheZ0 = Integer.MIN_VALUE;
 	private int cacheGroupsHash = Integer.MIN_VALUE;
+	private long cacheRegionSig = Long.MIN_VALUE;
 	// Storm coverage (fraction of columns around the camera with storm cloud above),
 	// refreshed on band regeneration; the fullscreen fog pass uses it every frame.
 	private float cacheStormCoverage = 0.0F;
@@ -246,20 +322,32 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		// camera in X/Z. Clouds are WORLD-FIXED: the noise is a pure function of world
 		// coordinates (zero scroll), only the generated band follows the camera (the
 		// original culled by view distance/formation bounds; here the field is infinite).
-		float scale = 2.0F;
+		// Grid scale = CLOUD_SCALE = 8 world blocks/cell (the original's cloud unit: the
+		// region positions/radii and the noise coordinates live in this space). The band
+		// is 32x32 units (256x256 world blocks) around the camera in X/Z — the original's
+		// TILE_PERIOD — and fixed in Y at 0..64 units (0..512 blocks), covering every
+		// type's noise heights (CLOUD_HEIGHT 128 .. ~512).
+		float scale = 8.0F;
 		int span = 16;
 		int x0 = Mth.floor(camX / scale) - span;
 		int z0 = Mth.floor(camZ / scale) - span;
 		int camGridY = Mth.floor(camY / scale);
-		// Vertical window: 32 blocks below to 128 above the camera.
-		int y0 = camGridY - 16;
-		int y1 = camGridY + 64;
+		int y0 = 0;
+		int y1 = 64;
 
 		List<CpuCloudGenerator.CloudLayerGroup> groups = dataDrivenGroups();
 		int groupsHash = groups.hashCode();
-		if (x0 != this.cacheX0 || y0 != this.cacheY0 || z0 != this.cacheZ0 || groupsHash != this.cacheGroupsHash)
+		// Formation footprints: the original's multi-region path masks the same
+		// world-fixed noise field by the spawned formations' X/Z coverage. With no
+		// formations (not synced yet / vanilla weather) the generator falls back to
+		// the infinite field.
+		java.util.Map<net.minecraft.resources.Identifier, Integer> typeToGroup = dataDrivenGroupIndices();
+		List<CpuCloudGenerator.RegionMask> regions = this.buildRegionMasks(typeToGroup, partialTick);
+		long regionSig = this.regionSignature(partialTick);
+		if (x0 != this.cacheX0 || z0 != this.cacheZ0 || groupsHash != this.cacheGroupsHash || regionSig != this.cacheRegionSig)
 		{
 			this.cpuGenerator.setGroups(groups);
+			this.cpuGenerator.setRegions(regions);
 			float[] opaqueCount = new float[1];
 			float[] transparentCount = new float[1];
 			float[] stormCoverage = new float[1];
@@ -277,7 +365,9 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 			this.cacheY0 = y0;
 			this.cacheZ0 = z0;
 			this.cacheGroupsHash = groupsHash;
+			this.cacheRegionSig = regionSig;
 			this.cacheStormCoverage = stormCoverage[0];
+			LOGGER.info("Simple Clouds clouds: regenerated, {} formations, {} opaque instances", regions.size(), (int) opaqueCount[0]);
 		}
 
 		this.drawPipeline.draw(view);
