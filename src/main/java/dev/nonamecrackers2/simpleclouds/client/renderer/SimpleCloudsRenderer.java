@@ -688,6 +688,9 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		// wind tilt / snow) into the scene, before the overlays.
 		if (SimpleCloudsConfig.CLIENT.renderCustomRain.get())
 			this.getWorldEffectsManager().renderRain(view, partialTick, camX, camY, camZ);
+			// 1.20.1 lightning bolts (server-spawned; additive world-space quads).
+			if (this.getWorldEffectsManager().hasLightningToRender())
+				this.getWorldEffectsManager().renderLightning(view, partialTick, camX, camY, camZ, this.drawPipeline);
 
 		// Storm fog (26.2 slice): darkened overlay while under storm clouds. The
 		// lightning flash (WorldEffects.flashStrength) reduces the darkening via the

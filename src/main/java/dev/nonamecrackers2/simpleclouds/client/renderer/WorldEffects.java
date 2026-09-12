@@ -15,6 +15,7 @@ import org.joml.Matrix4f;
 import org.joml.Vector3f;
 
 import com.mojang.blaze3d.vertex.PoseStack;
+import dev.nonamecrackers2.simpleclouds.common.config.SimpleCloudsConfig;
 
 import dev.nonamecrackers2.simpleclouds.client.renderer.lightning.LightningBolt;
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.WorldEffectsDrop;
@@ -61,6 +62,15 @@ public class WorldEffects
 	// Verified working 2026-09-11 (rain streaks + storm scene, see PORTING.md);
 	// keep false in production -- rain follows the vanilla world weather.
 	private static final boolean DEBUG_FORCE_WEATHER = false;
+
+	// 1.20.1 weighted lightning bolt colors (SimpleWeightedRandomList ported as
+	// parallel arrays; same weights/order).
+	private static final int[] LIGHTNING_COLORS = { 0xFFFFFFFF, 0xFF8C80FF, 0xFF8C80FF, 0xFFF0FFB4, 0xFFFFB4BE };
+	private static final int[] LIGHTNING_WEIGHTS = { 30, 13, 12, 10, 5 };
+	private static final int LIGHTNING_TOTAL_WEIGHT = 65;
+
+	/** Live lightning bolts (server-packet spawned; ticked here, rendered by the pipeline). */
+	private final java.util.List<LightningBolt> lightningBolts = new java.util.ArrayList<>();
 
 	/** One rain drop (the 1.20.1 PrecipitationQuad's mutable state). */
 	private static final class Drop
@@ -147,12 +157,42 @@ public class WorldEffects
 
 	public void forLightning(Consumer<LightningBolt> consumer)
 	{
-		// Slice: no bolt meshes.
+		this.lightningBolts.forEach(consumer);
 	}
 
-	public void renderLightning(float partialTick, double camX, double camY, double camZ)
+	/**
+	 * 26.2 port of the 1.20.1 bolt render: world-space quads from every live bolt,
+	 * one dynamic upload, additive "lightning" blend, depth-tested against terrain
+	 * (no depth write), no fog (the original disabled fog for this pass).
+	 */
+	public void renderLightning(org.joml.Matrix4f viewMatrix, float partialTick, double camX, double camY, double camZ,
+			dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudsDrawPipeline pipeline)
 	{
-		// Slice: the flash is applied through the storm fog's LightningMul.
+		if (this.lightningBolts.isEmpty())
+			return;
+		float[] out = new float[4096 * 7];
+		int written = 0;
+		for (LightningBolt bolt : this.lightningBolts)
+		{
+			float dist = (float) Math.sqrt(
+					(bolt.getPosition().x - camX) * (bolt.getPosition().x - camX)
+							+ (bolt.getPosition().y - camY) * (bolt.getPosition().y - camY)
+							+ (bolt.getPosition().z - camZ) * (bolt.getPosition().z - camZ));
+			float fogStart = this.renderer.getFogStart();
+			float fogEnd = this.renderer.getFogEnd();
+			float alpha = net.minecraft.util.Mth.clamp(1.0F - (dist - fogStart) / (fogEnd - fogStart), 0.0F, 1.0F);
+			int needed = written + 4096 * 7;
+			if (needed > out.length)
+				out = java.util.Arrays.copyOf(out, Math.max(needed, out.length * 2));
+			written = Math.max(written, bolt.renderInto(out, partialTick, 1.0F, 1.0F, 1.0F, alpha));
+		}
+		if (written <= 0)
+			return;
+		java.nio.ByteBuffer buffer = java.nio.ByteBuffer.allocateDirect(written * 4).order(java.nio.ByteOrder.nativeOrder());
+		for (int i = 0; i < written; i++)
+			buffer.putFloat(i, out[i]);
+		buffer.flip();
+		pipeline.drawLightning(viewMatrix, buffer, written / 7);
 	}
 
 	/**
@@ -166,8 +206,10 @@ public class WorldEffects
 
 		ClientLevel level = this.mc.level;
 		Player player = this.mc.player;
-		if (onlySound || level == null || player == null)
+		if (level == null || player == null)
+		{
 			return;
+		}
 		double dx = player.getX() - (pos.getX() + 0.5);
 		double dy = player.getY() - (pos.getY() + 0.5);
 		double dz = player.getZ() - (pos.getZ() + 0.5);
@@ -175,6 +217,32 @@ public class WorldEffects
 		var sound = distance < 16.0 ? SimpleCloudsSounds.CLOSE_THUNDER : SimpleCloudsSounds.DISTANT_THUNDER;
 		// playLocalSound handles the distance attenuation for the local player.
 		level.playLocalSound(pos, sound, SoundSource.WEATHER, 1.0F, 1.0F, false);
+		if (onlySound)
+			return;
+
+		// 1.20.1 parity: the bolt's seed also drives its shape; color from the
+		// weighted list when lightningColorVariation is on.
+		net.minecraft.util.RandomSource random = net.minecraft.util.RandomSource.create(seed & 0xFFFFFFFFL);
+		float r = 1.0F, g = 1.0F, b = 1.0F;
+		if (SimpleCloudsConfig.CLIENT.lightningColorVariation.get())
+		{
+			int roll = random.nextInt(LIGHTNING_TOTAL_WEIGHT);
+			for (int i = 0; i < LIGHTNING_COLORS.length; i++)
+			{
+				roll -= LIGHTNING_WEIGHTS[i];
+				if (roll < 0)
+				{
+					int color = LIGHTNING_COLORS[i];
+					r = ((color >> 16) & 0xFF) / 255.0F;
+					g = ((color >> 8) & 0xFF) / 255.0F;
+					b = (color & 0xFF) / 255.0F;
+					break;
+				}
+			}
+		}
+		this.lightningBolts.add(new LightningBolt(random,
+				new org.joml.Vector3f(pos.getX() + 0.5F, pos.getY() + 0.5F, pos.getZ() + 0.5F),
+				depth, branchCount, maxBranchLength, maxWidth, minimumPitch, maximumPitch, r, g, b));
 	}
 
 	public void modifyLightMapTexture(float partialTick, int pixelX, int pixelY, Vector3f color)
@@ -211,6 +279,15 @@ public class WorldEffects
 	 */
 	public void tick()
 	{
+		// Advance + reap bolts regardless of the weather state.
+		var lightning = this.lightningBolts.iterator();
+		while (lightning.hasNext())
+		{
+			LightningBolt bolt = lightning.next();
+			bolt.tick();
+			if (bolt.isDead())
+				lightning.remove();
+		}
 		ClientLevel level = this.mc.level;
 		Player player = this.mc.player;
 		if (level == null || player == null)

@@ -48,6 +48,7 @@ public final class DevShot
 	private static float shotAngle = -90.0F; // straight up by default
 	private static float shotYaw = Float.NaN; // NaN = keep current yaw
 	private static boolean shadowTest; // SHADOWTEST token: deterministic cloud-over-terrain scene
+	private static boolean boltTest; // BOLT token: deterministic lightning bolt for the screenshot
 
 	private DevShot() {}
 
@@ -78,6 +79,22 @@ public final class DevShot
 		{
 			LOGGER.warn("[DEVSHOT] clock override failed", t);
 		}
+	}
+
+	private static void spawnTestBolt(Minecraft mc)
+	{
+		forceNoon(mc);
+		dev.nonamecrackers2.simpleclouds.client.renderer.WorldEffects effects =
+				SimpleCloudsRenderer.getOptionalInstance().map(SimpleCloudsRenderer::getWorldEffectsManager).orElse(null);
+		if (effects == null)
+		{
+			LOGGER.warn("[DEVSHOT] bolt test: no world effects manager");
+			return;
+		}
+		double px = mc.player.getX(), py = mc.player.getY(), pz = mc.player.getZ();
+		effects.spawnLightning(new net.minecraft.core.BlockPos((int) (px + 3.0), (int) (py + 40.0), (int) pz),
+				false, 12345, 3, 5, 2.0F, 1.5F, 20.0F, 160.0F);
+		LOGGER.info("[DEVSHOT] bolt test: spawn at ({}, {}, {})", (int) (px + 3), (int) (py + 40), (int) pz);
 	}
 
 	private static void spawnTestFormation(Minecraft mc)
@@ -329,6 +346,13 @@ public final class DevShot
 							shotAngle = -45.0F; // default: 45 deg up (clouds overhead)
 						continue;
 					}
+					if (part.equalsIgnoreCase("BOLT"))
+					{
+						boltTest = true;
+						if (Float.isNaN(shotAngle))
+							shotAngle = -20.0F;
+						continue;
+					}
 					try
 					{
 						float v = Float.parseFloat(part);
@@ -353,6 +377,8 @@ public final class DevShot
 			testSpawned = true;
 			if (shadowTest)
 				setupShadowTest(mc);
+			else if (boltTest)
+				spawnTestBolt(mc);
 			else
 				spawnTestFormation(mc);
 		}
@@ -365,6 +391,8 @@ public final class DevShot
 		mc.player.setXRot(shotAngle);
 		if (!Float.isNaN(shotYaw))
 			mc.player.setYRot(shotYaw);
+		if (boltTest && framesLeft > 0 && framesLeft % 30 == 0)
+			spawnTestBolt(mc); // keep a young bolt alive for the 240-frame shot
 		if (--framesLeft > 0)
 			return;
 		mc.player.setXRot(savedXRot); // restore the user's view

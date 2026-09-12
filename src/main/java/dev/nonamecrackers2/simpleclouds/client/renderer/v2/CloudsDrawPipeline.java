@@ -78,6 +78,17 @@ public class CloudsDrawPipeline implements AutoCloseable
 	private final GpuBuffer quadIndexBuffer;
 	private final GpuBuffer lightingUbo;
 	private final GpuBuffer shadingUbo;
+
+	// Lightning bolts (1.20.1 port): world-space quads, additive blend, depth
+	// tested against terrain, no depth write. One dynamic vertex upload per frame.
+	private static final com.mojang.blaze3d.vertex.VertexFormat LIGHTNING_FORMAT = com.mojang.blaze3d.vertex.VertexFormat.builder(0)
+			.addAttribute("Position", GpuFormat.RGB32_FLOAT)
+			.addAttribute("Color", GpuFormat.RGBA32_FLOAT)
+			.build();
+	private static final Identifier LIGHTNING_LOCATION = SimpleCloudsMod.id("core/lightning");
+	private final RenderPipeline lightningPipeline;
+	private GpuBuffer lightningVertexBuffer;
+	private final GpuBuffer lightningIndexBuffer;
 	private final GpuBuffer fogUbo;
 	// Per-frame ring for the runtime-toggleable CloudShading.UseNormals (config
 	// cubeNormals): the static shading UBO cannot be remapped every frame (26.2
@@ -143,9 +154,12 @@ public class CloudsDrawPipeline implements AutoCloseable
 	private final GpuSampler nearestSampler;
 	private boolean shadowRenderedThisFrame = false;
 
+	private GpuDevice device;
+
 	public CloudsDrawPipeline()
 	{
-		GpuDevice device = RenderSystem.getDevice();
+		this.device = RenderSystem.getDevice();
+		GpuDevice device = this.device;
 
 		BindGroupLayout bgl = BindGroupLayout.builder()
 				.withUniform("CloudLighting", UniformType.UNIFORM_BUFFER)
@@ -311,6 +325,41 @@ public class CloudsDrawPipeline implements AutoCloseable
 				.withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT))
 				.withDepthStencilState(Optional.empty())
 				.build();
+
+		this.lightningPipeline = RenderPipeline.builder()
+				.withLocation(LIGHTNING_LOCATION)
+				.withVertexShader(LIGHTNING_LOCATION)
+				.withFragmentShader(LIGHTNING_LOCATION)
+				.withVertexBinding(0, LIGHTNING_FORMAT)
+				.withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
+				.withCull(false)
+				.withColorTargetState(new ColorTargetState(BlendFunction.LIGHTNING))
+				.withDepthStencilState(new DepthStencilState(CompareOp.GREATER_THAN_OR_EQUAL, false))
+				.build();
+		// 24 verts/section, 6 quads -> 12 tris; the section topology is fixed, so
+		// build the indices once for a full 4096-vertex capacity window and slice.
+		int lightningSections = 4096 / 24; // 170 full 24-vertex sections fit in 4096 vertices
+		short[] lightningIndices = new short[lightningSections * 36];
+		for (int sec = 0; sec < lightningSections; sec++)
+		{
+			int base = sec * 24;
+			int o = sec * 36;
+			for (int face = 0; face < 6; face++)
+			{
+				int v0 = base + face * 4;
+				lightningIndices[o++] = (short) v0;
+				lightningIndices[o++] = (short) (v0 + 1);
+				lightningIndices[o++] = (short) (v0 + 2);
+				lightningIndices[o++] = (short) (v0 + 2);
+				lightningIndices[o++] = (short) (v0 + 3);
+				lightningIndices[o++] = (short) v0;
+			}
+		}
+		java.nio.ByteBuffer lightningIndexData = java.nio.ByteBuffer.allocateDirect(lightningIndices.length * 2).order(java.nio.ByteOrder.nativeOrder());
+		for (short sh : lightningIndices)
+			lightningIndexData.putShort(sh);
+		lightningIndexData.flip();
+		this.lightningIndexBuffer = device.createBuffer(() -> "simpleclouds.lightningIndices", GpuBuffer.USAGE_INDEX, lightningIndexData);
 
 		// std140: two mat4 blocks = 64 bytes each = 128 bytes total.
 		// maxAnisotropy is validated as 1..16 by GpuDevice.createSampler.
@@ -718,6 +767,36 @@ public class CloudsDrawPipeline implements AutoCloseable
 	// ------------------------------------------------------------------
 
 	/**
+	 * 1.20.1 lightning bolt pass: world-space quad sections (7 floats/vertex:
+	 * position + rgba), additive blend, depth-tested against the scene (inverted-Z
+	 * GREATER_THAN_OR_EQUAL), no depth write, no fog.
+	 */
+	public void drawLightning(Matrix4f viewMatrix, java.nio.ByteBuffer vertexData, int vertexCount)
+	{
+		if (vertexCount <= 0)
+			return;
+		int sections = Math.min(vertexCount / 24, 4096 / 24); // the index buffer covers this many sections
+		// Recreation (not resize — the 26.2 GlBuffer has no resize): bolts live at
+		// most a couple of seconds, so the churn is bounded and infrequent.
+		if (this.lightningVertexBuffer != null)
+			this.lightningVertexBuffer.close();
+		this.lightningVertexBuffer = this.device.createBuffer(() -> "simpleclouds.lightning", GpuBuffer.USAGE_VERTEX, vertexData);
+		var transforms = this.ownTransforms.writeTransform(viewMatrix);
+		RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
+		GpuTextureView colorView = main.getColorTextureView();
+		GpuTextureView depthView = main.getDepthTextureView();
+		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
+		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.lightning", colorView, Optional.empty(), depthView, OptionalDouble.empty());
+		pass.setPipeline(this.lightningPipeline);
+		RenderSystem.bindDefaultUniforms(pass);
+		pass.setUniform("DynamicTransforms", transforms);
+		pass.setVertexBuffer(0, this.lightningVertexBuffer.slice());
+		pass.setIndexBuffer(this.lightningIndexBuffer, IndexType.SHORT);
+		pass.drawIndexed(sections * 36, 1, 0, 0, 0);
+		pass.close();
+	}
+
+/**
 	 * Draws one atmospheric-cloud formation pass over the whole view. The shader
 	 * samples the main color target itself (DiffuseSampler) and writes the
 	 * composited result back, so this pass must run AFTER everything else that
@@ -828,6 +907,9 @@ public class CloudsDrawPipeline implements AutoCloseable
 			b.close();
 		for (GpuBuffer b : this.useNormalsRing)
 			b.close();
+		if (this.lightningVertexBuffer != null)
+			this.lightningVertexBuffer.close();
+		this.lightningIndexBuffer.close();
 		this.nearestSampler.close();
 		this.quadVertexBuffer.close();
 		this.quadIndexBuffer.close();
