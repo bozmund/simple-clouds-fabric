@@ -1,5 +1,10 @@
 #version 430
 
+// SPIKE (26.2): the SideInfo output is scaled into WORLD BLOCKS (the render
+// pipeline's vertex format expects blocks; the shader math runs in cloud units
+// where 1 unit = CLOUD_SCALE blocks, like the original's lod0 mesh space).
+#define CLOUD_SCALE 8.0
+
 #define TYPE ${TYPE}    //0 for multi-region, 1 for single cloud type
 #define FADE_NEAR_ORIGIN ${FADE_NEAR_ORIGIN}    //0 to disable, 1 to enable
 #define STYLE ${STYLE}     //0 for default, 1 for shaded
@@ -37,13 +42,13 @@ struct NoiseLayer {
 
 // ----- Opaque -----
 
+// SPIKE (26.2): re-ordered to the 24-byte per-instance layout the 26.2 render
+// pipeline already uses: Side(float) + SidePos(vec3) + Radius(float) + Brightness(float).
 struct SideInfo {
-	int side;
-	float x;
-	float y;
-	float z;
-	float brightness;
+	float side;
+	vec3 pos;
 	float radius;
+	float brightness;
 };
 
 // ----- Transparent -----
@@ -292,12 +297,11 @@ void createFace(vec3 center, float cubeRadius, int index, float brightness)
 	uint currentFace = atomicAdd(sidesPerChunk.data[ChunkIndex], 1u);
 #endif
 	SideInfo side;
-	side.side = index;
-	side.x = center.x;
-	side.y = center.y;
-	side.z = center.z;
+	side.side = float(index);
+	// SPIKE (26.2): convert cloud units -> world blocks for the vertex format.
+	side.pos = center * CLOUD_SCALE;
 	side.brightness = brightness;
-	side.radius = cubeRadius;
+	side.radius = cubeRadius * CLOUD_SCALE;
 #if FIXED_SECTION_SIZE == 0
 	sides.data[currentFace] = side;
 #elif FIXED_SECTION_SIZE == 1

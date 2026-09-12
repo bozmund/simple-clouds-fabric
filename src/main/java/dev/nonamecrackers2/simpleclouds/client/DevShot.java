@@ -23,6 +23,8 @@ public final class DevShot
 	private static boolean checked;
 	private static boolean done;
 	private static int framesLeft;
+	private static float savedXRot;
+	private static boolean saved;
 
 	private DevShot() {}
 
@@ -47,9 +49,15 @@ public final class DevShot
 		}
 		if (mc.player == null)
 			return;
+		if (!saved)
+		{
+			savedXRot = mc.player.getXRot();
+			saved = true;
+		}
 		mc.player.setXRot(-90.0F); // look straight up at the cloud layer
 		if (--framesLeft > 0)
 			return;
+		mc.player.setXRot(savedXRot); // restore the user's view
 		done = true;
 		Screenshot.grab(mc.gameDirectory, "devshot.png", mc.gameRenderer.mainRenderTarget(), 1,
 				message -> LOGGER.info("[DEVSHOT] saved screenshots/devshot.png ({})", message.getString()));

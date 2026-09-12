@@ -342,6 +342,27 @@ public class CloudsDrawPipeline implements AutoCloseable
 		}
 		this.instanceBuffer = RenderSystem.getDevice().createBuffer(() -> "simpleclouds.instances", GpuBuffer.USAGE_VERTEX, instanceData);
 		this.instanceCount = count;
+		// CPU data replaces any GPU-spike instances.
+		this.useSpikeInstances = false;
+	}
+
+	// SPIKE (26.2, SPIKE-GPU.md): the original cube_mesh.comp compute shader writes
+	// directly into a Blaze3D buffer; draw() binds it in place of the CPU one.
+	private GpuBuffer spikeInstanceBuffer;
+	private boolean useSpikeInstances;
+
+	/** Uses the compute-generated buffer for the next draws (the buffer is owned by the spike). */
+	public void setSpikeInstances(GpuBuffer buffer, int count)
+	{
+		this.spikeInstanceBuffer = buffer;
+		this.useSpikeInstances = true;
+		this.instanceCount = count;
+	}
+
+	/** Falls back to the CPU-generated buffer. */
+	public void clearSpikeInstances()
+	{
+		this.useSpikeInstances = false;
 	}
 
 	/** Uploads new transparent per-instance data (replacing the previous). */
@@ -366,7 +387,10 @@ public class CloudsDrawPipeline implements AutoCloseable
 	 */
 	public void draw(Matrix4f viewMatrix)
 	{
-		if (this.instanceBuffer == null || this.instanceCount == 0)
+		GpuBuffer activeInstances = (this.useSpikeInstances && this.spikeInstanceBuffer != null)
+				? this.spikeInstanceBuffer
+				: this.instanceBuffer;
+		if (activeInstances == null || this.instanceCount == 0)
 			return;
 		if (!this.loggedFirstDraw)
 		{
@@ -398,7 +422,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 		pass.setUniform("CloudShading", this.shadingUbo);
 		pass.setUniform("CloudFog", this.fogUbo);
 		pass.setVertexBuffer(0, this.quadVertexBuffer.slice());
-		pass.setVertexBuffer(1, this.instanceBuffer.slice());
+		pass.setVertexBuffer(1, activeInstances.slice());
 		pass.setIndexBuffer(this.quadIndexBuffer, IndexType.SHORT);
 		pass.drawIndexed(QUAD_INDICES.length, this.instanceCount, 0, 0, 0);
 		pass.close();

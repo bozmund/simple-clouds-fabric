@@ -34,6 +34,7 @@ import dev.nonamecrackers2.simpleclouds.client.renderer.pipeline.CloudsRenderPip
 import dev.nonamecrackers2.simpleclouds.client.renderer.settings.CloudsRendererSettings;
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudsDrawPipeline;
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.CpuCloudGenerator;
+import dev.nonamecrackers2.simpleclouds.client.renderer.v2.GpuCloudGeneration;
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.PreviewDrawPipeline;
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.RainDrawPipeline;
 import dev.nonamecrackers2.simpleclouds.client.world.ClientCloudManager;
@@ -265,10 +266,10 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 
 	/**
 	 * Cheap per-frame fingerprint of the formation set (positions/radii/stretches/rotations
-	 * quantized to 1/4 cloud unit, 1/100 rad); the mesh is only regenerated when this or
+	 * quantized to 1/2 cloud unit, 1/100 rad); the mesh is only regenerated when this or
 	 * the band origin changes.
 	 */
-	private long regionSignature(float partialTick)
+	private long regionSignature(float tick)
 	{
 		if (this.cloudManager == null)
 			return 0L;
@@ -276,11 +277,11 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		for (dev.nonamecrackers2.simpleclouds.common.cloud.region.CloudRegion region : this.cloudManager.getClouds())
 		{
 			sig = 31L * sig + region.getCloudTypeId().hashCode();
-			sig = 31L * sig + (long) (region.getPosX(partialTick) * 4.0F);
-			sig = 31L * sig + (long) (region.getPosZ(partialTick) * 4.0F);
-			sig = 31L * sig + (long) (region.getRadius(partialTick) * 4.0F);
-			sig = 31L * sig + (long) (region.getStretch(partialTick) * 100.0F);
-			sig = 31L * sig + (long) (region.getRotation(partialTick) * 100.0F);
+			sig = 31L * sig + (long) (region.getPosX(tick) * 0.5F);
+			sig = 31L * sig + (long) (region.getPosZ(tick) * 0.5F);
+			sig = 31L * sig + (long) (region.getRadius(tick) * 4.0F);
+			sig = 31L * sig + (long) (region.getStretch(tick) * 100.0F);
+			sig = 31L * sig + (long) (region.getRotation(tick) * 100.0F);
 		}
 		return sig;
 	}
@@ -291,6 +292,16 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	private int cacheX0 = Integer.MIN_VALUE, cacheY0 = Integer.MIN_VALUE, cacheZ0 = Integer.MIN_VALUE;
 	private int cacheGroupsHash = Integer.MIN_VALUE;
 	private long cacheRegionSig = Long.MIN_VALUE;
+	private long lastRegionRegenTick = -100L;
+
+	// SPIKE (SPIKE-GPU.md): the original cube_mesh.comp through raw OpenGL, for
+	// timing/shape comparison against CpuCloudGeneration. Off = pure CPU path.
+	private static final boolean SPIKE_GPU = true;
+	private GpuCloudGeneration spike;
+	private boolean spikeReady;
+	private boolean spikeClassLogged;
+	private boolean spikeInitFailed;
+	private long lastCpuGenerateNanos;
 	// Storm coverage (fraction of columns around the camera with storm cloud above),
 	// refreshed on band regeneration; the fullscreen fog pass uses it every frame.
 	private float cacheStormCoverage = 0.0F;
@@ -342,18 +353,31 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		// formations (not synced yet / vanilla weather) the generator falls back to
 		// the infinite field.
 		java.util.Map<net.minecraft.resources.Identifier, Integer> typeToGroup = dataDrivenGroupIndices();
-		List<CpuCloudGenerator.RegionMask> regions = this.buildRegionMasks(typeToGroup, partialTick);
-		long regionSig = this.regionSignature(partialTick);
-		if (x0 != this.cacheX0 || z0 != this.cacheZ0 || groupsHash != this.cacheGroupsHash || regionSig != this.cacheRegionSig)
+		// Sample region positions at the INTEGER tick, not the render partial tick:
+		// the partial tick changes every frame, which would fingerprint a different
+		// (interpolated) formation set per frame and force a full CPU regeneration
+		// every frame. At integer ticks the signature only changes when a region has
+		// moved by at least half a cloud unit (4 blocks).
+		double sigTick = Math.floor(partialTick);
+		List<CpuCloudGenerator.RegionMask> regions = this.buildRegionMasks(typeToGroup, (float) sigTick);
+		long regionSig = this.regionSignature((float) sigTick);
+		// Moving formations trigger regeneration, but at most every 5 ticks (0.25 s):
+		// a 10-15 ms CPU rebuild every tick the clouds drift would still cost ~15% of
+		// the frame budget. Camera-band and cloud-type changes regenerate at once.
+		long tickNow = (long) sigTick;
+		boolean regionDriven = regionSig != this.cacheRegionSig && tickNow - this.lastRegionRegenTick >= 5L;
+		if (x0 != this.cacheX0 || z0 != this.cacheZ0 || groupsHash != this.cacheGroupsHash || regionDriven)
 		{
 			this.cpuGenerator.setGroups(groups);
 			this.cpuGenerator.setRegions(regions);
 			float[] opaqueCount = new float[1];
 			float[] transparentCount = new float[1];
 			float[] stormCoverage = new float[1];
+			long cpuT0 = System.nanoTime();
 			java.nio.ByteBuffer[] data = this.cpuGenerator.generate(
 					x0, y0, z0, x0 + span * 2, y1, z0 + span * 2,
 					scale, 0.0F, 0.0F, 0.0F, 0.0F, opaqueCount, transparentCount, camGridY, stormCoverage);
+			this.lastCpuGenerateNanos = System.nanoTime() - cpuT0;
 			this.drawPipeline.setInstances(data[0], (int) opaqueCount[0]);
 			// Config gate (1.20.1's renderCloudsTransparency only ran when transparency
 			// was enabled in the client config).
@@ -367,7 +391,54 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 			this.cacheGroupsHash = groupsHash;
 			this.cacheRegionSig = regionSig;
 			this.cacheStormCoverage = stormCoverage[0];
-			LOGGER.info("Simple Clouds clouds: regenerated, {} formations, {} opaque instances", regions.size(), (int) opaqueCount[0]);
+			this.lastRegionRegenTick = tickNow;
+			LOGGER.info("Simple Clouds clouds: regenerated, {} formations, {} opaque instances (CPU {} us)",
+					regions.size(), (int) opaqueCount[0], this.lastCpuGenerateNanos / 1000L);
+
+			// SPIKE (SPIKE-GPU.md): original cube_mesh.comp via raw OpenGL (OpenGL backend
+			// only). Runs on the same trigger as the CPU generation over the same band so
+			// both paths are comparable; its output replaces the CPU buffer while it
+			// produces instances.
+			if (SPIKE_GPU)
+			{
+				// GlDevice is package-private in 26.2 behind the GpuDevice facade; detect
+				// the OpenGL backend through the facade's private 'backend' field.
+				if (!this.spikeClassLogged)
+				{
+					this.spikeClassLogged = true;
+					String backendName = GpuCloudGeneration.backendClassName();
+					LOGGER.info("Spike: device backend class = {}", backendName);
+				}
+				if (this.spike == null && GpuCloudGeneration.isOpenGLBackend())
+					this.spike = new GpuCloudGeneration();
+				if (this.spike != null && !this.spikeReady && !this.spikeInitFailed)
+				{
+					this.spikeReady = this.spike.init();
+					if (!this.spikeReady)
+					{
+						this.spikeInitFailed = true;
+						GpuCloudGeneration.LOGGER.warn("Spike: GPU generation unavailable; keeping the CPU path");
+					}
+				}
+				if (this.spikeReady && !groups.isEmpty())
+				{
+					int bandCenterX = x0 + span, bandCenterZ = z0 + span;
+					int gpuCount = this.spike.generate(x0, y0, z0, x0 + span * 2, y1, z0 + span * 2,
+							bandCenterX, 32.0F, bandCenterZ, 8.0F, 16.0F,
+							groups.get(0).layers(), groups.get(0).transparencyFade());
+					// Only trust the GPU result when it actually produced instances; an
+					// empty (or failed) generation must never hide the CPU clouds.
+					if (gpuCount > 0 && this.spike.instanceData() != null)
+					{
+						// The read-back array goes through the SAME setInstances path as the
+						// CPU generator (fresh Blaze3D vertex buffer each regeneration).
+						this.drawPipeline.setInstances(this.spike.instanceData(), gpuCount);
+						LOGGER.info("Spike timing: CPU {} us vs GPU {} us (dispatch+readback), band {}x{}x{} units, GPU {} instances",
+								this.lastCpuGenerateNanos / 1000L, this.spike.lastGenerateNanos() / 1000L,
+								span * 2, y1, span * 2, gpuCount);
+					}
+				}
+			}
 		}
 
 		this.drawPipeline.draw(view);
@@ -548,6 +619,12 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		}
 		this.cpuGenerator = null;
 		this.worldEffects = null;
+		if (this.spike != null)
+		{
+			this.spike.close();
+			this.spike = null;
+			this.spikeReady = false;
+		}
 	}
 
 	public void baseTick()
