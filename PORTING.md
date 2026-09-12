@@ -68,6 +68,7 @@ Statuses: **VERIFIED** = ported + confirmed on screen (devshot/play-test);
 | Storm fog (darkening + lightning flash) | VERIFIED | intensity from storm coverage above camera |
 | Custom rain (PrecipitationQuads) | VERIFIED | slice: no wind tilt, no snow |
 | Lightning (server spawn -> packet -> flash + thunder) | VERIFIED | flash via storm-fog LightningMul; thunder sounds; bolt MESH now ported (2026-09-12: 1.20.1 recursive branch tree, additive pass, depth-tested, no fog; BOLT devshot token; jagged branched bolt verified on screen sc-bolt-3) |
+| Thunder / rain audio assets | VERIFIED | port now ships all 27 original `.ogg` files (16 thunder + 8 rain ambience + 3 legacy) — previously `sounds.json` referenced thunder files absent from the port jar, so strikes were silent. Custom **rain** sound-replacement (replacing vanilla rain with the 8 rain ambience) is still a no-op stub (config option exists) |
 | Cloud shadow map + terrain shadows (`distantShadows`) | **VERIFIED (2026-09-12, A/B devshot)** | 512px ortho shadow map + fullscreen terrain pass. Two 26.2 gotchas fixed: (1) shadow light-volume matrix sign errors (nothing landed in the frustum); (2) **per-frame UBO mapping silently kills a pass** -- the fixed buffer mapped every frame (and even MappableRingBuffer's size-only createBuffer, which also fails to map on this Mesa/Intel ARL machine) made the terrain pass draw nothing; fixed with a manual 3-deep ring built from the data-carrying createBuffer overload with UNIFORM|MAP_READ usage. Shadow volume extends 128 blocks BELOW camY (the original raymarch covered the ground). SHADOWTEST scene: shelf visibly darkened with shadows, bright with NOSHADOW. |
 | Atmospheric 2D cloud layer (`atmosphericClouds`, default ON) | **VERIFIED (2026-09-12)** | Full port: fullscreen pass (no PostChain in 26.2) sampling the main color target, psrdnoise ray-cast to a plane 5000 above the camera; biome-driven formations with cross-fade (Forge biome tags replaced by base-temperature/precipitation predicates); wind from the cloud manager; blindness/darkness alpha. 26.2 notes: level FOV from `gameRenderState().levelRenderState.cameraRenderState.hudFov` (no GameRenderer.getFov anymore); ring UBO per the per-frame-UBO rule. Sky + straight-up devshots show the wispy layer. |
 | Fog render modes (`fogMode`) | MISSING | single shader-fog implementation only |
@@ -86,7 +87,7 @@ Statuses: **VERIFIED** = ported + confirmed on screen (devshot/play-test);
 | 3D previewer (orbit camera, main-frame draw) | VERIFIED | original task 9 |
 | Previewer image-export button (CloudImageRenderer) | MISSING | offscreen export not ported |
 | Info / notice / error screens | PORTED | shown on startup as before |
-| Main-menu config button | MISSING | 26.2 options-screen hook not ported |
+| Main-menu config button | VERIFIED | 26.2 `OptionsScreen.init` tail-inject adds a "Simple Clouds" button (MixinOptionsScreen + MixinScreenRenderablesAccessor — 26.2 `Screen` draws the `renderables` list, not `children()`); verified on screen (sc-optbtn-4); opens the same config screen as the keybind |
 | Debug overlay renderer | MISSING | class present, never invoked (debug-only feature) |
 
 ### Commands
@@ -120,8 +121,11 @@ Statuses: **VERIFIED** = ported + confirmed on screen (devshot/play-test);
 4. ~~cubeNormals config wiring~~ **DONE 2026-09-12** (ring UBO).
 5. ~~Transparent-edge visual verification~~ **DONE 2026-09-12** (edge halos visible in the -20 devshot).
 6. Cloud data persistence + whitelist verification **DONE 2026-09-12**.
-7. Remaining (visibility order): lightning bolt mesh, fogMode, rain sounds, previewer image
-   export, debug overlay, LOD/culling perf options, server command tree.
+7. ~~Lightning bolt mesh~~ **DONE 2026-09-12** (sc-bolt-3).
+   ~~Main-menu config button~~ **DONE 2026-09-12** (sc-optbtn-4).
+   ~~Thunder audio assets~~ **DONE 2026-09-12** (27 oggs shipped).
+   Remaining (visibility order): custom rain sound-replacement (no-op stub), fogMode,
+   previewer image export, debug overlay, LOD/culling perf options, server command tree.
 
 ## CLOUD VOLUME ANCHORING (2026-09-12, from Jan's "are you sure about the layers" question)
 

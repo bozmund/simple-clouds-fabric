@@ -11,7 +11,9 @@
   "client": [
     "MixinClientLevel",
     "MixinLevelRenderer",
-    "MixinMinecraft"
+    "MixinMinecraft",
+    "MixinOptionsScreen",
+    "MixinScreenRenderablesAccessor"
   ],
   "minVersion": "0.8"
 }

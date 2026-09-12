@@ -346,6 +346,14 @@ public final class DevShot
 							shotAngle = -45.0F; // default: 45 deg up (clouds overhead)
 						continue;
 					}
+					if (part.equalsIgnoreCase("OPTIONS"))
+					{
+						// Probe: open the 26.2 options screen right after the
+						// screenshot is taken (the MixinOptionsScreen TAIL inject
+						// logs every widget position).
+						mc.setScreenAndShow(new net.minecraft.client.gui.screens.options.OptionsScreen(null, mc.options, false));
+						continue;
+					}
 					if (part.equalsIgnoreCase("BOLT"))
 					{
 						boltTest = true;
