@@ -406,7 +406,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 		// vanilla CloudRenderer does. Written into vanilla's shared per-frame ring buffer (reset
 		// every frame) -- allocating a fresh DynamicUniforms per draw created and freed GPU
 		// buffers every frame.
-		GpuBufferSlice transforms = RenderSystem.getDynamicUniforms().writeTransform(viewMatrix);
+		GpuBufferSlice transforms = this.ownTransforms.writeTransform(viewMatrix);
 
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
 		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds", colorView, Optional.empty(), depthView, OptionalDouble.empty());
@@ -478,7 +478,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 		GpuTextureView colorView = main.getColorTextureView();
 		GpuTextureView depthView = main.getDepthTextureView();
 
-		GpuBufferSlice transforms = RenderSystem.getDynamicUniforms().writeTransform(viewMatrix);
+		GpuBufferSlice transforms = this.ownTransforms.writeTransform(viewMatrix);
 
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
 		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.transparency", colorView, Optional.empty(), depthView, OptionalDouble.empty());
@@ -507,7 +507,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 	{
 		if (instances == null || count == 0)
 			return;
-		GpuBufferSlice transforms = RenderSystem.getDynamicUniforms().writeTransform(orbitView);
+		GpuBufferSlice transforms = this.ownTransforms.writeTransform(orbitView);
 		RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
 		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.preview", main.getColorTextureView(),
@@ -600,7 +600,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 		GpuTextureView colorView = main.getColorTextureView();
 		GpuTextureView depthView = main.getDepthTextureView();
 
-		GpuBufferSlice transforms = RenderSystem.getDynamicUniforms().writeTransform(viewMatrix);
+		GpuBufferSlice transforms = this.ownTransforms.writeTransform(viewMatrix);
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
 		// Color-only pass: the scene depth is sampled as a texture, NOT attached as
 		// the depth target -- attaching and sampling the same depth image in one pass
@@ -627,7 +627,14 @@ public class CloudsDrawPipeline implements AutoCloseable
 			data.putFloat(offset + i * 4, m[i]);
 	}
 
+	// Own DynamicUniforms (not the shared per-frame one): our passes are encoded at the
+	// tail of the level render but execute later in the frame, and the shared ring can be
+	// re-written by vanilla passes in between (zeroing ModelViewMat / ColorModulator, which
+	// made every cloud fragment vanish). A private ring with fences is safe across the gap.
+	private final net.minecraft.client.renderer.DynamicUniforms ownTransforms = new net.minecraft.client.renderer.DynamicUniforms();
+
 	@Override
+
 	public void close()
 	{
 		if (this.instanceBuffer != null)
@@ -651,5 +658,6 @@ public class CloudsDrawPipeline implements AutoCloseable
 		this.lightingUbo.close();
 		this.shadingUbo.close();
 		this.fogUbo.close();
+		this.ownTransforms.close();
 	}
 }

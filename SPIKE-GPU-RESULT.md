@@ -1,5 +1,26 @@
 # SPIKE-GPU result (26.2 / Fabric)
 
+> **Correction (2026-09-12, added at Jan's request after review).** The conclusion
+> below that Mesa 26.2.1 on Intel ARL is broken for compute is **not supported by the
+> evidence**. Several of the listed "driver bugs" are correct OpenGL behaviour:
+>
+> - `glGetInteger(GL_BUFFER_SIZE)` must fail with `GL_INVALID_ENUM`: `GL_BUFFER_SIZE`
+>   is a `glGetBufferParameteriv` query, not `glGetInteger` state.
+> - `0x82B4` is `GL_CLEAR_BUFFER`, not "GL_BASE_VERTEX_BINDING_BUFFER";
+>   `GL_CLEAR_BUFFER`, `GL_VIEW_COMPATIBILITY_CLASS` and `GL_FULL_SUPPORT` belong to
+>   `glGetInternalformativ`, so `glGetInteger` rejecting them is also correct.
+> - 65/66/256/512 are the standard `glBufferStorage` flags (`MAP_READ|PERSISTENT`,
+>   `MAP_WRITE|PERSISTENT`, `DYNAMIC_STORAGE`, `CLIENT_STORAGE`), not non-standard values.
+> - Blaze3D's GL buffers are immutable (`glBufferStorage`): `glBufferData` on them
+>   fails, and mapping one for CPU reads needs a buffer created with read usage.
+>
+> So the missing readback is most likely spike-side GL misuse (for example reusing
+> immutable Blaze3D buffers, or `GlStateManager`'s cached bindings disagreeing with the
+> raw calls), not a driver bug. What still holds: `cube_mesh.comp` compiles, links and
+> dispatches without errors, and the measured timings. Decision: the CPU generator
+> ships; the GPU path is shelved, not disproven. A future attempt should check each
+> failing call against the GL 4.6 spec before blaming the driver.
+
 Date: 2026-09-12 (night session, ~30 min past the 3 h time-box — see "Verdict").
 Task: prove that the original `cube_mesh.comp` can generate one real cloud
 region through raw OpenGL (LWJGL) on the 26.2 client, feed the result to the

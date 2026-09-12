@@ -334,17 +334,19 @@ public final class CpuCloudGenerator
 		float radius = scale / 2.0F;
 		// SidePos must be in WORLD coordinates (the shader adds it to the view-space
 		// position untransformed). Grid cell (x, y, z) spans world [x*scale, (x+1)*scale);
-		// its center is (x + radius) * scale.
-		float cx = (x + radius) * scale, cy = (y + radius) * scale, cz = (z + radius) * scale;
+		// its center is (x + 0.5) * scale.
+		float cx = (x + 0.5F) * scale, cy = (y + 0.5F) * scale, cz = (z + 0.5F) * scale;
 		int written = 0;
 
 		// Face order matches the shader: -X=0, +X=1, -Y=2, +Y=3, -Z=4, +Z=5.
-		written += this.emitFaceIfVisible(buffer, offset + written, 0, cx, cy, cz, radius, brightness, this.isValid(x - scale, y, z, scale, scrollX, scrollY, scrollZ, wiggle));
-		written += this.emitFaceIfVisible(buffer, offset + written, 1, cx, cy, cz, radius, brightness, this.isValid(x + scale, y, z, scale, scrollX, scrollY, scrollZ, wiggle));
-		written += this.emitFaceIfVisible(buffer, offset + written, 2, cx, cy, cz, radius, brightness, this.isValid(x, y - scale, z, scale, scrollX, scrollY, scrollZ, wiggle));
-		written += this.emitFaceIfVisible(buffer, offset + written, 3, cx, cy, cz, radius, brightness, this.isValid(x, y + scale, z, scale, scrollX, scrollY, scrollZ, wiggle));
-		written += this.emitFaceIfVisible(buffer, offset + written, 4, cx, cy, cz, radius, brightness, this.isValid(x, y, z - scale, scale, scrollX, scrollY, scrollZ, wiggle));
-		written += this.emitFaceIfVisible(buffer, offset + written, 5, cx, cy, cz, radius, brightness, this.isValid(x, y, z + scale, scale, scrollX, scrollY, scrollZ, wiggle));
+		// Neighbor validity is checked at ADJACENT cells (x +/- 1), not +/- one grid
+		// scale (that culls against the wrong cell and leaves coincident faces).
+		written += this.emitFaceIfVisible(buffer, offset + written, 0, cx, cy, cz, radius, brightness, this.isValid(x - 1, y, z, scale, scrollX, scrollY, scrollZ, wiggle));
+		written += this.emitFaceIfVisible(buffer, offset + written, 1, cx, cy, cz, radius, brightness, this.isValid(x + 1, y, z, scale, scrollX, scrollY, scrollZ, wiggle));
+		written += this.emitFaceIfVisible(buffer, offset + written, 2, cx, cy, cz, radius, brightness, this.isValid(x, y - 1, z, scale, scrollX, scrollY, scrollZ, wiggle));
+		written += this.emitFaceIfVisible(buffer, offset + written, 3, cx, cy, cz, radius, brightness, this.isValid(x, y + 1, z, scale, scrollX, scrollY, scrollZ, wiggle));
+		written += this.emitFaceIfVisible(buffer, offset + written, 4, cx, cy, cz, radius, brightness, this.isValid(x, y, z - 1, scale, scrollX, scrollY, scrollZ, wiggle));
+		written += this.emitFaceIfVisible(buffer, offset + written, 5, cx, cy, cz, radius, brightness, this.isValid(x, y, z + 1, scale, scrollX, scrollY, scrollZ, wiggle));
 		return written;
 	}
 
@@ -367,7 +369,7 @@ public final class CpuCloudGenerator
 			float s, float scrollX, float scrollY, float scrollZ, float wiggle, float[] gradient)
 	{
 		float radius = scale / 2.0F;
-		float cx = (x + radius) * scale, cy = (y + radius) * scale, cz = (z + radius) * scale;
+		float cx = (x + 0.5F) * scale, cy = (y + 0.5F) * scale, cz = (z + 0.5F) * scale;
 		int gi = columnGroup[(x - x0) * (z1 - z0) + (z - z0)];
 		int written = 0;
 		written += this.emitRegionFace(buffer, offset + written, 0, cx, cy, cz, radius, brightness, x - 1, y, z, gi, x0, y0, z0, x1, y1, z1, columnGroup, columnFade, s, scrollX, scrollY, scrollZ, wiggle, gradient);
@@ -414,7 +416,7 @@ public final class CpuCloudGenerator
 	private int emitTransparentCube(ByteBuffer buffer, int offset, int x, int y, int z, float scale, float brightness, float alpha)
 	{
 		float radius = scale / 2.0F;
-		float cx = (x + radius) * scale, cy = (y + radius) * scale, cz = (z + radius) * scale;
+		float cx = (x + 0.5F) * scale, cy = (y + 0.5F) * scale, cz = (z + 0.5F) * scale;
 		int written = 0;
 		for (int side = 0; side < 6; side++)
 		{

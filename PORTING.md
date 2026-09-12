@@ -50,6 +50,67 @@ Key 26.2 renderer facts discovered while making this work (for the remaining por
 - Dev launch env: Temurin 25 + `VK_ICD_FILENAMES=/run/opengl-driver/.../intel_icd.x86_64.json`
   + `LD_LIBRARY_PATH` from /tmp/lwjgl-ldp.txt (Vulkan loader, GLVND, X11, Wayland).
 
+## FULL-REGION RENDERING + SERVER PERSISTENCE (2026-09-12)
+Verified on screen (dev client, devshot screenshot): discrete white voxel cloud
+formations in a noon sky, sun visible through the gaps, correct depth (mountain
+occludes clouds). The flat-gray-sheet regression is gone.
+
+### Client: full-region, off-thread generation
+- The 256x256 block band was replaced by a grid of 32x32-unit (256x256 block) bands
+  around the camera (2x2 = 512x512 blocks, render-distance driven), each cached by
+  band key. Clouds are world-fixed; bands fill in from the camera outward.
+- Generation moved OFF the render thread (a `simpleclouds-bandgen` daemon owns a
+  dedicated `CpuCloudGenerator`; a `LinkedBlockingQueue` of `BandJob`s, completions
+  published via a concurrent queue). A full band is 10-150 ms — too much for the
+  render thread; off-thread it costs zero hitches.
+- **Last-writer-wins pickup**: completions are stamped with the CURRENT region
+  signature, never compared against the signature they were requested with.
+  (The compare live-locked the cache for minutes: moving formations cross the
+  signature quantization boundaries constantly, so every completion was discarded
+  and re-enqueued.)
+- Region signature quantization is deliberately coarse (20u position, 5u radius,
+  0.1 rad rotation): a boundary crossing invalidates every band (~2 MB of uploads).
+  Spawned formations are 750-1250 units across, so the steps are ~0.2% of a disk
+  radius — invisible.
+- Instance centers fixed: `(x + 0.5) * scale` (was `(x + radius) * scale`, a 28 block
+  offset hidden in infinite-field mode). Legacy neighbor culling fixed to x+/-1
+  cells (was +/scale = 8 cells apart, leaving coincident faces).
+- Transparent instance concatenation fixed (28 bytes, not 24).
+- **`ownTransforms`**: the cloud passes now use a private `DynamicUniforms` instead
+  of the shared per-frame one. Our passes are encoded at the LevelRenderer TAIL but
+  execute later in the frame; the shared ring can be re-written by vanilla passes in
+  between, zeroing ModelViewMat/ColorModulator — the cause of "first draw N
+  instances, empty sky" (the fsh's `if (ColorModulator.a < bayer) discard` then
+  killed every fragment). The previewer pass shared the same latent bug.
+
+### Server: persistence + resync
+- `CloudData` (SavedData) ported to the 26.2 `SavedDataType` registry API
+  (codec-based; `MinecraftServer.getWorldGenSettings().options().seed()` for the
+  cloud seed; `CompoundTag.CODEC.optionalFieldOf` — 26.2's Mojang serialization is
+  the pre-null-refactor, no `Codec.optional()`). `MixinServerLevel` attaches the
+  manager via `getDataStorage().computeIfAbsent(CloudData.TYPE)`.
+- 26.2 has NO Forge `PlayerRespawnEvent`/`LivingChangeDimensionEvent` and no Fabric
+  equivalent; dimension changes moved to the `TeleportTransition` system.
+  `CloudManagerEvents` polls per-player (dimension key or a >1024 block position
+  jump) in the server tick and resends the full sync — replaces both events.
+
+### 26.2 API notes added today
+- Day/night is a **data-driven WorldClock system** (`net.minecraft.world.clock.*`):
+  `MinecraftServer.clockManager()` (a `ServerClockManager` SavedData),
+  `moveToTimeMarker(Holder<WorldClock>, ClockTimeMarkers.NOON)` / `setTotalTicks`.
+  `Level`/`LevelData` no longer expose dayTime. Registry key: `Registries.WORLD_CLOCK`,
+  `server.registryAccess().lookupOrThrow(...).getOrThrow(key)` returns
+  `Holder.Reference` (use it directly as a `Holder`).
+- `SavedDataStorage.get(SavedDataType)` returns the instance or null; vanilla cloud
+  data (`ServerClockManager`) lives in `MinecraftServer.clockManager()`, not in the
+  per-level storage.
+- `Holder.direct(...)` inference fails against `Registry<? extends T>`; use the
+  returned `Holder.Reference` directly.
+- `DynamicUniforms` has a public no-arg constructor + `reset()` + `close()`; the
+  per-instance ring is fence-safe across frames.
+- The dev client runs on the **OpenGL** backend here (`GlDevice`); Vulkan would need
+  the same `ownTransforms` treatment (backend-agnostic, already satisfied).
+
 ## HANDOFF task list (2026-09-11, from HANDOFF.md)
 
 Test loop: **`./dev-relaunch.sh`** (one dev client, log check, screenshot to

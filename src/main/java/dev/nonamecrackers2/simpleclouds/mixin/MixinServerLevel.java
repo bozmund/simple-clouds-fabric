@@ -34,9 +34,11 @@ public abstract class MixinServerLevel implements CloudManagerHolder<ServerLevel
 	public void simpleclouds$createCloudManager_init(CallbackInfo ci)
 	{
 		this.cloudManager = new ServerCloudManager((ServerLevel)(Object)this);
-		// 26.2: derive the cloud seed (the old worldGenOptions().seed() accessor is gone).
-		this.cloudManager.init(RandomSource.create().nextLong());
-		// TODO(26.2): persist cloud data via the new SavedDataType API (was computeIfAbsent).
+		//Do this so we hide the world seed
+		// 26.2: the world seed now lives in the worldgen settings (WorldOptions.seed()).
+		this.cloudManager.init(RandomSource.create(this.server.getWorldGenSettings().options().seed()).nextLong());
+		// 26.2: persistence moved to the SavedDataType registry (codec-based).
+		this.getDataStorage().computeIfAbsent(CloudData.TYPE).attach(this.cloudManager);
 	}
 	
 	@Inject(method = "advanceWeatherCycle", at = @At("HEAD"), cancellable = true)

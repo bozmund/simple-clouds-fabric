@@ -145,7 +145,9 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		try
 		{
 			this.drawPipeline = new CloudsDrawPipeline();
-			this.cpuGenerator = new CpuCloudGenerator(List.of()); // groups are set per-band from the cloud type data
+			// Owned by the band worker thread (never touched from the render thread).
+			this.cpuGenerator = new CpuCloudGenerator(List.of());
+			this.startBandWorker();
 		}
 		catch (Throwable t)
 		{
@@ -277,26 +279,146 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		for (dev.nonamecrackers2.simpleclouds.common.cloud.region.CloudRegion region : this.cloudManager.getClouds())
 		{
 			sig = 31L * sig + region.getCloudTypeId().hashCode();
-			sig = 31L * sig + (long) (region.getPosX(tick) * 0.5F);
-			sig = 31L * sig + (long) (region.getPosZ(tick) * 0.5F);
-			sig = 31L * sig + (long) (region.getRadius(tick) * 4.0F);
-			sig = 31L * sig + (long) (region.getStretch(tick) * 100.0F);
-			sig = 31L * sig + (long) (region.getRotation(tick) * 100.0F);
+			// Very coarse quantization on purpose: a crossing of any boundary
+		// invalidates every band of the grid (4 x ~15-150 ms of generation +
+		// ~2 MB of buffer uploads), so the deltas must stay far below what is
+		// visible. Spawned formations are HUGE (radius 6000-10000 blocks = 750-1250
+		// cloud units, drifting at 0.1-0.2 units/tick): a 20-unit (160 block) position
+		// step or a 5-unit radius step shifts the type mask by ~0.2% of a disk radius
+		// — invisible. Rotation/stretch never change during a region tick.
+			sig = 31L * sig + (long) (region.getPosX(tick) * 0.05F);
+			sig = 31L * sig + (long) (region.getPosZ(tick) * 0.05F);
+			sig = 31L * sig + (long) (region.getRadius(tick) * 0.2F);
+			sig = 31L * sig + (long) (region.getStretch(tick) * 10.0F);
+			sig = 31L * sig + (long) (region.getRotation(tick) * 10.0F);
 		}
 		return sig;
 	}
 
-	// Generation cache: the cloud field is world-fixed; the expensive CPU band is only
-	// regenerated when the band origin (a 2-block grid cell) or the data-driven group
-	// set changes.
-	private int cacheX0 = Integer.MIN_VALUE, cacheY0 = Integer.MIN_VALUE, cacheZ0 = Integer.MIN_VALUE;
+	// Full-region generation cache: per-band instance data keyed by band origin.
+	// A band regenerates only when its region signature or the data-driven group set
+	// changes; at most one band per frame (see generateAndDrawClouds).
+	private final java.util.Map<Long, BandData> bandCaches = new java.util.HashMap<>();
 	private int cacheGroupsHash = Integer.MIN_VALUE;
-	private long cacheRegionSig = Long.MIN_VALUE;
-	private long lastRegionRegenTick = -100L;
+	private long lastBandGridKey;
+	private boolean instanceBuffersDirty = true;
+
+	/** Generated instance data for one 32x32-unit (256x256 block) band. */
+	private static final class BandData
+	{
+		long regionSig;
+		int groupsHash;
+		java.nio.ByteBuffer opaque;
+		int opaqueCount;
+		java.nio.ByteBuffer transparent;
+		int transparentCount;
+		float stormCoverage;
+	}
+
+	private static long bandKey(int x0, int z0)
+	{
+		return ((long) x0 << 32) ^ ((long) z0 & 0xFFFFFFFFL);
+	}
+
+	// Band geometry (cloud units): one 32x32-unit band, fixed Y 0..64.
+	private static final int BAND_CELL = 32;
+	private static final int BAND_Y1 = 64;
+	private static final float BAND_SCALE = 8.0F;
+
+	// Off-thread band generation: a full band (32x64x32 cells x every noise layer)
+	// takes ~150 ms, so the render thread must not pay for it. A dedicated worker
+	// thread owns `cpuGenerator`, pulls band jobs and publishes results; the render
+	// thread only enqueues stale bands and picks up finished ones (see
+	// generateAndDrawClouds). All job inputs are immutable records, so crossing the
+	// thread boundary is safe.
+	private final java.util.concurrent.LinkedBlockingQueue<BandJob> bandQueue = new java.util.concurrent.LinkedBlockingQueue<>();
+	private final java.util.concurrent.ConcurrentLinkedQueue<BandResult> completedBands = new java.util.concurrent.ConcurrentLinkedQueue<>();
+	private final java.util.Set<Long> pendingBands = java.util.concurrent.ConcurrentHashMap.newKeySet();
+	@Nullable
+	private java.util.concurrent.ExecutorService bandWorker;
+
+	/** One off-thread band generation request (immutable inputs). */
+	private record BandJob(long key, int x0, int z0, List<CpuCloudGenerator.CloudLayerGroup> groups,
+			List<CpuCloudGenerator.RegionMask> regions, long regionSig, int groupsHash, int camGridY)
+	{
+	}
+
+	/** A finished band generation (key = bandKey(x0, z0)). */
+	private record BandResult(long key, BandData data)
+	{
+	}
+
+	private void startBandWorker()
+	{
+		if (this.bandWorker != null)
+			return;
+		this.bandWorker = java.util.concurrent.Executors.newSingleThreadExecutor(r ->
+		{
+			Thread t = new Thread(r, "simpleclouds-bandgen");
+			t.setDaemon(true);
+			return t;
+		});
+		this.bandWorker.execute(this::bandWorkerLoop);
+	}
+
+	/** The dedicated generation thread: pulls band jobs, publishes the results. */
+	private void bandWorkerLoop()
+	{
+		BandJob job;
+		try
+		{
+			while ((job = this.bandQueue.take()) != null)
+			{
+				CpuCloudGenerator generator = this.cpuGenerator;
+				if (generator == null)
+					continue;
+				try
+				{
+					generator.setGroups(job.groups());
+					generator.setRegions(job.regions());
+					float[] opaqueCount = new float[1];
+					float[] transparentCount = new float[1];
+					float[] stormCoverage = new float[1];
+					long t0 = System.nanoTime();
+					java.nio.ByteBuffer[] data = generator.generate(
+							job.x0(), 0, job.z0(), job.x0() + BAND_CELL, BAND_Y1, job.z0() + BAND_CELL,
+							BAND_SCALE, 0.0F, 0.0F, 0.0F, 0.0F, opaqueCount, transparentCount, job.camGridY(), stormCoverage);
+					BandData d = new BandData();
+					d.regionSig = job.regionSig();
+					d.groupsHash = job.groupsHash();
+					d.opaque = data[0];
+					d.opaqueCount = (int) opaqueCount[0];
+					d.transparent = data[1];
+					d.transparentCount = (int) transparentCount[0];
+					d.stormCoverage = stormCoverage[0];
+					this.completedBands.add(new BandResult(job.key(), d));
+					LOGGER.info("Simple Clouds clouds: band {}x{} generated off-thread, {} formations, {} opaque / {} transparent instances (CPU {} us)",
+							job.x0(), job.z0(), job.regions().size(), d.opaqueCount, d.transparentCount, (System.nanoTime() - t0) / 1000L);
+
+				}
+				catch (Throwable t)
+				{
+					LOGGER.error("Simple Clouds clouds: off-thread band generation failed", t);
+				}
+				finally
+				{
+					// Release the pending slot even on failure so the band can be
+					// re-requested next frame.
+					this.pendingBands.remove(job.key());
+				}
+			}
+		}
+		catch (InterruptedException e)
+		{
+			Thread.currentThread().interrupt();
+		}
+	}
 
 	// SPIKE (SPIKE-GPU.md): the original cube_mesh.comp through raw OpenGL, for
-	// timing/shape comparison against CpuCloudGeneration. Off = pure CPU path.
-	private static final boolean SPIKE_GPU = true;
+	// timing/shape comparison against CpuCloudGeneration. OFF — the result is
+	// recorded in SPIKE-GPU-RESULT.md (Mesa 26.2.1/ARL blocks the GPU->CPU data
+	// path); re-enable once the driver honors the core GL contract.
+	private static final boolean SPIKE_GPU = false;
 	private GpuCloudGeneration spike;
 	private boolean spikeReady;
 	private boolean spikeClassLogged;
@@ -329,22 +451,23 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		view.mul(camera.getViewRotationMatrix(new org.joml.Matrix4f()));
 		view.mul(new org.joml.Matrix4f().translate((float)-camX, (float)-camY, (float)-camZ));
 
-		// Grid scale = 2 blocks/cell; the band is a 32x32 world-block patch around the
-		// camera in X/Z. Clouds are WORLD-FIXED: the noise is a pure function of world
-		// coordinates (zero scroll), only the generated band follows the camera (the
-		// original culled by view distance/formation bounds; here the field is infinite).
-		// Grid scale = CLOUD_SCALE = 8 world blocks/cell (the original's cloud unit: the
-		// region positions/radii and the noise coordinates live in this space). The band
-		// is 32x32 units (256x256 world blocks) around the camera in X/Z — the original's
-		// TILE_PERIOD — and fixed in Y at 0..64 units (0..512 blocks), covering every
-		// type's noise heights (CLOUD_HEIGHT 128 .. ~512).
+		// Full-region rendering. The cloud field is world-fixed (CLOUD_SCALE = 8 world
+		// blocks per cloud unit; region positions/radii and the noise coordinates live
+		// in that space), but generation is band-local: the region is a grid of
+		// 32x32-unit (256x256 block) bands around the camera covering the render
+		// distance (2x2 up to RD 16, 3x3 beyond), fixed in Y at 0..64 units
+		// (0..512 blocks) covering every type's noise heights.
 		float scale = 8.0F;
-		int span = 16;
-		int x0 = Mth.floor(camX / scale) - span;
-		int z0 = Mth.floor(camZ / scale) - span;
+		final int cell = 32;
+		final int cellBlocks = (int) (cell * scale);
 		int camGridY = Mth.floor(camY / scale);
 		int y0 = 0;
 		int y1 = 64;
+		int renderDistance = Mth.clamp(this.mc.options.renderDistance().get(), 2, 64);
+		int bands = Mth.clamp(Mth.ceil(renderDistance * 16.0 / (double) cellBlocks), 2, 3);
+		int cx = Mth.floor(camX / cellBlocks);
+		int cz = Mth.floor(camZ / cellBlocks);
+		long gridKey = ((long) cx << 32) ^ ((long) cz << 8) ^ (long) bands;
 
 		List<CpuCloudGenerator.CloudLayerGroup> groups = dataDrivenGroups();
 		int groupsHash = groups.hashCode();
@@ -361,82 +484,166 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		double sigTick = Math.floor(partialTick);
 		List<CpuCloudGenerator.RegionMask> regions = this.buildRegionMasks(typeToGroup, (float) sigTick);
 		long regionSig = this.regionSignature((float) sigTick);
-		// Moving formations trigger regeneration, but at most every 5 ticks (0.25 s):
-		// a 10-15 ms CPU rebuild every tick the clouds drift would still cost ~15% of
-		// the frame budget. Camera-band and cloud-type changes regenerate at once.
-		long tickNow = (long) sigTick;
-		boolean regionDriven = regionSig != this.cacheRegionSig && tickNow - this.lastRegionRegenTick >= 5L;
-		if (x0 != this.cacheX0 || z0 != this.cacheZ0 || groupsHash != this.cacheGroupsHash || regionDriven)
+		boolean groupsChanged = groupsHash != this.cacheGroupsHash;
+		this.cacheGroupsHash = groupsHash;
+		boolean bandSetChanged = gridKey != this.lastBandGridKey;
+		this.lastBandGridKey = gridKey;
+
+		// Band plan: every grid cell, ordered by distance to the camera so the
+		// regeneration budget fills the view from the center out.
+		java.util.List<long[]> cells = new java.util.ArrayList<>(bands * bands);
+		double camCellX = camX / (double) cellBlocks, camCellZ = camZ / (double) cellBlocks;
+		for (int bx = 0; bx < bands; bx++)
 		{
-			this.cpuGenerator.setGroups(groups);
-			this.cpuGenerator.setRegions(regions);
-			float[] opaqueCount = new float[1];
-			float[] transparentCount = new float[1];
-			float[] stormCoverage = new float[1];
-			long cpuT0 = System.nanoTime();
-			java.nio.ByteBuffer[] data = this.cpuGenerator.generate(
-					x0, y0, z0, x0 + span * 2, y1, z0 + span * 2,
-					scale, 0.0F, 0.0F, 0.0F, 0.0F, opaqueCount, transparentCount, camGridY, stormCoverage);
-			this.lastCpuGenerateNanos = System.nanoTime() - cpuT0;
-			this.drawPipeline.setInstances(data[0], (int) opaqueCount[0]);
+			int offX = bx - (bands - 1) / 2;
+			for (int bz = 0; bz < bands; bz++)
+			{
+				int offZ = bz - (bands - 1) / 2;
+				double dx = (cx + offX) + 0.5 - camCellX;
+				double dz = (cz + offZ) + 0.5 - camCellZ;
+				cells.add(new long[] { cx + offX, cz + offZ, (long) ((dx * dx + dz * dz) * 1000.0) });
+			}
+		}
+		cells.sort(java.util.Comparator.comparingLong(c -> c[2]));
+
+		// Pick up finished bands (generated off-thread — no render hitch).
+		// Last-writer-wins: a completion is at most one generation cycle
+		// (~0.1-0.2 s) behind the current region state, far below the visible drift
+		// of the formations, so stamp it with the CURRENT signature. (Comparing it
+		// against the signature it was requested with live-locked the cache: moving
+		// formations cross the signature quantization boundaries constantly, so every
+		// completion was discarded and re-enqueued until they slowed down.)
+		BandResult result;
+		while ((result = this.completedBands.poll()) != null)
+		{
+			BandData d = result.data();
+			d.regionSig = regionSig;
+			d.groupsHash = groupsHash;
+			this.bandCaches.put(result.key(), d);
+			this.instanceBuffersDirty = true;
+		}
+
+		// Enqueue every stale band (camera-out order; the worker processes them in
+		// that order). pendingBands makes enqueuing idempotent across frames.
+		for (long[] c : cells)
+		{
+			int x0 = (int) c[0] * cell;
+			int z0 = (int) c[1] * cell;
+			long key = bandKey(x0, z0);
+			BandData d = this.bandCaches.get(key);
+			boolean stale = d == null || d.regionSig != regionSig || d.groupsHash != groupsHash || groupsChanged;
+			if (stale && this.pendingBands.add(key))
+				this.bandQueue.add(new BandJob(key, x0, z0, groups, regions, regionSig, groupsHash, camGridY));
+		}
+
+		float maxStorm = 0.0F;
+		int totalOpaque = 0, totalTransp = 0;
+		for (long[] c : cells)
+		{
+			BandData d = this.bandCaches.get(bandKey((int) c[0] * cell, (int) c[1] * cell));
+			if (d != null)
+			{
+				totalOpaque += d.opaqueCount;
+				totalTransp += d.transparentCount;
+				if (d.stormCoverage > maxStorm)
+					maxStorm = d.stormCoverage;
+			}
+		}
+		// Evict bands that left the grid (keeps the map bounded to the grid size).
+		if (bandSetChanged)
+		{
+			java.util.Set<Long> keep = new java.util.HashSet<>(cells.size());
+			for (long[] c : cells)
+				keep.add(bandKey((int) c[0] * cell, (int) c[1] * cell));
+			this.bandCaches.keySet().retainAll(keep);
+			this.instanceBuffersDirty = true;
+		}
+		this.cacheStormCoverage = maxStorm;
+
+		// Rebuild the combined instance buffers only when something actually changed
+		// (setInstances uploads a fresh GPU buffer, so it must not run every frame).
+		if (bandSetChanged || this.instanceBuffersDirty)
+		{
+			this.instanceBuffersDirty = false;
+			java.nio.ByteBuffer opaqueOut = null, transpOut = null;
+			if (totalOpaque > 0)
+			{
+				opaqueOut = java.nio.ByteBuffer.allocateDirect(totalOpaque * 24).order(java.nio.ByteOrder.nativeOrder());
+				for (long[] c : cells)
+				{
+					BandData d = this.bandCaches.get(bandKey((int) c[0] * cell, (int) c[1] * cell));
+					if (d != null && d.opaqueCount > 0)
+					{
+						d.opaque.rewind();
+						opaqueOut.put(d.opaque);
+					}
+				}
+				opaqueOut.flip();
+			}
 			// Config gate (1.20.1's renderCloudsTransparency only ran when transparency
 			// was enabled in the client config).
 			boolean transparencyEnabled = SimpleCloudsConfig.CLIENT.transparency.get();
-			this.drawPipeline.setTransparencyInstances(
-					transparencyEnabled ? data[1] : null,
-					transparencyEnabled ? (int) transparentCount[0] : 0);
-			this.cacheX0 = x0;
-			this.cacheY0 = y0;
-			this.cacheZ0 = z0;
-			this.cacheGroupsHash = groupsHash;
-			this.cacheRegionSig = regionSig;
-			this.cacheStormCoverage = stormCoverage[0];
-			this.lastRegionRegenTick = tickNow;
-			LOGGER.info("Simple Clouds clouds: regenerated, {} formations, {} opaque instances (CPU {} us)",
-					regions.size(), (int) opaqueCount[0], this.lastCpuGenerateNanos / 1000L);
-
-			// SPIKE (SPIKE-GPU.md): original cube_mesh.comp via raw OpenGL (OpenGL backend
-			// only). Runs on the same trigger as the CPU generation over the same band so
-			// both paths are comparable; its output replaces the CPU buffer while it
-			// produces instances.
-			if (SPIKE_GPU)
+			if (transparencyEnabled && totalTransp > 0)
 			{
-				// GlDevice is package-private in 26.2 behind the GpuDevice facade; detect
-				// the OpenGL backend through the facade's private 'backend' field.
-				if (!this.spikeClassLogged)
+				// Transparent instances carry an extra alpha float (28 bytes, not 24).
+				transpOut = java.nio.ByteBuffer.allocateDirect(totalTransp * 28).order(java.nio.ByteOrder.nativeOrder());
+				for (long[] c : cells)
 				{
-					this.spikeClassLogged = true;
-					String backendName = GpuCloudGeneration.backendClassName();
-					LOGGER.info("Spike: device backend class = {}", backendName);
-				}
-				if (this.spike == null && GpuCloudGeneration.isOpenGLBackend())
-					this.spike = new GpuCloudGeneration();
-				if (this.spike != null && !this.spikeReady && !this.spikeInitFailed)
-				{
-					this.spikeReady = this.spike.init();
-					if (!this.spikeReady)
+					BandData d = this.bandCaches.get(bandKey((int) c[0] * cell, (int) c[1] * cell));
+					if (d != null && d.transparentCount > 0)
 					{
-						this.spikeInitFailed = true;
-						GpuCloudGeneration.LOGGER.warn("Spike: GPU generation unavailable; keeping the CPU path");
+						d.transparent.rewind();
+						transpOut.put(d.transparent);
 					}
 				}
-				if (this.spikeReady && !groups.isEmpty())
+				transpOut.flip();
+			}
+			this.drawPipeline.setInstances(opaqueOut, totalOpaque);
+			this.drawPipeline.setTransparencyInstances(transpOut, transpOut == null ? 0 : totalTransp);
+			LOGGER.info("Simple Clouds clouds: {} bands -> {} opaque / {} transparent instances",
+					this.bandCaches.size(), totalOpaque, transpOut == null ? 0 : totalTransp);
+		}
+
+		// SPIKE (SPIKE-GPU.md): original cube_mesh.comp via raw OpenGL (OFF — see
+		// SPIKE-GPU-RESULT.md). Wired to the camera band; re-enable SPIKE_GPU once
+		// the driver honors the core GL contract.
+		if (SPIKE_GPU)
+		{
+			int x0 = (int) cells.get(0)[0] * cell;
+			int z0 = (int) cells.get(0)[1] * cell;
+			// GlDevice is package-private in 26.2 behind the GpuDevice facade; detect
+			// the OpenGL backend through the facade's private 'backend' field.
+			if (!this.spikeClassLogged)
+			{
+				this.spikeClassLogged = true;
+				String backendName = GpuCloudGeneration.backendClassName();
+				LOGGER.info("Spike: device backend class = {}", backendName);
+			}
+			if (this.spike == null && GpuCloudGeneration.isOpenGLBackend())
+				this.spike = new GpuCloudGeneration();
+			if (this.spike != null && !this.spikeReady && !this.spikeInitFailed)
+			{
+				this.spikeReady = this.spike.init();
+				if (!this.spikeReady)
 				{
-					int bandCenterX = x0 + span, bandCenterZ = z0 + span;
-					int gpuCount = this.spike.generate(x0, y0, z0, x0 + span * 2, y1, z0 + span * 2,
-							bandCenterX, 32.0F, bandCenterZ, 8.0F, 16.0F,
-							groups.get(0).layers(), groups.get(0).transparencyFade());
-					// Only trust the GPU result when it actually produced instances; an
-					// empty (or failed) generation must never hide the CPU clouds.
-					if (gpuCount > 0 && this.spike.instanceData() != null)
-					{
-						// The read-back array goes through the SAME setInstances path as the
-						// CPU generator (fresh Blaze3D vertex buffer each regeneration).
-						this.drawPipeline.setInstances(this.spike.instanceData(), gpuCount);
-						LOGGER.info("Spike timing: CPU {} us vs GPU {} us (dispatch+readback), band {}x{}x{} units, GPU {} instances",
-								this.lastCpuGenerateNanos / 1000L, this.spike.lastGenerateNanos() / 1000L,
-								span * 2, y1, span * 2, gpuCount);
-					}
+					this.spikeInitFailed = true;
+					GpuCloudGeneration.LOGGER.warn("Spike: GPU generation unavailable; keeping the CPU path");
+				}
+			}
+			if (this.spikeReady && !groups.isEmpty())
+			{
+				int bandCenterX = x0 + cell / 2, bandCenterZ = z0 + cell / 2;
+				int gpuCount = this.spike.generate(x0, y0, z0, x0 + cell, y1, z0 + cell,
+						bandCenterX, 32.0F, bandCenterZ, 8.0F, 16.0F,
+						groups.get(0).layers(), groups.get(0).transparencyFade());
+				// Only trust the GPU result when it actually produced instances; an
+				// empty (or failed) generation must never hide the CPU clouds.
+				if (gpuCount > 0 && this.spike.instanceData() != null)
+				{
+					this.drawPipeline.setInstances(this.spike.instanceData(), gpuCount);
+					LOGGER.info("Spike timing: CPU {} us vs GPU {} us (dispatch+readback), band {}x{}x{} units, GPU {} instances",
+							this.lastCpuGenerateNanos / 1000L, this.spike.lastGenerateNanos() / 1000L,
+							cell, y1, cell, gpuCount);
 				}
 			}
 		}
@@ -616,6 +823,11 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		{
 			this.rainPipeline.close();
 			this.rainPipeline = null;
+		}
+		if (this.bandWorker != null)
+		{
+			this.bandWorker.shutdownNow();
+			this.bandWorker = null;
 		}
 		this.cpuGenerator = null;
 		this.worldEffects = null;
