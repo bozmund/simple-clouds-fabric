@@ -64,4 +64,24 @@ public class MixinLevelRenderer
 			}
 		}
 	}
+
+	/**
+	 * 26.2: the vanilla cloud layer is a frame-graph pass added by the private
+	 * {@code addCloudsPass} (CloudStatus = the game's cloud quality option).
+	 * The 1.20.1 original cancelled {@code LevelRenderer.renderClouds} instead —
+	 * same intent: when Simple Clouds renders, the vanilla sheet is double clouds.
+	 */
+	@Inject(method = "addCloudsPass", at = @At("HEAD"), cancellable = true)
+	public void simpleclouds$disableVanillaClouds_addCloudsPass(
+			com.mojang.blaze3d.framegraph.FrameGraphBuilder builder,
+			net.minecraft.client.CloudStatus status,
+			net.minecraft.world.phys.Vec3 camPos,
+			long tick, float partialTick, int skyFlash, float time, int tickTime,
+			CallbackInfo ci)
+	{
+		Minecraft mc = Minecraft.getInstance();
+		if (mc.level != null && SimpleCloudsRenderer.getOptionalInstance().isPresent()
+				&& SimpleCloudsRenderer.canRenderInDimension(mc.level))
+				ci.cancel();
+	}
 }

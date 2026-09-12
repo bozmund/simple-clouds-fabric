@@ -43,6 +43,7 @@ public final class DevShot
 	private static float savedXRot;
 	private static boolean saved;
 	private static boolean testSpawned;
+	private static float shotAngle = -90.0F; // straight up by default
 
 	private DevShot() {}
 
@@ -180,7 +181,14 @@ public final class DevShot
 				done = true;
 				return;
 			}
-			try { framesLeft = Integer.parseInt(Files.readString(request).trim()); }
+			try
+			{
+				String content = Files.readString(request).trim();
+				String[] parts = content.split("\\s+");
+				framesLeft = Integer.parseInt(parts[0]);
+				if (parts.length > 1)
+					shotAngle = Float.parseFloat(parts[1]); // second token: camera xRot
+			}
 			catch (Exception e) { framesLeft = 240; }
 			LOGGER.info("[DEVSHOT] requested: capturing after {} frames", framesLeft);
 		}
@@ -199,7 +207,7 @@ public final class DevShot
 			savedXRot = mc.player.getXRot();
 			saved = true;
 		}
-		mc.player.setXRot(-90.0F); // look straight up at the cloud layer
+		mc.player.setXRot(shotAngle);
 		if (--framesLeft > 0)
 			return;
 		mc.player.setXRot(savedXRot); // restore the user's view
