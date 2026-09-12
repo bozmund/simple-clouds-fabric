@@ -55,6 +55,8 @@ void main()
 	if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0)
 		discard; // outside the shadow volume: fully lit
 
+	float pointZ = (spos.z / spos.w + 1.0) * 0.5;
+
 	// Both the stored shadow depth and the point depth are WINDOW-space z [0,1]
 	// (linear under the ortho projection). 4-tap mini-PCF for softer edges.
 	float texel = 1.0 / 512.0;
@@ -65,7 +67,6 @@ void main()
 	shadowDepth += texture(ShadowMap, suv + vec2( texel,  texel)).r;
 	shadowDepth *= 0.25;
 
-	float pointZ = (spos.z / spos.w + 1.0) * 0.5;
 	float inShadow = shadowDepth < pointZ - ShadowBias ? 1.0 : 0.0;
 
 	fragColor = vec4(0.0, 0.0, 0.0, Intensity * inShadow);

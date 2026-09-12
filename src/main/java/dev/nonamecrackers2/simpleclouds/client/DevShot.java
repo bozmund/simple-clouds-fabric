@@ -159,7 +159,7 @@ public final class DevShot
 					if (count > 0)
 					{
 						CloudRegion r = new CloudRegion(t.id(), new Vec2(0.001F, 0.0F), 0.0F, 0.0F,
-							px + candX[ci], pz + candZ[ci], 20.0F, 0.0F, 1.2F, 24000, 10, 9);
+							px + candX[ci], pz + candZ[ci], 200.0F, 0.0F, 1.2F, 24000, 10, 9);
 						manager.getCloudGenerator().addCloud(r, CloudGenerator.Order.USE_WEIGHT);
 						LOGGER.info("[DEVSHOT] spawned ground-bank {} at cloud units {}x{} (probe density {})",
 							t.id(), px + candX[ci], pz + candZ[ci], count);
@@ -172,7 +172,7 @@ public final class DevShot
 			{
 				CloudType t = bestType;
 				CloudRegion region = new CloudRegion(t.id(), new Vec2(0.001F, 0.0F), 0.0F, 0.0F,
-					px + candX[best], pz + candZ[best], 20.0F, 0.0F, 1.2F, 24000, 10, spawned);
+					px + candX[best], pz + candZ[best], 200.0F, 0.0F, 1.2F, 24000, 10, spawned);
 				if (manager.getCloudGenerator().addCloud(region, CloudGenerator.Order.USE_WEIGHT))
 					LOGGER.info("[DEVSHOT] spawned test formation {} (r=20u) at cloud units {}x{} (probe density {})",
 						t.id(), px + candX[best], pz + candZ[best], bestCount);
@@ -210,8 +210,9 @@ public final class DevShot
 		CloudType[] types = ClientSideCloudTypeManager.getInstance().getIndexedCloudTypes();
 		float px = (float) (mc.player.getX() / 8.0);
 		float pz = (float) (mc.player.getZ() / 8.0);
-		float[] candX = { 0.0F, -64.0F, 64.0F, -128.0F, 128.0F, 192.0F, -192.0F, 256.0F, -256.0F };
-		float[] candZ = { 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F };
+		// 2D grid probe (96-unit spacing, +/-288 units ~ 2300 blocks) x EVERY
+		// non-storm type: the noise fields are patchy, the dense pocket may sit far
+		// from spawn, and a type's layers may sit outside the probe's Y window.
 		CloudType bestType = null;
 		int bestCount = 0;
 		float bestX = px, bestZ = pz;
@@ -219,15 +220,20 @@ public final class DevShot
 		{
 			if (t.weatherType() != null && t.weatherType() != WeatherType.NONE)
 				continue; // storm types gray the frame out
-			for (int ci = 0; ci < candX.length; ci++)
+			for (int i = -3; i <= 3; i++)
 			{
-				int count = probeDensity(groups, typeToGroup, t, px + candX[ci], pz + candZ[ci]);
-				if (count > bestCount)
+				for (int j = -3; j <= 3; j++)
 				{
-					bestCount = count;
-					bestType = t;
-					bestX = px + candX[ci];
-					bestZ = pz + candZ[ci];
+					float qx = px + i * 96.0F;
+					float qz = pz + j * 96.0F;
+					int count = probeDensity(groups, typeToGroup, t, qx, qz);
+					if (count > bestCount)
+					{
+						bestCount = count;
+						bestType = t;
+						bestX = qx;
+						bestZ = qz;
+					}
 				}
 			}
 		}
@@ -245,8 +251,11 @@ public final class DevShot
 				new net.minecraft.world.phys.Vec3(cx * 8.0, py, cz * 8.0), net.minecraft.world.phys.Vec3.ZERO,
 				mc.player.getYRot(), mc.player.getXRot()), java.util.EnumSet.noneOf(net.minecraft.world.entity.Relative.class));
 		// Cumulus layers (16..48u) with posY 2u -> world Y 144..400, well above the player.
+		// Radius 200u = 1600 blocks: with REGION_EDGE_FADE_FACTOR 0.005 a small radius
+		// fades the whole formation (up to -5 noise). 200u keeps the player's area at
+		// the center where the fade is zero.
 		manager.getCloudGenerator().addCloud(new CloudRegion(bestType.id(), new Vec2(0.001F, 0.0F), 0.0F, 0.0F,
-				cx, cz, 20.0F, 0.0F, 1.0F, 60_000, 60_000, 1), CloudGenerator.Order.USE_WEIGHT);
+				cx, cz, 200.0F, 0.0F, 1.0F, 60_000, 60_000, 1), CloudGenerator.Order.USE_WEIGHT);
 		LOGGER.info("[DEVSHOT] shadow test: {} (density {}) at {}x{}, player at Y {}", bestType.id(), bestCount, cx, cz, py);
 	}
 
@@ -264,7 +273,10 @@ public final class DevShot
 		try
 		{
 			CpuCloudGenerator gen = new CpuCloudGenerator(allGroups);
-			gen.setRegions(List.of(new CpuCloudGenerator.RegionMask(cx, cz, 20.0F, 1.0F, 0.0F, 0.0F, 1.0F, group)));
+			// Radius 2000 so the 16-unit probe window sits at the CENTER of the mask:
+			// REGION_EDGE_FADE_FACTOR is 0.005, so a small radius puts the whole window
+			// in the edge falloff (up to -5 noise) and everything is culled.
+			gen.setRegions(List.of(new CpuCloudGenerator.RegionMask(cx, cz, 2000.0F, 1.0F, 0.0F, 0.0F, 1.0F, group)));
 			float[] oc = new float[1];
 			float[] tc = new float[1];
 			float[] sc = new float[1];
@@ -313,7 +325,8 @@ public final class DevShot
 					if (part.equalsIgnoreCase("SHADOWTEST"))
 					{
 						shadowTest = true;
-						shotAngle = -45.0F;
+						if (Float.isNaN(shotAngle))
+							shotAngle = -45.0F; // default: 45 deg up (clouds overhead)
 						continue;
 					}
 					try

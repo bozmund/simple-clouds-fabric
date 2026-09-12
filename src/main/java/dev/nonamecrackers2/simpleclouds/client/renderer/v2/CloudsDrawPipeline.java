@@ -92,6 +92,10 @@ public class CloudsDrawPipeline implements AutoCloseable
 	private static final int SHADOW_SIZE = 512; // 1 block/texel over the 512x512 block field
 	private static final float SHADOW_RADIUS = 256.0F; // world blocks XZ around the camera (512x512 field on a 256x256 map: 2 blocks/texel)
 	private static final float SHADOW_FAR = 600.0F;
+	// The volume extends this far BELOW the camera: with camera-anchored clouds the
+	// terrain the player stands on sits a few blocks under camY, and the original
+	// raymarch shadowed everything below the clouds (including below-camY terrain).
+	private static final float SHADOW_FAR_BELOW = 128.0F;
 	private static final float SHADOW_BIAS = 0.005F;
 	private static final float SHADOW_INTENSITY = 0.7F;
 	/** A/B test switch: false = skip the terrain-shadow pass entirely. */
@@ -111,8 +115,20 @@ public class CloudsDrawPipeline implements AutoCloseable
 	private final SimpleRenderTarget shadowTarget;
 	private final RenderPipeline shadowPipeline;
 	private final RenderPipeline terrainPipeline;
-	private final GpuBuffer shadowMatricesUbo;
-	private final GpuBuffer terrainPassUbo;
+	// Per-frame shadow uniforms. 26.2 idiom: a MappableRingBuffer (like
+	// DynamicUniforms) -- mapping/unmapping ONE fixed buffer every frame and
+	// binding it in a pass encoded later in the same frame silently kills the
+	// pass (verified on screen: magenta probe invisible with the fixed-buffer
+	// UBO, visible with a ring/fresh buffer).
+	// Per-frame shadow uniform ring. MappableRingBuffer's createBuffer(name, usage,
+	// size) path (immediate glMapBuffer in GlBuffer$Direct) fails consistently on
+	// this Mesa/Intel ARL machine ("Failed to map buffer"); the data-carrying
+	// createBuffer overload works (all other UBOs use it), so build the ring
+	// manually from zero-initialized data buffers.
+	private final GpuBuffer[] shadowMatricesRing = new GpuBuffer[3];
+	private final GpuBuffer[] terrainPassRing = new GpuBuffer[3];
+	private int shadowMatricesIdx = 0;
+	private int terrainPassIdx = 0;
 	private final GpuSampler nearestSampler;
 	private boolean shadowRenderedThisFrame = false;
 
@@ -267,8 +283,6 @@ public class CloudsDrawPipeline implements AutoCloseable
 				.build();
 
 		// std140: two mat4 blocks = 64 bytes each = 128 bytes total.
-		this.shadowMatricesUbo = device.createBuffer(() -> "simpleclouds.shadowMatrices", GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, 128L);
-		this.terrainPassUbo = device.createBuffer(() -> "simpleclouds.terrainShadowPass", GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, 80L);
 		// maxAnisotropy is validated as 1..16 by GpuDevice.createSampler.
 		this.nearestSampler = device.createSampler(AddressMode.CLAMP_TO_EDGE, AddressMode.CLAMP_TO_EDGE, FilterMode.NEAREST, FilterMode.NEAREST, 1, OptionalDouble.empty());
 
@@ -291,6 +305,15 @@ public class CloudsDrawPipeline implements AutoCloseable
 		this.lightingUbo = device.createBuffer(() -> "simpleclouds.lighting", uboUsage, 40L);
 		this.shadingUbo = device.createBuffer(() -> "simpleclouds.shading", uboUsage, 20L);
 		this.fogUbo = device.createBuffer(() -> "simpleclouds.fog", uboUsage, 28L);
+		for (int i = 0; i < 3; i++)
+		{
+			final int slot = i;
+			// Usage exactly like the working static UBOs (UNIFORM|MAP_READ): with
+			// MAP_WRITE set, the immediate glMapBuffer in GlBuffer$Direct fails on
+			// this Mesa/Intel ARL machine ("Failed to map buffer").
+			this.shadowMatricesRing[slot] = device.createBuffer(() -> "simpleclouds.shadowMatrices" + slot, GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(128));
+			this.terrainPassRing[slot] = device.createBuffer(() -> "simpleclouds.terrainShadowPass" + slot, GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(80));
+		}
 		this.writeLighting(0.2F, 1.0F, -0.7F, -0.2F, 1.0F, 0.7F, 0.4F, 0.9F);
 		this.writeShading(0.0F, 0.0F, 0.15F, 1.0F);
 		// Fog in world-block units: clouds start ~100 blocks from the camera. The fog
@@ -567,9 +590,11 @@ public class CloudsDrawPipeline implements AutoCloseable
 				0.0F, 1.0F, 0.0F, (float) -(camY + SHADOW_FAR),
 				0.0F, 0.0F, 0.0F, 1.0F);
 		org.joml.Matrix4f shadowProj = new org.joml.Matrix4f().setOrtho(
-				-SHADOW_RADIUS, SHADOW_RADIUS, -SHADOW_RADIUS, SHADOW_RADIUS, 0.0F, SHADOW_FAR);
+				-SHADOW_RADIUS, SHADOW_RADIUS, -SHADOW_RADIUS, SHADOW_RADIUS, 0.0F, SHADOW_FAR + SHADOW_FAR_BELOW);
 
-		try (var view = this.shadowMatricesUbo.slice().map(true, false))
+		this.shadowMatricesIdx = (this.shadowMatricesIdx + 1) % 3;
+		GpuBuffer matricesBuf = this.shadowMatricesRing[this.shadowMatricesIdx];
+		try (var view = matricesBuf.slice().map(true, false))
 		{
 			ByteBuffer data = view.data();
 			writeMatrix(data, 0, shadowView);
@@ -581,7 +606,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
 		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.shadowMap", colorView, Optional.empty(), depthView, OptionalDouble.of(1.0));
 		pass.setPipeline(this.shadowPipeline);
-		pass.setUniform("ShadowMatrices", this.shadowMatricesUbo);
+		pass.setUniform("ShadowMatrices", matricesBuf);
 		pass.setVertexBuffer(0, this.quadVertexBuffer.slice());
 		pass.setVertexBuffer(1, this.instanceBuffer.slice());
 		pass.setIndexBuffer(this.quadIndexBuffer, IndexType.SHORT);
@@ -602,8 +627,8 @@ public class CloudsDrawPipeline implements AutoCloseable
 			return;
 
 		// Light volume: light at the TOP (SHADOW_FAR above the camera). joml's setOrtho
-		// looks down -Z, so viewZ = -(distance from light) = worldY - (camY+SHADOW_FAR) ∈
-		// [-SHADOW_FAR, 0]: light at viewZ=0 (window depth ~0.0), camera plane at
+		// looks down -Z, so viewZ = -(distance from light) = worldY - (camY+SHADOW_FAR)
+		// in [-SHADOW_FAR, 0]: light at viewZ=0 (window depth ~0.0), camera plane at
 		// viewZ=-SHADOW_FAR (~1.0). Map clears to 1.0; LESS_THAN keeps the cloud
 		// CLOSEST to the light (see shadow pipeline depth state).
 		org.joml.Matrix4f shadowView = new org.joml.Matrix4f().set(
@@ -612,10 +637,12 @@ public class CloudsDrawPipeline implements AutoCloseable
 				0.0F, 1.0F, 0.0F, (float) -(camY + SHADOW_FAR),
 				0.0F, 0.0F, 0.0F, 1.0F);
 		org.joml.Matrix4f shadowProj = new org.joml.Matrix4f().setOrtho(
-				-SHADOW_RADIUS, SHADOW_RADIUS, -SHADOW_RADIUS, SHADOW_RADIUS, 0.0F, SHADOW_FAR);
+				-SHADOW_RADIUS, SHADOW_RADIUS, -SHADOW_RADIUS, SHADOW_RADIUS, 0.0F, SHADOW_FAR + SHADOW_FAR_BELOW);
 		org.joml.Matrix4f shadowViewProj = (org.joml.Matrix4f) shadowProj.mul(shadowView);
 
-		try (var view = this.terrainPassUbo.slice().map(true, false))
+		this.terrainPassIdx = (this.terrainPassIdx + 1) % 3;
+		GpuBuffer terrainBuf = this.terrainPassRing[this.terrainPassIdx];
+		try (var view = terrainBuf.slice().map(true, false))
 		{
 			ByteBuffer data = view.data();
 			writeMatrix(data, 0, shadowViewProj);
@@ -627,22 +654,23 @@ public class CloudsDrawPipeline implements AutoCloseable
 		GpuTextureView colorView = main.getColorTextureView();
 		GpuTextureView depthView = main.getDepthTextureView();
 
-		GpuBufferSlice transforms = this.ownTransforms.writeTransform(viewMatrix);
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
-		// Color-only pass: the scene depth is sampled as a texture, NOT attached as
-		// the depth target -- attaching and sampling the same depth image in one pass
-		// is a layout hazard and made the samples read back 0 (verified with the
-		// blue/magenta on-screen diagnostics, see PORTING.md).
-		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.terrainShadows", colorView, Optional.empty());
+		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.terrainShadows", colorView, Optional.empty(), depthView, OptionalDouble.empty());
 		pass.setPipeline(this.terrainPipeline);
 		RenderSystem.bindDefaultUniforms(pass);
-		pass.setUniform("DynamicTransforms", transforms);
-		pass.setUniform("ShadowPass", this.terrainPassUbo);
+		pass.setUniform("DynamicTransforms", this.ownTransforms.writeTransform(viewMatrix));
+		pass.setUniform("ShadowPass", terrainBuf);
 		pass.bindTexture("DepthSampler", depthView, this.nearestSampler);
 		pass.bindTexture("ShadowMap", this.shadowTarget.getDepthTextureView(), this.nearestSampler);
 		pass.setVertexBuffer(0, this.triangleBuffer.slice());
 		pass.draw(3, 1, 0, 0);
 		pass.close();
+	}
+
+	private static ByteBuffer zeros(int size)
+	{
+		// position 0 / limit size: GpuDevice rejects empty sources (position == limit).
+		return ByteBuffer.allocateDirect(size).order(ByteOrder.nativeOrder());
 	}
 
 	/** Writes a column-major joml matrix into a std140 slot at the given byte offset. */
@@ -659,6 +687,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 	// re-written by vanilla passes in between (zeroing ModelViewMat / ColorModulator, which
 	// made every cloud fragment vanish). A private ring with fences is safe across the gap.
 	private final net.minecraft.client.renderer.DynamicUniforms ownTransforms = new net.minecraft.client.renderer.DynamicUniforms();
+
 
 	@Override
 
@@ -677,8 +706,10 @@ public class CloudsDrawPipeline implements AutoCloseable
 		this.triangleBuffer.close();
 		this.stormFogUbo.close();
 		this.shadowTarget.destroyBuffers();
-		this.shadowMatricesUbo.close();
-		this.terrainPassUbo.close();
+		for (GpuBuffer b : this.shadowMatricesRing)
+			b.close();
+		for (GpuBuffer b : this.terrainPassRing)
+			b.close();
 		this.nearestSampler.close();
 		this.quadVertexBuffer.close();
 		this.quadIndexBuffer.close();
