@@ -41,9 +41,11 @@ public final class DevShot
 	private static boolean done;
 	private static int framesLeft;
 	private static float savedXRot;
+	private static float savedYRot;
 	private static boolean saved;
 	private static boolean testSpawned;
 	private static float shotAngle = -90.0F; // straight up by default
+	private static float shotYaw = Float.NaN; // NaN = keep current yaw
 
 	private DevShot() {}
 
@@ -93,6 +95,10 @@ public final class DevShot
 			// formations in the densest cells (positions in cloud units, 1 = 8 blocks).
 			float px = (float) (mc.player.getX() / 8.0);
 			float pz = (float) (mc.player.getZ() / 8.0);
+			LOGGER.info("[DEVSHOT] player at blocks {}x{}x{}, camera at {}x{}x{}",
+				mc.player.getBlockX(), mc.player.getBlockY(), mc.player.getBlockZ(),
+				mc.gameRenderer.mainCamera().position().x, mc.gameRenderer.mainCamera().position().y,
+				mc.gameRenderer.mainCamera().position().z);
 			float[] candX = new float[] { 0.0F, 10.0F, -10.0F, 20.0F, -20.0F, 14.0F, -14.0F, 26.0F };
 			float[] candZ = new float[] { 0.0F, 10.0F, -10.0F, -20.0F, 20.0F, 14.0F, -14.0F, -26.0F };
 			List<CpuCloudGenerator.CloudLayerGroup> groups = SimpleCloudsRenderer.dataDrivenGroups();
@@ -119,6 +125,29 @@ public final class DevShot
 			{
 				LOGGER.warn("[DEVSHOT] no renderable cloud type found");
 				return;
+			}
+			// A ground-level bank (stratus: layers 0..32 cloud units = world Y 0..256)
+			// at the player's position is the deterministic occlusion test: everything
+			// below the terrain surface MUST be hidden by the terrain (depth test).
+			// With the old null depth state it drew as white boxes through the ground.
+			for (CloudType t : types)
+			{
+				if (!t.id().toString().endsWith("stratus"))
+					continue;
+				for (int ci = 0; ci < candX.length; ci++)
+				{
+					int count = probeDensity(groups, typeToGroup, t, px + candX[ci], pz + candZ[ci]);
+					if (count > 0)
+					{
+						CloudRegion r = new CloudRegion(t.id(), new Vec2(0.001F, 0.0F), 0.0F, 0.0F,
+							px + candX[ci], pz + candZ[ci], 20.0F, 0.0F, 1.2F, 24000, 10, 9);
+						manager.getCloudGenerator().addCloud(r, CloudGenerator.Order.USE_WEIGHT);
+						LOGGER.info("[DEVSHOT] spawned ground-bank {} at cloud units {}x{} (probe density {})",
+							t.id(), px + candX[ci], pz + candZ[ci], count);
+						break;
+					}
+				}
+				break;
 			}
 			for (int spawned = 0; spawned < 3; spawned++)
 			{
@@ -188,6 +217,8 @@ public final class DevShot
 				framesLeft = Integer.parseInt(parts[0]);
 				if (parts.length > 1)
 					shotAngle = Float.parseFloat(parts[1]); // second token: camera xRot
+					if (parts.length > 2)
+						shotYaw = Float.parseFloat(parts[2]); // third token: camera yaw
 			}
 			catch (Exception e) { framesLeft = 240; }
 			LOGGER.info("[DEVSHOT] requested: capturing after {} frames", framesLeft);
@@ -197,7 +228,7 @@ public final class DevShot
 		// Verification helper (automated loop only, i.e. devshot.request existed): the
 		// world's formations may have drifted far outside the render band, so make sure
 		// one exists above the player for the screenshot to verify cloud rendering.
-		if (!testSpawned && framesLeft <= 235)
+		if (!testSpawned && framesLeft <= 230) // spawn early: band regen needs ~40 frames
 		{
 			testSpawned = true;
 			spawnTestFormation(mc);
@@ -205,12 +236,16 @@ public final class DevShot
 		if (!saved)
 		{
 			savedXRot = mc.player.getXRot();
+			savedYRot = mc.player.getYRot();
 			saved = true;
 		}
 		mc.player.setXRot(shotAngle);
+		if (!Float.isNaN(shotYaw))
+			mc.player.setYRot(shotYaw);
 		if (--framesLeft > 0)
 			return;
 		mc.player.setXRot(savedXRot); // restore the user's view
+		mc.player.setYRot(savedYRot);
 		done = true;
 		Screenshot.grab(mc.gameDirectory, "devshot.png", mc.gameRenderer.mainRenderTarget(), 1,
 				message -> LOGGER.info("[DEVSHOT] saved screenshots/devshot.png ({})", message.getString()));

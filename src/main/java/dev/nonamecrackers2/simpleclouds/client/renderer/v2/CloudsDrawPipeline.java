@@ -142,6 +142,13 @@ public class CloudsDrawPipeline implements AutoCloseable
 				.withVertexBinding(1, CloudVertexFormat.INSTANCE_FORMAT)
 				.withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
 				.withCull(false)
+				// 26.2 uses an inverted (reversed) depth buffer: the scene default
+				// (GREATER_THAN_OR_EQUAL = "closer or equal", writeDepth=true) is what
+				// every vanilla opaque pipeline declares. We draw AFTER the terrain into
+				// the main target, so without an explicit state the pipeline defaults to
+				// NULL depth state and GlCommandEncoder _disableDepthTest()s -- clouds
+				// rendered through all terrain (Jan's 2026-09-12 screenshot).
+				.withDepthStencilState(DepthStencilState.DEFAULT)
 				.build();
 
 		// 26.2 previewer pass: the main clouds shader (snippet pipeline) into the
@@ -183,7 +190,10 @@ public class CloudsDrawPipeline implements AutoCloseable
 				.withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
 				.withCull(false)
 				.withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT))
-				.withDepthStencilState(new DepthStencilState(CompareOp.LESS_THAN, false))
+				// GREATER_THAN_OR_EQUAL = the inverted-Z "closer or equal" test: LESS_THAN
+				// (normal-Z) can never pass against a cleared (far=0.0) depth, which would
+				// make every transparent face in open air invisible.
+				.withDepthStencilState(new DepthStencilState(CompareOp.GREATER_THAN_OR_EQUAL, false))
 				.build();
 
 		// Storm fog overlay: fullscreen triangle, blended, no depth test (drawn last,
@@ -231,7 +241,8 @@ public class CloudsDrawPipeline implements AutoCloseable
 				.withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
 				.withCull(false)
 				.withColorTargetState(new ColorTargetState(Optional.empty(), GpuFormat.RGBA8_UNORM, 0))
-				.withDepthStencilState(new DepthStencilState(CompareOp.LESS_THAN, true))
+				// Inverted-Z closest-to-light wins (same convention as the scene).
+				.withDepthStencilState(new DepthStencilState(CompareOp.GREATER_THAN_OR_EQUAL, true))
 				.build();
 
 		BindGroupLayout terrainBgl = BindGroupLayout.builder()

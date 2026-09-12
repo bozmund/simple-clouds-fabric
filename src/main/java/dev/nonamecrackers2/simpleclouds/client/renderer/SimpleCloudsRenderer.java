@@ -600,8 +600,9 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 			}
 			this.drawPipeline.setInstances(opaqueOut, totalOpaque);
 			this.drawPipeline.setTransparencyInstances(transpOut, transpOut == null ? 0 : totalTransp);
-			LOGGER.info("Simple Clouds clouds: {} bands -> {} opaque / {} transparent instances",
-					this.bandCaches.size(), totalOpaque, transpOut == null ? 0 : totalTransp);
+			LOGGER.info("Simple Clouds clouds: {} bands -> {} opaque / {} transparent instances (cam {}x{}x{}, cell {}x{}, grid {}x{})",
+					this.bandCaches.size(), totalOpaque, transpOut == null ? 0 : totalTransp,
+					camX, camY, camZ, cx, cz, bands, bands);
 		}
 
 		// SPIKE (SPIKE-GPU.md): original cube_mesh.comp via raw OpenGL (OFF — see
