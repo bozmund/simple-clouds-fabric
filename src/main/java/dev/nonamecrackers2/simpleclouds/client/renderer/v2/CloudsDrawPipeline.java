@@ -93,7 +93,9 @@ public class CloudsDrawPipeline implements AutoCloseable
 	private static final float SHADOW_RADIUS = 256.0F; // world blocks XZ around the camera (512x512 field on a 256x256 map: 2 blocks/texel)
 	private static final float SHADOW_FAR = 600.0F;
 	private static final float SHADOW_BIAS = 0.005F;
-	private static final float SHADOW_INTENSITY = 0.45F;
+	private static final float SHADOW_INTENSITY = 0.7F;
+	/** A/B test switch: false = skip the terrain-shadow pass entirely. */
+	public static boolean TERRAIN_SHADOWS_ENABLED = true;
 	private static final Identifier CLOUDS_SHADOW_LOCATION = SimpleCloudsMod.id("core/clouds_shadow");
 	private static final Identifier TERRAIN_SHADOWS_LOCATION = SimpleCloudsMod.id("core/terrain_shadows");
 
@@ -241,8 +243,10 @@ public class CloudsDrawPipeline implements AutoCloseable
 				.withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
 				.withCull(false)
 				.withColorTargetState(new ColorTargetState(Optional.empty(), GpuFormat.RGBA8_UNORM, 0))
-				// Inverted-Z closest-to-light wins (same convention as the scene).
-				.withDepthStencilState(new DepthStencilState(CompareOp.GREATER_THAN_OR_EQUAL, true))
+				// Standard-Z ortho (joml setOrtho): the light sits at window depth ~0.0 and
+				// the map clears to 1.0, so the cloud CLOSEST to the light wins with
+				// LESS_THAN (the scene/inverted-Z default would reject every fragment).
+				.withDepthStencilState(new DepthStencilState(CompareOp.LESS_THAN, true))
 				.build();
 
 		BindGroupLayout terrainBgl = BindGroupLayout.builder()
@@ -542,7 +546,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 	 * Renders the cloud instances into the top-down ortho shadow depth target
 	 * (cleared to 1.0; a cloud writes its window-space depth per XZ texel).
 	 */
-	public void renderCloudShadowMap(double camX, double camZ)
+	public void renderCloudShadowMap(double camX, double camY, double camZ)
 	{
 		if (this.instanceBuffer == null || this.instanceCount == 0)
 		{
@@ -552,10 +556,15 @@ public class CloudsDrawPipeline implements AutoCloseable
 
 		// Top-down ortho view: world (camX, 0, camZ) origin, looking straight down,
 		// view x = world X, view y = world Z (north), view z = -world Y.
+		// Light volume: light at the TOP (SHADOW_FAR above the camera). joml's setOrtho
+		// looks down -Z, so viewZ = -(distance from light) = worldY - (camY+SHADOW_FAR) ∈
+		// [-SHADOW_FAR, 0]: light at viewZ=0 (window depth ~0.0), camera plane at
+		// viewZ=-SHADOW_FAR (~1.0). Map clears to 1.0; LESS_THAN keeps the cloud
+		// CLOSEST to the light (see shadow pipeline depth state).
 		org.joml.Matrix4f shadowView = new org.joml.Matrix4f().set(
 				1.0F, 0.0F, 0.0F, (float) -camX,
 				0.0F, 0.0F, 1.0F, (float) -camZ,
-				0.0F, -1.0F, 0.0F, 0.0F,
+				0.0F, 1.0F, 0.0F, (float) -(camY + SHADOW_FAR),
 				0.0F, 0.0F, 0.0F, 1.0F);
 		org.joml.Matrix4f shadowProj = new org.joml.Matrix4f().setOrtho(
 				-SHADOW_RADIUS, SHADOW_RADIUS, -SHADOW_RADIUS, SHADOW_RADIUS, 0.0F, SHADOW_FAR);
@@ -585,15 +594,22 @@ public class CloudsDrawPipeline implements AutoCloseable
 	 * Fullscreen terrain cloud-shadow pass: reconstructs world positions from the
 	 * scene depth and darkens fragments under the cloud shadow map.
 	 */
-	public void drawTerrainShadows(Matrix4f viewMatrix, double camX, double camZ)
+	public void drawTerrainShadows(Matrix4f viewMatrix, double camX, double camY, double camZ)
 	{
+		if (!TERRAIN_SHADOWS_ENABLED)
+			return;
 		if (!this.shadowRenderedThisFrame)
 			return;
 
+		// Light volume: light at the TOP (SHADOW_FAR above the camera). joml's setOrtho
+		// looks down -Z, so viewZ = -(distance from light) = worldY - (camY+SHADOW_FAR) ∈
+		// [-SHADOW_FAR, 0]: light at viewZ=0 (window depth ~0.0), camera plane at
+		// viewZ=-SHADOW_FAR (~1.0). Map clears to 1.0; LESS_THAN keeps the cloud
+		// CLOSEST to the light (see shadow pipeline depth state).
 		org.joml.Matrix4f shadowView = new org.joml.Matrix4f().set(
 				1.0F, 0.0F, 0.0F, (float) -camX,
 				0.0F, 0.0F, 1.0F, (float) -camZ,
-				0.0F, -1.0F, 0.0F, 0.0F,
+				0.0F, 1.0F, 0.0F, (float) -(camY + SHADOW_FAR),
 				0.0F, 0.0F, 0.0F, 1.0F);
 		org.joml.Matrix4f shadowProj = new org.joml.Matrix4f().setOrtho(
 				-SHADOW_RADIUS, SHADOW_RADIUS, -SHADOW_RADIUS, SHADOW_RADIUS, 0.0F, SHADOW_FAR);

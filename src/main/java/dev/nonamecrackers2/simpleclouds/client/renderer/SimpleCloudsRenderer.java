@@ -34,6 +34,7 @@ import dev.nonamecrackers2.simpleclouds.client.renderer.pipeline.CloudsRenderPip
 import dev.nonamecrackers2.simpleclouds.client.renderer.settings.CloudsRendererSettings;
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudsDrawPipeline;
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.CpuCloudGenerator;
+import dev.nonamecrackers2.simpleclouds.common.world.CloudManager;
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.GpuCloudGeneration;
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.PreviewDrawPipeline;
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.RainDrawPipeline;
@@ -298,9 +299,9 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	// Full-region generation cache: per-band instance data keyed by band origin.
 	// A band regenerates only when its region signature or the data-driven group set
 	// changes; at most one band per frame (see generateAndDrawClouds).
-	private final java.util.Map<Long, BandData> bandCaches = new java.util.HashMap<>();
+	private final java.util.Map<BandCoord, BandData> bandCaches = new java.util.HashMap<>();
 	private int cacheGroupsHash = Integer.MIN_VALUE;
-	private long lastBandGridKey;
+	private String lastBandGridKey;
 	private boolean instanceBuffersDirty = true;
 
 	/** Generated instance data for one 32x32-unit (256x256 block) band. */
@@ -315,14 +316,16 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		float stormCoverage;
 	}
 
-	private static long bandKey(int x0, int z0)
+	/** Band identity: XZ origin plus the quantized volume base (clouds follow the camera in Y). */
+	private record BandCoord(int x0, int z0, int baseU)
 	{
-		return ((long) x0 << 32) ^ ((long) z0 & 0xFFFFFFFFL);
 	}
 
-	// Band geometry (cloud units): one 32x32-unit band, fixed Y 0..64.
+	// Band geometry (cloud units): one 32x32-unit band; Y = 256 units (2048 blocks),
+	// the original's VERTICAL_CHUNK_SPAN * CHUNK_SIZE, camera-anchored (see below).
 	private static final int BAND_CELL = 32;
-	private static final int BAND_Y1 = 64;
+	private static final int BAND_Y1 = 256;
+	private static final int BAND_Y_STEP = 16; // baseU quantization (128-block steps)
 	private static final float BAND_SCALE = 8.0F;
 
 	// Off-thread band generation: a full band (32x64x32 cells x every noise layer)
@@ -333,18 +336,18 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	// thread boundary is safe.
 	private final java.util.concurrent.LinkedBlockingQueue<BandJob> bandQueue = new java.util.concurrent.LinkedBlockingQueue<>();
 	private final java.util.concurrent.ConcurrentLinkedQueue<BandResult> completedBands = new java.util.concurrent.ConcurrentLinkedQueue<>();
-	private final java.util.Set<Long> pendingBands = java.util.concurrent.ConcurrentHashMap.newKeySet();
+	private final java.util.Set<BandCoord> pendingBands = java.util.concurrent.ConcurrentHashMap.newKeySet();
 	@Nullable
 	private java.util.concurrent.ExecutorService bandWorker;
 
 	/** One off-thread band generation request (immutable inputs). */
-	private record BandJob(long key, int x0, int z0, List<CpuCloudGenerator.CloudLayerGroup> groups,
+	private record BandJob(BandCoord coord, int x0, int z0, List<CpuCloudGenerator.CloudLayerGroup> groups,
 			List<CpuCloudGenerator.RegionMask> regions, long regionSig, int groupsHash, int camGridY)
 	{
 	}
 
-	/** A finished band generation (key = bandKey(x0, z0)). */
-	private record BandResult(long key, BandData data)
+	/** A finished band generation. */
+	private record BandResult(BandCoord coord, BandData data)
 	{
 	}
 
@@ -381,7 +384,8 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 					float[] stormCoverage = new float[1];
 					long t0 = System.nanoTime();
 					java.nio.ByteBuffer[] data = generator.generate(
-							job.x0(), 0, job.z0(), job.x0() + BAND_CELL, BAND_Y1, job.z0() + BAND_CELL,
+							job.x0(), job.coord().baseU(), job.z0(), job.x0() + BAND_CELL,
+							job.coord().baseU() + BAND_Y1, job.z0() + BAND_CELL,
 							BAND_SCALE, 0.0F, 0.0F, 0.0F, 0.0F, opaqueCount, transparentCount, job.camGridY(), stormCoverage);
 					BandData d = new BandData();
 					d.regionSig = job.regionSig();
@@ -391,9 +395,9 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 					d.transparent = data[1];
 					d.transparentCount = (int) transparentCount[0];
 					d.stormCoverage = stormCoverage[0];
-					this.completedBands.add(new BandResult(job.key(), d));
-					LOGGER.info("Simple Clouds clouds: band {}x{} generated off-thread, {} formations, {} opaque / {} transparent instances (CPU {} us)",
-							job.x0(), job.z0(), job.regions().size(), d.opaqueCount, d.transparentCount, (System.nanoTime() - t0) / 1000L);
+					this.completedBands.add(new BandResult(job.coord(), d));
+					LOGGER.info("Simple Clouds clouds: band {}x{} (baseY {}) generated off-thread, {} formations, {} opaque / {} transparent instances (CPU {} us)",
+							job.x0(), job.z0(), job.coord().baseU(), job.regions().size(), d.opaqueCount, d.transparentCount, (System.nanoTime() - t0) / 1000L);
 
 				}
 				catch (Throwable t)
@@ -404,7 +408,7 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 				{
 					// Release the pending slot even on failure so the band can be
 					// re-requested next frame.
-					this.pendingBands.remove(job.key());
+					this.pendingBands.remove(job.coord());
 				}
 			}
 		}
@@ -461,13 +465,20 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		final int cell = 32;
 		final int cellBlocks = (int) (cell * scale);
 		int camGridY = Mth.floor(camY / scale);
-		int y0 = 0;
-		int y1 = 64;
+		// Parity with 1.20.1: the cloud volume is anchored cloudHeight (config,
+		// default 128 blocks) BELOW the camera, so it follows the player's altitude.
+		// Quantized to BAND_Y_STEP units (128-block steps) so the per-band cache stays
+		// valid while the player moves vertically within a step.
+		int cloudHeight = 128;
+		var cloudManager = CloudManager.get(Minecraft.getInstance().level);
+		if (cloudManager != null)
+			cloudHeight = cloudManager.getCloudHeight();
+		int baseU = Mth.floor((camY - (double) cloudHeight) / scale / (double) BAND_Y_STEP) * BAND_Y_STEP;
 		int renderDistance = Mth.clamp(this.mc.options.renderDistance().get(), 2, 64);
 		int bands = Mth.clamp(Mth.ceil(renderDistance * 16.0 / (double) cellBlocks), 2, 3);
 		int cx = Mth.floor(camX / cellBlocks);
 		int cz = Mth.floor(camZ / cellBlocks);
-		long gridKey = ((long) cx << 32) ^ ((long) cz << 8) ^ (long) bands;
+		String gridKey = cx + "," + cz + "," + bands + "," + baseU;
 
 		List<CpuCloudGenerator.CloudLayerGroup> groups = dataDrivenGroups();
 		int groupsHash = groups.hashCode();
@@ -519,7 +530,7 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 			BandData d = result.data();
 			d.regionSig = regionSig;
 			d.groupsHash = groupsHash;
-			this.bandCaches.put(result.key(), d);
+			this.bandCaches.put(result.coord(), d);
 			this.instanceBuffersDirty = true;
 		}
 
@@ -529,7 +540,7 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		{
 			int x0 = (int) c[0] * cell;
 			int z0 = (int) c[1] * cell;
-			long key = bandKey(x0, z0);
+			BandCoord key = new BandCoord(x0, z0, baseU);
 			BandData d = this.bandCaches.get(key);
 			boolean stale = d == null || d.regionSig != regionSig || d.groupsHash != groupsHash || groupsChanged;
 			if (stale && this.pendingBands.add(key))
@@ -540,7 +551,7 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		int totalOpaque = 0, totalTransp = 0;
 		for (long[] c : cells)
 		{
-			BandData d = this.bandCaches.get(bandKey((int) c[0] * cell, (int) c[1] * cell));
+			BandData d = this.bandCaches.get(new BandCoord((int) c[0] * cell, (int) c[1] * cell, baseU));
 			if (d != null)
 			{
 				totalOpaque += d.opaqueCount;
@@ -552,9 +563,9 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		// Evict bands that left the grid (keeps the map bounded to the grid size).
 		if (bandSetChanged)
 		{
-			java.util.Set<Long> keep = new java.util.HashSet<>(cells.size());
+			java.util.Set<BandCoord> keep = new java.util.HashSet<>(cells.size());
 			for (long[] c : cells)
-				keep.add(bandKey((int) c[0] * cell, (int) c[1] * cell));
+				keep.add(new BandCoord((int) c[0] * cell, (int) c[1] * cell, baseU));
 			this.bandCaches.keySet().retainAll(keep);
 			this.instanceBuffersDirty = true;
 		}
@@ -571,7 +582,7 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 				opaqueOut = java.nio.ByteBuffer.allocateDirect(totalOpaque * 24).order(java.nio.ByteOrder.nativeOrder());
 				for (long[] c : cells)
 				{
-					BandData d = this.bandCaches.get(bandKey((int) c[0] * cell, (int) c[1] * cell));
+					BandData d = this.bandCaches.get(new BandCoord((int) c[0] * cell, (int) c[1] * cell, baseU));
 					if (d != null && d.opaqueCount > 0)
 					{
 						d.opaque.rewind();
@@ -589,7 +600,7 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 				transpOut = java.nio.ByteBuffer.allocateDirect(totalTransp * 28).order(java.nio.ByteOrder.nativeOrder());
 				for (long[] c : cells)
 				{
-					BandData d = this.bandCaches.get(bandKey((int) c[0] * cell, (int) c[1] * cell));
+					BandData d = this.bandCaches.get(new BandCoord((int) c[0] * cell, (int) c[1] * cell, baseU));
 					if (d != null && d.transparentCount > 0)
 					{
 						d.transparent.rewind();
@@ -634,7 +645,7 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 			if (this.spikeReady && !groups.isEmpty())
 			{
 				int bandCenterX = x0 + cell / 2, bandCenterZ = z0 + cell / 2;
-				int gpuCount = this.spike.generate(x0, y0, z0, x0 + cell, y1, z0 + cell,
+				int gpuCount = this.spike.generate(x0, baseU, z0, x0 + cell, baseU + BAND_Y1, z0 + cell,
 						bandCenterX, 32.0F, bandCenterZ, 8.0F, 16.0F,
 						groups.get(0).layers(), groups.get(0).transparencyFade());
 				// Only trust the GPU result when it actually produced instances; an
@@ -644,7 +655,7 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 					this.drawPipeline.setInstances(this.spike.instanceData(), gpuCount);
 					LOGGER.info("Spike timing: CPU {} us vs GPU {} us (dispatch+readback), band {}x{}x{} units, GPU {} instances",
 							this.lastCpuGenerateNanos / 1000L, this.spike.lastGenerateNanos() / 1000L,
-							cell, y1, cell, gpuCount);
+							cell, BAND_Y1, cell, gpuCount);
 				}
 			}
 		}
@@ -669,8 +680,8 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		// Cloud shadows (26.2 slice): top-down ortho depth pass over the cloud
 		// instances, then a fullscreen terrain-shadow pass (see CloudShadowPass
 		// section of CloudsDrawPipeline and PORTING.md).
-		this.drawPipeline.renderCloudShadowMap(camX, camZ);
-		this.drawPipeline.drawTerrainShadows(view, camX, camZ);
+		this.drawPipeline.renderCloudShadowMap(camX, camY, camZ);
+		this.drawPipeline.drawTerrainShadows(view, camX, camY, camZ);
 	}
 
 	// ---------------------------------------------------------------------

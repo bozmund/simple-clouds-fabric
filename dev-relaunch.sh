@@ -37,7 +37,8 @@ sleep 3
 #    concurrent dev client impossible.
 mkdir -p run/screenshots
 rm -f "$DEVSHOT"
-echo "$FRAMES ${DEVSHOT_ANGLE:-} ${DEVSHOT_YAW:-}" | sed 's/ *$//g; s/  */ /g' > "$REQUEST"   # optional tokens: camera xRot (default -90), yaw
+TOKENS="${DEVSHOT_ANGLE:-} ${DEVSHOT_YAW:-} ${DEVSHOT_EXTRA:-}"; [ -n "${DEVSHOT_NOSHADOW:-}" ] && TOKENS="$TOKENS NOSHADOW"
+echo "$FRAMES $TOKENS" | sed 's/ *$//g; s/  */ /g' > "$REQUEST"   # optional tokens: camera xRot (default -90), yaw, NOSHADOW
 T0=$(date +%s)
 systemd-run --user --unit="$UNIT" --collect --quiet --property=WorkingDirectory="$PROJECT" \
   bash -c 'while IFS= read -r -d "" kv; do export "$kv"; done < "$1"; exec ./gradlew runClient --console=plain --args="--quickPlaySingleplayer CloudClean" > "$2" 2>&1' _ "$ENVF" "$OUT" \

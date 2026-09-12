@@ -36,14 +36,17 @@ void main()
 	if (d <= 0.0001 || d >= 0.9999)
 		discard; // sky (0.0 clear) or fully-far geometry: nothing to shadow
 
+	// Generic perspective reconstruction (works for any projection layout, incl.
+	// 26.2's joml setPerspective with its isZZeroToOne inverted-Z matrix):
+	//   ndcZ = (P22*zv + P23) / (P32*zv + P33)
+	//   zv   = (P23 - ndcZ*P33) / (ndcZ*P32 - P22)
+	//   clip.w = P32*zv + P33,  vx = ndcX*clip.w/P00 (P00, P11 diagonal).
+	float ndcX = texCoord.x * 2.0 - 1.0;
+	float ndcY = texCoord.y * 2.0 - 1.0;
 	float ndcZ = d * 2.0 - 1.0;
-	float p22 = ProjMat[2][2];
-	float p32 = ProjMat[3][2];
-	float zv = -p32 / (ndcZ + p22);
-	vec3 viewPos = vec3(
-			-(texCoord.x * 2.0 - 1.0) * zv / ProjMat[0][0],
-			-(texCoord.y * 2.0 - 1.0) * zv / ProjMat[1][1],
-			zv);
+	float zv = (ProjMat[2][3] - ndcZ * ProjMat[3][3]) / (ndcZ * ProjMat[3][2] - ProjMat[2][2]);
+	float clipW = ProjMat[3][2] * zv + ProjMat[3][3];
+	vec3 viewPos = vec3(ndcX * clipW / ProjMat[0][0], ndcY * clipW / ProjMat[1][1], zv);
 	vec4 worldPos = inverse(ModelViewMat) * vec4(viewPos, 1.0);
 
 	// Ortho shadow lookup (w == 1).

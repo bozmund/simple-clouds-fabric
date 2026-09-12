@@ -100,12 +100,19 @@ public final class CpuCloudGenerator
 	 */
 	public ByteBuffer[] generate(int x0, int y0, int z0, int x1, int y1, int z1, float scale, float scrollX, float scrollY, float scrollZ, float wiggle, float[] outOpaqueCount, float[] outTransparentCount, int cameraGridY, float[] outStormCoverage)
 	{
+		// Parity with 1.20.1: the noise volume is anchored 128 blocks (the cloudHeight
+		// config) BELOW the camera and spans 256 units (VERTICAL_CHUNK_SPAN * CHUNK_SIZE).
+		// Layer heights/offsets and the noise Y coordinate are RELATIVE to the volume
+		// base (y0), so clouds follow the player's altitude. x/z stay world-fixed.
+		this.yBase = y0;
 		int xSpan = x1 - x0, ySpan = y1 - y0, zSpan = z1 - z0;
 		int cells = xSpan * ySpan * zSpan;
-		ByteBuffer opaqueBuffer = ByteBuffer.allocateDirect(Math.max(256, cells * 6 * CloudVertexFormat.BYTES_PER_INSTANCE)).order(ByteOrder.nativeOrder());
+		// Growable scratch buffers: only a small fraction of cells is filled, so start
+		// small (a full 256-unit band would otherwise preallocate ~80 MB) and grow on demand.
+		ByteBuffer opaqueBuffer = ByteBuffer.allocateDirect(Math.max(256, cells / 64 * 6 * CloudVertexFormat.BYTES_PER_INSTANCE)).order(ByteOrder.nativeOrder());
 		// A cell can emit up to one transparent cube per group (groups overlap in Y), so the
 		// one-cube-per-cell capacity is a lower bound; grow on demand.
-		ByteBuffer transparentBuffer = ByteBuffer.allocateDirect(Math.max(256, cells * 6 * CloudVertexFormat.BYTES_PER_INSTANCE_ALPHA)).order(ByteOrder.nativeOrder());
+		ByteBuffer transparentBuffer = ByteBuffer.allocateDirect(Math.max(256, cells / 64 * 6 * CloudVertexFormat.BYTES_PER_INSTANCE_ALPHA)).order(ByteOrder.nativeOrder());
 		int opaqueWritten = 0;
 		int transparentWritten = 0;
 		float[] gradient = new float[3];
@@ -191,6 +198,9 @@ public final class CpuCloudGenerator
 					float brightness = 1.0F; // vertical slice: no storm darkening yet
 					if (anyOpaque)
 					{
+						int needed = 6 * CloudVertexFormat.BYTES_PER_INSTANCE;
+						if (opaqueWritten + needed > opaqueBuffer.capacity())
+							opaqueBuffer = grow(opaqueBuffer, opaqueWritten, opaqueBuffer.capacity() * 2);
 						// Opaque cube (port of createCube): one per cell even when several
 						// groups are opaque (identical geometry; the original emitted one
 						// cube per group, which just overlapped).
@@ -281,6 +291,9 @@ public final class CpuCloudGenerator
 		return result;
 	}
 
+	/** Absolute grid Y of the current volume base; noise Y is sampled relative to it. */
+	private int yBase;
+
 	/** Combined layered noise for one group at a voxel position (port of getNoiseForLayerGroup). */
 	private float sampleGroup(CloudLayerGroup group, int x, int y, int z, float scale, float scrollX, float scrollY, float scrollZ, float wiggle, float[] gradient)
 	{
@@ -308,11 +321,14 @@ public final class CpuCloudGenerator
 	/** Single-layer noise (port of getNoiseForLayer). */
 	private float sampleLayer(NoiseLayer layer, int x, int y, int z, float scale, float scrollX, float scrollY, float scrollZ, float wiggle, float[] gradient)
 	{
-		if (y < layer.heightOffset() || y > layer.heightOffset() + layer.height() - 1)
+		// y arrives in ABSOLUTE grid units; the layer ranges and the noise Y are
+		// relative to the volume base (camera-anchored, see generate()).
+		int ly = y - this.yBase;
+		if (ly < layer.heightOffset() || ly > layer.heightOffset() + layer.height() - 1)
 			return -10000.0F;
 
 		float sx = x / layer.scaleX();
-		float sy = y / layer.scaleY();
+		float sy = ly / layer.scaleY();
 		float sz = z / layer.scaleZ();
 		float px = sx + scrollX / layer.scaleX();
 		float py = sy + scrollY / layer.scaleY();
@@ -321,7 +337,7 @@ public final class CpuCloudGenerator
 		float noise = PsrdNoise.noise(px, py, pz, TILE_PERIOD_X, TILE_PERIOD_Y, TILE_PERIOD_Z, wiggle, gradient)
 				* layer.valueScale() + layer.valueOffset();
 
-		float heightDelta = y - layer.heightOffset();
+		float heightDelta = ly - layer.heightOffset();
 		noise -= 1.0F - clamp(heightDelta / layer.fadeDistance(), 0.0F, 1.0F);
 		noise -= 1.0F - clamp((layer.height() - heightDelta) / layer.fadeDistance(), 0.0F, 1.0F);
 		return noise;

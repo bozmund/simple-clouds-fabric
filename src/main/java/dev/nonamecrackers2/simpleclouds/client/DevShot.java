@@ -12,6 +12,7 @@ import dev.nonamecrackers2.simpleclouds.client.cloud.ClientSideCloudTypeManager;
 import dev.nonamecrackers2.simpleclouds.client.renderer.SimpleCloudsRenderer;
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.CpuCloudGenerator;
 import dev.nonamecrackers2.simpleclouds.client.world.ClientCloudManager;
+import dev.nonamecrackers2.simpleclouds.api.common.cloud.weather.WeatherType;
 import dev.nonamecrackers2.simpleclouds.common.cloud.CloudType;
 import dev.nonamecrackers2.simpleclouds.common.cloud.region.CloudRegion;
 import dev.nonamecrackers2.simpleclouds.common.cloud.spawning.CloudGenerator;
@@ -46,37 +47,44 @@ public final class DevShot
 	private static boolean testSpawned;
 	private static float shotAngle = -90.0F; // straight up by default
 	private static float shotYaw = Float.NaN; // NaN = keep current yaw
+	private static boolean shadowTest; // SHADOWTEST token: deterministic cloud-over-terrain scene
 
 	private DevShot() {}
 
-	private static void spawnTestFormation(Minecraft mc)
+	/** Forces the overworld WorldClock to NOON (the save's time can be night after SIGKILL exits). */
+	private static void forceNoon(Minecraft mc)
 	{
+		IntegratedServer server = mc.getSingleplayerServer();
+		if (server == null)
+		{
+			LOGGER.info("[DEVSHOT] no integrated server (not singleplayer?); skipping clock override");
+			return;
+		}
+		ServerClockManager clock = server.clockManager();
+		if (clock == null)
+		{
+			LOGGER.info("[DEVSHOT] no ServerClockManager in the overworld data storage; skipping clock override");
+			return;
+		}
 		try
 		{
-			// The save's world time can be night (SIGKILL exits don't save it); force
-			// NOON on the integrated server so the screenshot can actually show clouds.
-			// 26.2 replaced dayTime with the data-driven WorldClock system.
-			IntegratedServer server = mc.getSingleplayerServer();
-			if (server == null)
-			{
-				LOGGER.info("[DEVSHOT] no integrated server (not singleplayer?); skipping clock override");
-			}
-			else
-			{
-				ServerClockManager clock = server.clockManager();
-				if (clock == null)
-				{
-					LOGGER.info("[DEVSHOT] no ServerClockManager in the overworld data storage; skipping clock override");
-				}
-				else
-				{
-					net.minecraft.core.Holder<net.minecraft.world.clock.WorldClock> holder =
-							server.registryAccess().lookupOrThrow(Registries.WORLD_CLOCK).getOrThrow(WorldClocks.OVERWORLD);
-					if (!clock.moveToTimeMarker(holder, ClockTimeMarkers.NOON))
-						clock.setTotalTicks(holder, 6000L);
-					LOGGER.info("[DEVSHOT] moved the overworld clock to NOON for the screenshot");
-				}
-			}
+			net.minecraft.core.Holder<net.minecraft.world.clock.WorldClock> holder =
+					server.registryAccess().lookupOrThrow(Registries.WORLD_CLOCK).getOrThrow(WorldClocks.OVERWORLD);
+			if (!clock.moveToTimeMarker(holder, ClockTimeMarkers.NOON))
+				clock.setTotalTicks(holder, 6000L);
+			LOGGER.info("[DEVSHOT] moved the overworld clock to NOON for the screenshot");
+		}
+		catch (Throwable t)
+		{
+			LOGGER.warn("[DEVSHOT] clock override failed", t);
+		}
+	}
+
+	private static void spawnTestFormation(Minecraft mc)
+	{
+		forceNoon(mc);
+		try
+		{
 			ClientCloudManager manager = (ClientCloudManager) CloudManager.get(mc.level);
 			if (manager == null)
 			{
@@ -104,20 +112,29 @@ public final class DevShot
 			List<CpuCloudGenerator.CloudLayerGroup> groups = SimpleCloudsRenderer.dataDrivenGroups();
 			Map<net.minecraft.resources.Identifier, Integer> typeToGroup = SimpleCloudsRenderer.dataDrivenGroupIndices();
 			int best = 0;
-			int bestCount = -1;
+			int bestCount = 0; // 0 (empty noise field) is never acceptable
 			CloudType bestType = null;
-			for (CloudType t : types)
+			// Prefer a NON-STORM type: the camera ends up inside the formation, and
+			// a storm type's storm fog would gray out the whole frame (it works, but
+			// drowns out everything else the screenshot is trying to verify).
+			for (int pass = 0; pass < 2 && bestType == null; pass++)
 			{
-				if (t.id().toString().endsWith("empty"))
-					continue;
-				for (int ci = 0; ci < candX.length; ci++)
+				for (CloudType t : types)
 				{
-					int count = probeDensity(groups, typeToGroup, t, px + candX[ci], pz + candZ[ci]);
-					if (count > bestCount)
+					if (t.id().toString().endsWith("empty"))
+						continue;
+					boolean storm = t.weatherType() != null && t.weatherType() != WeatherType.NONE;
+					if ((pass == 0) == storm)
+						continue; // pass 0: non-storm only; pass 1: anything
+					for (int ci = 0; ci < candX.length; ci++)
 					{
-						bestCount = count;
-						best = ci;
-						bestType = t;
+						int count = probeDensity(groups, typeToGroup, t, px + candX[ci], pz + candZ[ci]);
+						if (count > bestCount)
+						{
+							bestCount = count;
+							best = ci;
+							bestType = t;
+						}
 					}
 				}
 			}
@@ -132,7 +149,9 @@ public final class DevShot
 			// With the old null depth state it drew as white boxes through the ground.
 			for (CloudType t : types)
 			{
-				if (!t.id().toString().endsWith("stratus"))
+				// Plain stratus only (nimbostratus is a storm type and would gray the frame out).
+				String name = t.id().toString();
+				if (!name.endsWith("stratus") || name.endsWith("nimbostratus"))
 					continue;
 				for (int ci = 0; ci < candX.length; ci++)
 				{
@@ -167,6 +186,71 @@ public final class DevShot
 	}
 
 	/**
+	 * Deterministic shadow scene: the player stands at the world spawn (same for
+	 * every run) and a cumulus formation (world Y 144..400) is placed directly
+	 * overhead at an absolute position, so the terrain in view has cloud above it
+	 * while the horizon beyond the 160-block radius has open sky. A/B: the
+	 * NOSHADOW token disables the terrain-shadow pass for comparison.
+	 */
+	private static void setupShadowTest(Minecraft mc)
+	{
+		forceNoon(mc);
+		CloudManager<?> manager = CloudManager.get(mc.level);
+		if (manager == null)
+		{
+			LOGGER.warn("[DEVSHOT] shadow test: no cloud manager");
+			return;
+		}
+		// The world's own formations sit at spawn (dense, foggy, and stormy), so
+		// relocate to the densest NON-STORM cell the noise probe finds: the only
+		// clouds in view are then the single formation placed overhead of the
+		// player, and no storm fog grays the frame.
+		Map<net.minecraft.resources.Identifier, Integer> typeToGroup = SimpleCloudsRenderer.dataDrivenGroupIndices();
+		List<CpuCloudGenerator.CloudLayerGroup> groups = SimpleCloudsRenderer.dataDrivenGroups();
+		CloudType[] types = ClientSideCloudTypeManager.getInstance().getIndexedCloudTypes();
+		float px = (float) (mc.player.getX() / 8.0);
+		float pz = (float) (mc.player.getZ() / 8.0);
+		float[] candX = { 0.0F, -64.0F, 64.0F, -128.0F, 128.0F, 192.0F, -192.0F, 256.0F, -256.0F };
+		float[] candZ = { 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F };
+		CloudType bestType = null;
+		int bestCount = 0;
+		float bestX = px, bestZ = pz;
+		for (CloudType t : types)
+		{
+			if (t.weatherType() != null && t.weatherType() != WeatherType.NONE)
+				continue; // storm types gray the frame out
+			for (int ci = 0; ci < candX.length; ci++)
+			{
+				int count = probeDensity(groups, typeToGroup, t, px + candX[ci], pz + candZ[ci]);
+				if (count > bestCount)
+				{
+					bestCount = count;
+					bestType = t;
+					bestX = px + candX[ci];
+					bestZ = pz + candZ[ci];
+				}
+			}
+		}
+		if (bestType == null)
+		{
+			LOGGER.warn("[DEVSHOT] shadow test: no dense non-storm cell found");
+			return;
+		}
+		float cx = bestX;
+		float cz = bestZ;
+		int ground = mc.level.getHeight(net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING,
+				(int) (cx * 8.0), (int) (cz * 8.0));
+		double py = Math.max(70.0, ground + 10.0);
+		mc.player.teleportSetPosition(new net.minecraft.world.entity.PositionMoveRotation(
+				new net.minecraft.world.phys.Vec3(cx * 8.0, py, cz * 8.0), net.minecraft.world.phys.Vec3.ZERO,
+				mc.player.getYRot(), mc.player.getXRot()), java.util.EnumSet.noneOf(net.minecraft.world.entity.Relative.class));
+		// Cumulus layers (16..48u) with posY 2u -> world Y 144..400, well above the player.
+		manager.getCloudGenerator().addCloud(new CloudRegion(bestType.id(), new Vec2(0.001F, 0.0F), 0.0F, 0.0F,
+				cx, cz, 20.0F, 0.0F, 1.0F, 60_000, 60_000, 1), CloudGenerator.Order.USE_WEIGHT);
+		LOGGER.info("[DEVSHOT] shadow test: {} (density {}) at {}x{}, player at Y {}", bestType.id(), bestCount, cx, cz, py);
+	}
+
+		/**
 	 * Runs one small CPU generation (16x64x16 cells around the candidate center, masked
 	 * by a single test formation of the given type) and returns the opaque instance
 	 * count — i.e. how dense the world-fixed noise field is there for that type.
@@ -214,11 +298,34 @@ public final class DevShot
 			{
 				String content = Files.readString(request).trim();
 				String[] parts = content.split("\\s+");
+				// First token = frame count. The rest: numeric tokens are the camera
+				// xRot (first) and yaw (second); keywords switch test scenes.
 				framesLeft = Integer.parseInt(parts[0]);
-				if (parts.length > 1)
-					shotAngle = Float.parseFloat(parts[1]); // second token: camera xRot
-					if (parts.length > 2)
-						shotYaw = Float.parseFloat(parts[2]); // third token: camera yaw
+				int numericSeen = 0;
+				for (int i2 = 1; i2 < parts.length; i2++)
+				{
+					String part = parts[i2];
+					if (part.equalsIgnoreCase("NOSHADOW"))
+					{
+						dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudsDrawPipeline.TERRAIN_SHADOWS_ENABLED = false;
+						continue;
+					}
+					if (part.equalsIgnoreCase("SHADOWTEST"))
+					{
+						shadowTest = true;
+						shotAngle = -45.0F;
+						continue;
+					}
+					try
+					{
+						float v = Float.parseFloat(part);
+						if (numericSeen++ == 0)
+							shotAngle = v;
+						else
+							shotYaw = v;
+					}
+					catch (NumberFormatException ignored) { /* unknown token */ }
+				}
 			}
 			catch (Exception e) { framesLeft = 240; }
 			LOGGER.info("[DEVSHOT] requested: capturing after {} frames", framesLeft);
@@ -231,7 +338,10 @@ public final class DevShot
 		if (!testSpawned && framesLeft <= 230) // spawn early: band regen needs ~40 frames
 		{
 			testSpawned = true;
-			spawnTestFormation(mc);
+			if (shadowTest)
+				setupShadowTest(mc);
+			else
+				spawnTestFormation(mc);
 		}
 		if (!saved)
 		{

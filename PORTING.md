@@ -75,7 +75,8 @@ Statuses: **VERIFIED** = ported + confirmed on screen (devshot/play-test);
 | GPU compute generation (cube_mesh.comp) | MISSING (shelved) | CPU path ships; spike evidence in SPIKE-GPU-RESULT.md |
 | Vanilla cloud layer removal | VERIFIED (dev client) | 26.2 addCloudsPass cancelled; flat+full variants both covered |
 | DH (Distant Horizons) support | VERIFIED | DH 3.2.0 detected, its clouds disabled, handlers registered |
-| Ground-level bank layers (stratus/nimbostratus y=0 base) | BY DESIGN | original data; below-terrain parts hidden by depth test (fixed 2026-09-12) |
+| Camera-anchored cloud volume (`clientSideCloudHeight`, 2048-block span) | VERIFIED | 1.20.1 semantics: volume base = camY − cloudHeight (default 128 blocks), 256 units tall (VERTICAL_CHUNK_SPAN×CHUNK_SIZE); layer offsets/noise Y are volume-relative so clouds follow the player's altitude. Port quantizes the base to 16-unit (128-block) steps for the band cache; X/Z noise stays world-fixed (no 256-block origin snapping, better CPU cache affinity) |
+| Ground-level bank layers (stratus/nimbostratus height_offset=0) | BY DESIGN | height_offset=0 = volume base = 128 blocks BELOW THE CAMERA, not ground level (Jan's question 2026-09-12, verified in 1.20.1 source); below-terrain parts hidden by depth test (fixed 2026-09-12) |
 
 ### UI / screens
 | Feature | Status | Notes |
@@ -120,6 +121,31 @@ Statuses: **VERIFIED** = ported + confirmed on screen (devshot/play-test);
 5. Transparent-edge visual verification.
 6. Remaining: rain sounds, previewer image export, debug overlay, fogMode/LOD/culling,
    lightning bolt mesh, server commands.
+
+## CLOUD VOLUME ANCHORING (2026-09-12, from Jan's "are you sure about the layers" question)
+
+The 1.20.1 cloud volume is **camera-anchored**, not world-anchored:
+
+- `SimpleCloudsRenderer.render()`: `originY = (camY − cloudManager.getCloudHeight()) / 8`;
+  `cloudHeight` is the `clientSideCloudHeight` config (default **128 blocks**, synced from
+  the server). The compute shader samples the noise at coordinates RELATIVE to that origin
+  (chunk-local y 0..255 vs `VERTICAL_CHUNK_SPAN * CHUNK_SIZE` = 256 units = 2048 blocks),
+  so layer `height_offset: 0` = 128 blocks below the camera, and the whole volume follows
+  the player's altitude (no vertical snapping; X/Z origin snaps to a 256-block grid).
+- Per-type noise ranges (volume-relative blocks): cumulus 128..384 above base;
+  stratocumulus 512..1024; stratus/itty_bitty/small_cumulus 0..256; nimbostratus 0..1024;
+  cumulonimbus 0..2048. So "the big white block at water level" (play-test 12:04) was a
+  low-type bank around the player's altitude — expected in the original too, and the
+  depth-test fix (same day) hides its below-terrain parts.
+
+**Port fix (this entry):** `CpuCloudGenerator` now takes the band base `y0` as the volume
+base — layer checks, noise Y and `heightDelta` use `y − yBase`; vertex output stays
+world-absolute. `SimpleCloudsRenderer` computes `baseU = floor((camY − cloudHeight)/8/16) * 16`
+and generates 256-unit-tall bands keyed by (x0, z0, baseU). Before this fix the port was
+world-fixed at Y 0..512: stratocumulus was INVISIBLE (its 512..1024 range sat above the
+band), cumulonimbus/nimbostratus tops were clipped, and clouds did not follow the player.
+Verified: band baseY −16 at camY 71 (=(71−128)/8 quantized), clouds at player altitude,
+terrain occlusion clean.
 
 ## FULL-REGION RENDERING + SERVER PERSISTENCE (2026-09-12)
 Verified on screen (dev client, devshot screenshot): discrete white voxel cloud
