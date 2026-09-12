@@ -86,6 +86,7 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 
 	// 26.2 vertical-slice rendering.
 	@Nullable private CloudsDrawPipeline drawPipeline;
+	@Nullable private AtmosphericCloudsRenderHandler atmosphericClouds;
 	@Nullable private CpuCloudGenerator cpuGenerator;
 	@Nullable private RainDrawPipeline rainPipeline;
 	@Nullable private WorldEffects worldEffects;
@@ -146,6 +147,7 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		try
 		{
 			this.drawPipeline = new CloudsDrawPipeline();
+			this.atmosphericClouds = new AtmosphericCloudsRenderHandler(this.mc);
 			// Owned by the band worker thread (never touched from the render thread).
 			this.cpuGenerator = new CpuCloudGenerator(List.of());
 			this.startBandWorker();
@@ -682,6 +684,19 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		// section of CloudsDrawPipeline and PORTING.md).
 		this.drawPipeline.renderCloudShadowMap(camX, camY, camZ);
 		this.drawPipeline.drawTerrainShadows(view, camX, camY, camZ);
+
+		// Atmospheric (high cirrus-type) clouds: biome-driven 2D layer over the
+		// whole view (original: end of the DefaultPipeline render).
+		if (SimpleCloudsConfig.CLIENT.atmosphericClouds.get() && this.atmosphericClouds != null)
+		{
+			// 26.2: the level projection's vertical FOV lives on the camera render
+			// state (no getFov method anymore).
+			float fovDeg = this.mc.gameRenderer.gameRenderState().levelRenderState.cameraRenderState.hudFov;
+			float aspect = (float) this.mc.getWindow().getWidth() / Math.max(1.0F, (float) this.mc.getWindow().getHeight());
+			// Vanilla cloud brightness (0..1) like the original's r/g/b args.
+			float bright = 0.9F;
+			this.atmosphericClouds.render(this.drawPipeline, view, partialTick, bright, bright, bright, fovDeg, aspect);
+		}
 	}
 
 	// ---------------------------------------------------------------------
@@ -722,8 +737,7 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 
 	public AtmosphericCloudsRenderHandler getAtmosphericCloudRenderer()
 	{
-		// TODO(26.2): port atmospheric clouds.
-		return null;
+		return this.atmosphericClouds;
 	}
 
 	public CloudsRendererSettings getSettings()
@@ -853,6 +867,12 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 
 	public void baseTick()
 	{
+		if (this.atmosphericClouds != null)
+		{
+			if (this.cloudManager != null)
+				this.atmosphericClouds.setWindDirection(this.cloudManager.calculateWindDirection());
+			this.atmosphericClouds.tick();
+		}
 	}
 
 	public void tick()

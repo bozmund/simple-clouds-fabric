@@ -102,6 +102,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 	public static boolean TERRAIN_SHADOWS_ENABLED = true;
 	private static final Identifier CLOUDS_SHADOW_LOCATION = SimpleCloudsMod.id("core/clouds_shadow");
 	private static final Identifier TERRAIN_SHADOWS_LOCATION = SimpleCloudsMod.id("core/terrain_shadows");
+	private static final Identifier ATMOSPHERIC_CLOUDS_LOCATION = SimpleCloudsMod.id("core/atmospheric_clouds");
 
 	// RenderTarget is abstract in 26.2 but has no abstract members.
 	private static final class SimpleRenderTarget extends RenderTarget
@@ -127,8 +128,11 @@ public class CloudsDrawPipeline implements AutoCloseable
 	// manually from zero-initialized data buffers.
 	private final GpuBuffer[] shadowMatricesRing = new GpuBuffer[3];
 	private final GpuBuffer[] terrainPassRing = new GpuBuffer[3];
+	private final GpuBuffer[] atmosphericRing = new GpuBuffer[3];
 	private int shadowMatricesIdx = 0;
 	private int terrainPassIdx = 0;
+	private int atmosphericIdx = 0;
+	private final RenderPipeline atmosphericPipeline;
 	private final GpuSampler nearestSampler;
 	private boolean shadowRenderedThisFrame = false;
 
@@ -282,6 +286,25 @@ public class CloudsDrawPipeline implements AutoCloseable
 				.withDepthStencilState(Optional.empty())
 				.build();
 
+		BindGroupLayout atmosphericBgl = BindGroupLayout.builder()
+				.withUniform("AtmosphericPass", UniformType.UNIFORM_BUFFER)
+				.withSampler("DiffuseSampler")
+				.build();
+		// The shader writes the fully-composited color (it samples the main target
+		// itself), so no blending and no depth read -- same shape as the storm fog
+		// pass.
+		this.atmosphericPipeline = RenderPipeline.builder()
+				.withLocation(ATMOSPHERIC_CLOUDS_LOCATION)
+				.withVertexShader(ATMOSPHERIC_CLOUDS_LOCATION)
+				.withFragmentShader(ATMOSPHERIC_CLOUDS_LOCATION)
+				.withBindGroupLayout(atmosphericBgl)
+				.withVertexBinding(0, triangleFormat)
+				.withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
+				.withCull(false)
+				.withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT))
+				.withDepthStencilState(Optional.empty())
+				.build();
+
 		// std140: two mat4 blocks = 64 bytes each = 128 bytes total.
 		// maxAnisotropy is validated as 1..16 by GpuDevice.createSampler.
 		this.nearestSampler = device.createSampler(AddressMode.CLAMP_TO_EDGE, AddressMode.CLAMP_TO_EDGE, FilterMode.NEAREST, FilterMode.NEAREST, 1, OptionalDouble.empty());
@@ -313,6 +336,9 @@ public class CloudsDrawPipeline implements AutoCloseable
 			// this Mesa/Intel ARL machine ("Failed to map buffer").
 			this.shadowMatricesRing[slot] = device.createBuffer(() -> "simpleclouds.shadowMatrices" + slot, GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(128));
 			this.terrainPassRing[slot] = device.createBuffer(() -> "simpleclouds.terrainShadowPass" + slot, GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(80));
+			// std140 AtmosphericPass: mat4(64) + mat2(16) + 9 floats(36) + vec4(16,
+			// padded to offset 120) = 136 bytes -> 144 to be safe.
+			this.atmosphericRing[slot] = device.createBuffer(() -> "simpleclouds.atmospheric" + slot, GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(144));
 		}
 		this.writeLighting(0.2F, 1.0F, -0.7F, -0.2F, 1.0F, 0.7F, 0.4F, 0.9F);
 		this.writeShading(0.0F, 0.0F, 0.15F, 1.0F);
@@ -667,6 +693,74 @@ public class CloudsDrawPipeline implements AutoCloseable
 		pass.close();
 	}
 
+	// ------------------------------------------------------------------
+	// Atmospheric clouds (26.2 port of the 1.20.1 post-chain atmospheric layer)
+	// ------------------------------------------------------------------
+
+	/**
+	 * Draws one atmospheric-cloud formation pass over the whole view. The shader
+	 * samples the main color target itself (DiffuseSampler) and writes the
+	 * composited result back, so this pass must run AFTER everything else that
+	 * writes to the scene (the renderer calls it last).
+	 *
+	 * @param viewMatrix world -&gt; camera
+	 * @param transform the formation's scale+wind-yaw matrix (shader's Transform)
+	 * @param shift the formation's time offset (shader's ShiftMovement)
+	 * @param densityMult 0..1 cross-fade multiplier (transition blending)
+	 * @param density the formation's base density
+	 * @param fovDeg the level projection's vertical FOV in degrees
+	 * @param aspect window aspect (width/height)
+	 */
+	public void drawAtmosphericClouds(org.joml.Matrix4f viewMatrix, org.joml.Matrix2f transform,
+			float shift, float densityMult, float density, float r, float g, float b, float a,
+			float fovDeg, float aspect)
+	{
+		float cloudDensity = density * densityMult;
+		if (cloudDensity <= 0.01F)
+			return;
+
+		this.atmosphericIdx = (this.atmosphericIdx + 1) % 3;
+		GpuBuffer buf = this.atmosphericRing[this.atmosphericIdx];
+		try (var view = buf.slice().map(true, false))
+		{
+			ByteBuffer data = view.data();
+			writeMatrix(data, 0, viewMatrix);
+			float[] t = new float[4];
+			transform.get(t);
+			data.putFloat(64, t[0]);  // m00
+			data.putFloat(68, t[1]);  // m01
+			data.putFloat(72, t[2]);  // m10
+			data.putFloat(76, t[3]);  // m11
+			data.putFloat(80, 128.0F);              // PixelScale
+			data.putFloat(84, 10000.0F);            // SpanX
+			data.putFloat(88, 10000.0F);            // SpanZ
+			data.putFloat(92, 30000.0F);            // MaxDist
+			data.putFloat(96, 10000.0F);            // FadeStart
+			data.putFloat(100, shift);              // ShiftMovement
+			data.putFloat(104, cloudDensity);       // CloudDensity
+			data.putFloat(108, (float) Math.tan(Math.toRadians(fovDeg) / 2.0));
+			data.putFloat(112, aspect);
+			data.putFloat(120, r);
+			data.putFloat(124, g);
+			data.putFloat(128, b);
+			data.putFloat(132, a);
+		}
+
+		RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
+		GpuTextureView colorView = main.getColorTextureView();
+
+		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
+		// No depth attachment at all: the 3-arg overload (the layer doesn't read
+		// or write depth; the pipeline's empty DepthStencilState handles it).
+		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.atmosphericClouds", colorView, Optional.empty());
+		pass.setPipeline(this.atmosphericPipeline);
+		pass.setUniform("AtmosphericPass", buf);
+		pass.bindTexture("DiffuseSampler", colorView, this.nearestSampler);
+		pass.setVertexBuffer(0, this.triangleBuffer.slice());
+		pass.draw(3, 1, 0, 0);
+		pass.close();
+	}
+
 	private static ByteBuffer zeros(int size)
 	{
 		// position 0 / limit size: GpuDevice rejects empty sources (position == limit).
@@ -709,6 +803,8 @@ public class CloudsDrawPipeline implements AutoCloseable
 		for (GpuBuffer b : this.shadowMatricesRing)
 			b.close();
 		for (GpuBuffer b : this.terrainPassRing)
+			b.close();
+		for (GpuBuffer b : this.atmosphericRing)
 			b.close();
 		this.nearestSampler.close();
 		this.quadVertexBuffer.close();

@@ -69,7 +69,7 @@ Statuses: **VERIFIED** = ported + confirmed on screen (devshot/play-test);
 | Custom rain (PrecipitationQuads) | VERIFIED | slice: no wind tilt, no snow |
 | Lightning (server spawn -> packet -> flash) | VERIFIED (flash) | bolt MESH missing (jagged branch geometry not ported) |
 | Cloud shadow map + terrain shadows (`distantShadows`) | **VERIFIED (2026-09-12, A/B devshot)** | 512px ortho shadow map + fullscreen terrain pass. Two 26.2 gotchas fixed: (1) shadow light-volume matrix sign errors (nothing landed in the frustum); (2) **per-frame UBO mapping silently kills a pass** -- the fixed buffer mapped every frame (and even MappableRingBuffer's size-only createBuffer, which also fails to map on this Mesa/Intel ARL machine) made the terrain pass draw nothing; fixed with a manual 3-deep ring built from the data-carrying createBuffer overload with UNIFORM|MAP_READ usage. Shadow volume extends 128 blocks BELOW camY (the original raymarch covered the ground). SHADOWTEST scene: shelf visibly darkened with shadows, bright with NOSHADOW. |
-| Atmospheric 2D cloud layer (`atmosphericClouds`, default ON) | MISSING | TODO stub in getAtmosphericCloudRenderer |
+| Atmospheric 2D cloud layer (`atmosphericClouds`, default ON) | **VERIFIED (2026-09-12)** | Full port: fullscreen pass (no PostChain in 26.2) sampling the main color target, psrdnoise ray-cast to a plane 5000 above the camera; biome-driven formations with cross-fade (Forge biome tags replaced by base-temperature/precipitation predicates); wind from the cloud manager; blindness/darkness alpha. 26.2 notes: level FOV from `gameRenderState().levelRenderState.cameraRenderState.hudFov` (no GameRenderer.getFov anymore); ring UBO per the per-frame-UBO rule. Sky + straight-up devshots show the wispy layer. |
 | Fog render modes (`fogMode`) | MISSING | single shader-fog implementation only |
 | LOD / frustum culling / generation interval / concurrent dispatches / occlusion-side testing | MISSING | perf/quality options are no-ops (config values kept) |
 | GPU compute generation (cube_mesh.comp) | MISSING (shelved) | CPU path ships; spike evidence in SPIKE-GPU-RESULT.md |
@@ -115,7 +115,7 @@ Statuses: **VERIFIED** = ported + confirmed on screen (devshot/play-test);
 
 ### Work order (most visible first)
 1. ~~Cloud shadow map~~ **DONE 2026-09-12** (A/B verified; UBO ring fix + volume 128 blocks below camY).
-2. Atmospheric cloud layer (default ON in original; big visible gap).
+2. ~~Atmospheric cloud layer~~ **DONE 2026-09-12** (fullscreen pass + biome formations + cross-fade, verified on screen).
 3. Dimension whitelist (functional).
 4. cubeNormals per-face shading.
 5. Transparent-edge visual verification.
