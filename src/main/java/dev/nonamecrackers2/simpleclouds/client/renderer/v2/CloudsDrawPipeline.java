@@ -38,6 +38,7 @@ import net.minecraft.resources.Identifier;
 import org.joml.Matrix4f;
 
 import dev.nonamecrackers2.simpleclouds.SimpleCloudsMod;
+import dev.nonamecrackers2.simpleclouds.common.config.SimpleCloudsConfig;
 
 /**
  * Vertical-slice (26.2) cloud render pipeline: builds the {@link RenderPipeline}
@@ -78,6 +79,12 @@ public class CloudsDrawPipeline implements AutoCloseable
 	private final GpuBuffer lightingUbo;
 	private final GpuBuffer shadingUbo;
 	private final GpuBuffer fogUbo;
+	// Per-frame ring for the runtime-toggleable CloudShading.UseNormals (config
+	// cubeNormals): the static shading UBO cannot be remapped every frame (26.2
+	// per-frame-UBO rule), so the toggle rides on a ring.
+	private final GpuBuffer[] useNormalsRing = new GpuBuffer[3];
+	private int useNormalsRingSlot = 0;
+	private static final float[] CLOUD_SHADING_BASE = { 0.0F, 0.0F, 0.15F };
 	private GpuBuffer instanceBuffer;
 	private int instanceCount = 0;
 	private GpuBuffer transparencyInstanceBuffer;
@@ -339,6 +346,8 @@ public class CloudsDrawPipeline implements AutoCloseable
 			// std140 AtmosphericPass: mat4(64) + mat2(16) + 9 floats(36) + vec4(16,
 			// padded to offset 120) = 136 bytes -> 144 to be safe.
 			this.atmosphericRing[slot] = device.createBuffer(() -> "simpleclouds.atmospheric" + slot, GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(144));
+			// CloudShading layout: vec3 darkness(12) + float useNormals(4) = 16 bytes.
+			this.useNormalsRing[slot] = device.createBuffer(() -> "simpleclouds.useNormals" + slot, GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(16));
 		}
 		this.writeLighting(0.2F, 1.0F, -0.7F, -0.2F, 1.0F, 0.7F, 0.4F, 0.9F);
 		this.writeShading(0.0F, 0.0F, 0.15F, 1.0F);
@@ -483,13 +492,24 @@ public class CloudsDrawPipeline implements AutoCloseable
 		pass.bindTexture("BayerMatrixSampler", bayer.getTextureView(), bayer.getSampler());
 		pass.setUniform("DynamicTransforms", transforms);
 		pass.setUniform("CloudLighting", this.lightingUbo);
-		pass.setUniform("CloudShading", this.shadingUbo);
+		// UseNormals follows the live config (cubeNormals, default off): write the
+		// full 16-byte CloudShading block into the per-frame ring slot.
+		try (var view = this.useNormalsRing[this.useNormalsRingSlot].slice().map(true, false))
+		{
+			ByteBuffer data = view.data();
+			data.putFloat(0, CLOUD_SHADING_BASE[0]);
+			data.putFloat(4, CLOUD_SHADING_BASE[1]);
+			data.putFloat(8, CLOUD_SHADING_BASE[2]);
+			data.putFloat(12, SimpleCloudsConfig.CLIENT.cubeNormals.get() ? 1.0F : 0.0F);
+		}
+		pass.setUniform("CloudShading", this.useNormalsRing[this.useNormalsRingSlot]);
 		pass.setUniform("CloudFog", this.fogUbo);
 		pass.setVertexBuffer(0, this.quadVertexBuffer.slice());
 		pass.setVertexBuffer(1, activeInstances.slice());
 		pass.setIndexBuffer(this.quadIndexBuffer, IndexType.SHORT);
 		pass.drawIndexed(QUAD_INDICES.length, this.instanceCount, 0, 0, 0);
 		pass.close();
+		this.useNormalsRingSlot = (this.useNormalsRingSlot + 1) % 3;
 	}
 
 	/**
@@ -805,6 +825,8 @@ public class CloudsDrawPipeline implements AutoCloseable
 		for (GpuBuffer b : this.terrainPassRing)
 			b.close();
 		for (GpuBuffer b : this.atmosphericRing)
+			b.close();
+		for (GpuBuffer b : this.useNormalsRing)
 			b.close();
 		this.nearestSampler.close();
 		this.quadVertexBuffer.close();

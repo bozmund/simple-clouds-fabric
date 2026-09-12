@@ -62,9 +62,9 @@ Statuses: **VERIFIED** = ported + confirmed on screen (devshot/play-test);
 | Edge dithering (bayer threshold) | VERIFIED | original task 1 |
 | Data-driven heights/layers per type (noise_settings) | VERIFIED | original task 2 |
 | Formation spawning (weight/growth/expiration, server-driven) | VERIFIED | client + server managers |
-| Opaque + transparent cubes (alpha-blended edges) | VERIFIED (opaque) / UNVERIFIED (transparent) | transparency depth convention fixed 2026-09-12; edge look not yet isolated on screen |
+| Opaque + transparent cubes (alpha-blended edges) | VERIFIED | transparency depth convention fixed 2026-09-12; 2026-09-12 -20 devshot shows the soft alpha edge halos around opaque cores |
 | Cloud shading (sun-lit faces) | VERIFIED | CloudLighting uniform |
-| Per-cube face normals shading (`cubeNormals`) | MISSING | config exists; CPU generator uses fixed per-face brightness |
+| Per-cube face normals shading (`cubeNormals`) | PORTED | shader path existed (sideNormal + mixLight, exact normals from 1.20.1 opaque.glsl); 2026-09-12: UseNormals now follows the live config via a per-frame ring UBO (static-UBO remap is the 26.2 no-go); default off = flat per-cube brightness, as in 1.20.1 |
 | Storm fog (darkening + lightning flash) | VERIFIED | intensity from storm coverage above camera |
 | Custom rain (PrecipitationQuads) | VERIFIED | slice: no wind tilt, no snow |
 | Lightning (server spawn -> packet -> flash) | VERIFIED (flash) | bolt MESH missing (jagged branch geometry not ported) |
@@ -99,11 +99,11 @@ Statuses: **VERIFIED** = ported + confirmed on screen (devshot/play-test);
 | Feature | Status | Notes |
 |---|---|---|
 | Server cloud manager + spawning | PORTED | |
-| Cloud data persistence (26.2 SavedDataType) | VERIFIED (compiles, no crash) | on-disk save file not yet inspected |
+| Cloud data persistence (26.2 SavedDataType) | **VERIFIED (2026-09-12)** | clean exit writes `dimensions/<dim>/data/simpleclouds/clouddata.dat` for all 3 dimensions (755 B overworld, valid NBT: cloud_generator, regions, Speed, ticks_till_next_gen, ...) |
 | Sync packets (manager/regions/types/lightning/mode) | PORTED | 7 packet types |
 | Dimension change / respawn resync | PORTED | per-tick polling (26.2 has no events for this) |
 | Vanilla weather cycle disable (server) | PORTED | MixinServerLevel |
-| Dimension whitelist/blacklist (`whitelistAsBlacklist`) | MISSING | canRenderInDimension is a TODO (always true) |
+| Dimension whitelist/blacklist (`whitelistAsBlacklist`) | **VERIFIED (2026-09-12)** | server-config-when-synced else client-config, blacklist inversion; 26.2 gotcha: `ResourceKey.toString()` concatenates registry+value with NO separator ("minecraft:rootminecraft:overworld") — must compare `dimension().identifier().toString()`. Verified live: a wrong comparison silently disabled clouds AND re-enabled the vanilla sheet (screenshot), fixed comparison restores ours |
 | `cloudMode` (DEFAULT/SINGLE/AMBIENT), `cloudSeed`/`useSpecificSeed` | PORTED | |
 
 ### Misc
@@ -116,11 +116,12 @@ Statuses: **VERIFIED** = ported + confirmed on screen (devshot/play-test);
 ### Work order (most visible first)
 1. ~~Cloud shadow map~~ **DONE 2026-09-12** (A/B verified; UBO ring fix + volume 128 blocks below camY).
 2. ~~Atmospheric cloud layer~~ **DONE 2026-09-12** (fullscreen pass + biome formations + cross-fade, verified on screen).
-3. Dimension whitelist (functional).
-4. cubeNormals per-face shading.
-5. Transparent-edge visual verification.
-6. Remaining: rain sounds, previewer image export, debug overlay, fogMode/LOD/culling,
-   lightning bolt mesh, server commands.
+3. ~~Dimension whitelist~~ **DONE 2026-09-12** (identifier comparison; ResourceKey.toString gotcha documented).
+4. ~~cubeNormals config wiring~~ **DONE 2026-09-12** (ring UBO).
+5. ~~Transparent-edge visual verification~~ **DONE 2026-09-12** (edge halos visible in the -20 devshot).
+6. Cloud data persistence + whitelist verification **DONE 2026-09-12**.
+7. Remaining (visibility order): lightning bolt mesh, fogMode, rain sounds, previewer image
+   export, debug overlay, LOD/culling perf options, server command tree.
 
 ## CLOUD VOLUME ANCHORING (2026-09-12, from Jan's "are you sure about the layers" question)
 

@@ -132,8 +132,27 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 
 	public static boolean canRenderInDimension(@Nullable ClientLevel level)
 	{
-		// TODO(26.2): restore the dimension-whitelist check against the ported config.
-		return level != null;
+		if (level == null)
+			return false;
+		// Port of the 1.20.1 check: the SERVER config governs when a synced server-side
+		// manager exists (its dimension list is what the server runs), otherwise the
+		// client's; "whitelistAsBlacklist" inverts the match.
+		java.util.List<? extends String> whitelist;
+		boolean useAsBlacklist;
+		if (dev.nonamecrackers2.simpleclouds.client.world.ClientCloudManager.isAvailableServerSide()
+				&& SimpleCloudsConfig.SERVER_SPEC.isLoaded())
+		{
+			whitelist = SimpleCloudsConfig.SERVER.dimensionWhitelist.get();
+			useAsBlacklist = SimpleCloudsConfig.SERVER.whitelistAsBlacklist.get();
+		}
+		else
+		{
+			whitelist = SimpleCloudsConfig.CLIENT.dimensionWhitelist.get();
+			useAsBlacklist = SimpleCloudsConfig.CLIENT.whitelistAsBlacklist.get();
+		}
+		boolean matched = whitelist.stream()
+				.anyMatch(val -> level.dimension().identifier().toString().equals(val)); // 26.2: ResourceKey.toString() concatenates registry+value with no separator; the value identifier is the comparable part
+		return useAsBlacklist ? !matched : matched;
 	}
 
 	// ---------------------------------------------------------------------
