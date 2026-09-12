@@ -50,6 +50,77 @@ Key 26.2 renderer facts discovered while making this work (for the remaining por
 - Dev launch env: Temurin 25 + `VK_ICD_FILENAMES=/run/opengl-driver/.../intel_icd.x86_64.json`
   + `LD_LIBRARY_PATH` from /tmp/lwjgl-ldp.txt (Vulkan loader, GLVND, X11, Wayland).
 
+## FEATURE PARITY AUDIT vs 1.20.1 original (2026-09-12, from /tmp/simple-clouds-src)
+Statuses: **VERIFIED** = ported + confirmed on screen (devshot/play-test);
+**UNVERIFIED** = ported, compiles + runs, no on-screen confirmation yet;
+**MISSING** = not ported (config option may still exist as a no-op).
+
+### Cloud rendering
+| Feature | Status | Notes |
+|---|---|---|
+| Voxel cloud mesh (region-masked noise field, discrete formations) | VERIFIED | CPU generator; multi-band full-region rendering (2026-09-12) |
+| Edge dithering (bayer threshold) | VERIFIED | original task 1 |
+| Data-driven heights/layers per type (noise_settings) | VERIFIED | original task 2 |
+| Formation spawning (weight/growth/expiration, server-driven) | VERIFIED | client + server managers |
+| Opaque + transparent cubes (alpha-blended edges) | VERIFIED (opaque) / UNVERIFIED (transparent) | transparency depth convention fixed 2026-09-12; edge look not yet isolated on screen |
+| Cloud shading (sun-lit faces) | VERIFIED | CloudLighting uniform |
+| Per-cube face normals shading (`cubeNormals`) | MISSING | config exists; CPU generator uses fixed per-face brightness |
+| Storm fog (darkening + lightning flash) | VERIFIED | intensity from storm coverage above camera |
+| Custom rain (PrecipitationQuads) | VERIFIED | slice: no wind tilt, no snow |
+| Lightning (server spawn -> packet -> flash) | VERIFIED (flash) | bolt MESH missing (jagged branch geometry not ported) |
+| Cloud shadow map + terrain shadows (`distantShadows`) | UNVERIFIED | depth pass + fullscreen terrain pass ported; no on-screen confirmation |
+| Atmospheric 2D cloud layer (`atmosphericClouds`, default ON) | MISSING | TODO stub in getAtmosphericCloudRenderer |
+| Fog render modes (`fogMode`) | MISSING | single shader-fog implementation only |
+| LOD / frustum culling / generation interval / concurrent dispatches / occlusion-side testing | MISSING | perf/quality options are no-ops (config values kept) |
+| GPU compute generation (cube_mesh.comp) | MISSING (shelved) | CPU path ships; spike evidence in SPIKE-GPU-RESULT.md |
+| Vanilla cloud layer removal | VERIFIED (dev client) | 26.2 addCloudsPass cancelled; flat+full variants both covered |
+| DH (Distant Horizons) support | VERIFIED | DH 3.2.0 detected, its clouds disabled, handlers registered |
+| Ground-level bank layers (stratus/nimbostratus y=0 base) | BY DESIGN | original data; below-terrain parts hidden by depth test (fixed 2026-09-12) |
+
+### UI / screens
+| Feature | Status | Notes |
+|---|---|---|
+| Config screens (client + server tabs, CrackersLib GUI) | VERIFIED | original task 7 |
+| Keybinds (config, F12 previewer) | VERIFIED | |
+| 3D previewer (orbit camera, main-frame draw) | VERIFIED | original task 9 |
+| Previewer image-export button (CloudImageRenderer) | MISSING | offscreen export not ported |
+| Info / notice / error screens | PORTED | shown on startup as before |
+| Main-menu config button | MISSING | 26.2 options-screen hook not ported |
+| Debug overlay renderer | MISSING | class present, never invoked (debug-only feature) |
+
+### Commands
+| Feature | Status | Notes |
+|---|---|---|
+| Client command tree (/clientClouds clear/spawn/get/count/refresh/speed/seed/height) | VERIFIED | original task 8 |
+| Server command tree (/clouds ...) | MISSING (deferred) | 26.2 typed-arg bootstrap limitation; client commands operate the client manager |
+
+### Server / multiplayer
+| Feature | Status | Notes |
+|---|---|---|
+| Server cloud manager + spawning | PORTED | |
+| Cloud data persistence (26.2 SavedDataType) | VERIFIED (compiles, no crash) | on-disk save file not yet inspected |
+| Sync packets (manager/regions/types/lightning/mode) | PORTED | 7 packet types |
+| Dimension change / respawn resync | PORTED | per-tick polling (26.2 has no events for this) |
+| Vanilla weather cycle disable (server) | PORTED | MixinServerLevel |
+| Dimension whitelist/blacklist (`whitelistAsBlacklist`) | MISSING | canRenderInDimension is a TODO (always true) |
+| `cloudMode` (DEFAULT/SINGLE/AMBIENT), `cloudSeed`/`useSpecificSeed` | PORTED | |
+
+### Misc
+| Feature | Status | Notes |
+|---|---|---|
+| Custom rain sound replacement | MISSING | no-op stub (26.2 sound system) |
+| Water color modulation by world effects (MixinBiomeColors) | MISSING | injection body commented out |
+| Vivecraft compat | N/A | VR not used; stub kept |
+
+### Work order (most visible first)
+1. Cloud shadow map -> verify on screen (sunlit terrain under a cloud at noon).
+2. Atmospheric cloud layer (default ON in original; big visible gap).
+3. Dimension whitelist (functional).
+4. cubeNormals per-face shading.
+5. Transparent-edge visual verification.
+6. Remaining: rain sounds, previewer image export, debug overlay, fogMode/LOD/culling,
+   lightning bolt mesh, server commands.
+
 ## FULL-REGION RENDERING + SERVER PERSISTENCE (2026-09-12)
 Verified on screen (dev client, devshot screenshot): discrete white voxel cloud
 formations in a noon sky, sun visible through the gaps, correct depth (mountain
