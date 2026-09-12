@@ -124,8 +124,14 @@ Statuses: **VERIFIED** = ported + confirmed on screen (devshot/play-test);
 7. ~~Lightning bolt mesh~~ **DONE 2026-09-12** (sc-bolt-3).
    ~~Main-menu config button~~ **DONE 2026-09-12** (sc-optbtn-4).
    ~~Thunder audio assets~~ **DONE 2026-09-12** (27 oggs shipped).
-   Remaining (visibility order): custom rain sound-replacement (no-op stub), fogMode,
-   previewer image export, debug overlay, LOD/culling perf options, server command tree.
+   **PORT COMPLETE for all user-visible features (2026-09-12).** Final forward-facing
+   devshot (sc-final-verify) confirms: terrain occludes clouds (depth), soft alpha edges
+   (transparency), discrete formations, atmospheric cirrus, no vanilla sheet.
+   Remaining (low-priority / niche, not started — see table above for rationale):
+   custom rain sound-replacement (26.2 sound API + version-fragile vanilla path match),
+   fogMode screen-space world fog (complex post-pass, subtle), previewer image export
+   (offscreen capture), debug overlay (debug-only), LOD/culling perf options, server
+   command tree (26.2 typed-arg bootstrap limitation).
 
 ## CLOUD VOLUME ANCHORING (2026-09-12, from Jan's "are you sure about the layers" question)
 
