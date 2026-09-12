@@ -68,7 +68,7 @@ Statuses: **VERIFIED** = ported + confirmed on screen (devshot/play-test);
 | Storm fog (darkening + lightning flash) | VERIFIED | intensity from storm coverage above camera |
 | Custom rain (PrecipitationQuads) | VERIFIED | slice: no wind tilt, no snow |
 | Lightning (server spawn -> packet -> flash) | VERIFIED (flash) | bolt MESH missing (jagged branch geometry not ported) |
-| Cloud shadow map + terrain shadows (`distantShadows`) | UNVERIFIED | depth pass + fullscreen terrain pass ported; no on-screen confirmation |
+| Cloud shadow map + terrain shadows (`distantShadows`) | **VERIFIED (2026-09-12, A/B devshot)** | 512px ortho shadow map + fullscreen terrain pass. Two 26.2 gotchas fixed: (1) shadow light-volume matrix sign errors (nothing landed in the frustum); (2) **per-frame UBO mapping silently kills a pass** -- the fixed buffer mapped every frame (and even MappableRingBuffer's size-only createBuffer, which also fails to map on this Mesa/Intel ARL machine) made the terrain pass draw nothing; fixed with a manual 3-deep ring built from the data-carrying createBuffer overload with UNIFORM|MAP_READ usage. Shadow volume extends 128 blocks BELOW camY (the original raymarch covered the ground). SHADOWTEST scene: shelf visibly darkened with shadows, bright with NOSHADOW. |
 | Atmospheric 2D cloud layer (`atmosphericClouds`, default ON) | MISSING | TODO stub in getAtmosphericCloudRenderer |
 | Fog render modes (`fogMode`) | MISSING | single shader-fog implementation only |
 | LOD / frustum culling / generation interval / concurrent dispatches / occlusion-side testing | MISSING | perf/quality options are no-ops (config values kept) |
@@ -114,7 +114,7 @@ Statuses: **VERIFIED** = ported + confirmed on screen (devshot/play-test);
 | Vivecraft compat | N/A | VR not used; stub kept |
 
 ### Work order (most visible first)
-1. Cloud shadow map -> verify on screen (sunlit terrain under a cloud at noon).
+1. ~~Cloud shadow map~~ **DONE 2026-09-12** (A/B verified; UBO ring fix + volume 128 blocks below camY).
 2. Atmospheric cloud layer (default ON in original; big visible gap).
 3. Dimension whitelist (functional).
 4. cubeNormals per-face shading.
