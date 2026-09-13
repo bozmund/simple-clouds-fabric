@@ -363,6 +363,12 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	// drops (the fill is spread over frames, nearest first).
 	private static final int CHUNK_ENQUEUE_BUDGET = 6;
 	private static final int CHUNK_POLL_BUDGET = 12;
+	/** A2: a chunk regenerates when the wind scroll drifts this far (cloud units,
+	 *  1 = 8 world blocks) from the scroll its geometry was sampled with. The
+	 *  original evaluated the noise per frame (GPU compute, Scroll uniform);
+	 *  this is the CPU compromise — the field updates in 8-block steps at whatever
+	 *  rate the worker pool + budgets allow (nearest chunks first). */
+	private static final float SCROLL_REGEN_THRESHOLD = 1.0F;
 	private static final int PRIMARY_CHUNK = 32; // LevelOfDetailConfig primary span (cloud units)
 	private static final int LOD_Y_MIN = 16;     // minimum Y span (cloud units)
 	private static final float CLOUD_SCALE_F = 8.0F;
@@ -385,6 +391,11 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		// game tick at which this data was published; the chunk ramps alpha 0->1 over
 		// five ticks so new content fades in instead of popping.
 		long lastGenTick;
+		// A2: the wind scroll the noise was sampled with (the chunk regenerates when
+		// the scroll drifts more than SCROLL_REGEN_THRESHOLD from this snapshot).
+		float genScrollX;
+		float genScrollY;
+		float genScrollZ;
 	}
 
 	/** Chunk identity: snapped world XZ origin (cloud units) + lodScale. */
@@ -393,7 +404,7 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	}
 
 	// Off-thread chunk generation: a worker POOL (half the cores) generates chunks in
-	// parallel; each job gets its own CpuCloudGenerator (the generator is not
+	// parallel; each WORKER owns its CpuCloudGenerator (the generator is not
 	// thread-safe). The render thread only enqueues stale chunks and picks up finished
 	// ones. All job inputs are immutable, so crossing the thread boundary is safe.
 	private final java.util.concurrent.LinkedBlockingQueue<ChunkJob> chunkJobQueue = new java.util.concurrent.LinkedBlockingQueue<>();
@@ -409,14 +420,17 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	 *  camera height in cloud units above cloudHeight (negative below the clouds). */
 	private record ChunkJob(ChunkCoord coord, int x0, int y0, int z0, int x1, int y1, int z1, int lodScale,
 			List<CpuCloudGenerator.CloudLayerGroup> groups, List<CpuCloudGenerator.RegionMask> regions,
-			long regionSig, int groupsHash, int camGridY, float cloudHeight)
+			long regionSig, int groupsHash, int camGridY, float cloudHeight,
+			float scrollX, float scrollY, float scrollZ)
 	{
 	}
 
 	/** A finished chunk generation (CPU side; the render thread uploads it into the
-	 *  chunk's GPU buffer and releases the buffers back to the pool). */
+	 *  chunk's GPU buffer and releases the buffers back to the pool). Carries the
+	 *  scroll the geometry was generated with (A2: staleness test). */
 	private record ChunkResult(ChunkCoord coord, java.nio.ByteBuffer opaque, int opaqueCount,
-			java.nio.ByteBuffer transparent, int transparentCount, float stormCoverage)
+			java.nio.ByteBuffer transparent, int transparentCount, float stormCoverage,
+			float scrollX, float scrollY, float scrollZ)
 	{
 	}
 
@@ -473,9 +487,14 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 					float[] opaqueCount = new float[1];
 					float[] transparentCount = new float[1];
 					float[] stormCoverage = new float[1];
+					// A2: the real wind scroll (cloud units) and the original's wiggle
+					// formula ((scrollX+scrollY+scrollZ)/5, the 1.20.1 Wiggle uniform)
+					// are baked into the noise sample — clouds stop being a frozen
+					// field on one conveyor belt.
+					float wiggle = (job.scrollX() + job.scrollY() + job.scrollZ()) / 5.0F;
 					java.nio.ByteBuffer[] out = generator.generate(
 							job.x0(), job.y0(), job.z0(), job.x1(), job.y1(), job.z1(),
-							CLOUD_SCALE_F, 0.0F, 0.0F, 0.0F, 0.0F, job.lodScale(), job.cloudHeight(),
+							CLOUD_SCALE_F, job.scrollX(), job.scrollY(), job.scrollZ(), wiggle, job.lodScale(), job.cloudHeight(),
 							opaque, transparent,
 							(current, minCap, written) ->
 							{
@@ -493,7 +512,8 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 					transparent = out[1];
 					ownedO[0] = opaque;
 					ownedT[0] = transparent;
-					this.completedChunks.add(new ChunkResult(job.coord(), opaque, (int) opaqueCount[0], transparent, (int) transparentCount[0], stormCoverage[0]));
+					this.completedChunks.add(new ChunkResult(job.coord(), opaque, (int) opaqueCount[0], transparent, (int) transparentCount[0], stormCoverage[0],
+							job.scrollX(), job.scrollY(), job.scrollZ()));
 					published = true;
 					LOGGER.info("Simple Clouds clouds: chunk {}x{} (lod {}) generated off-thread, {} formations, {} opaque / {} transparent instances",
 							job.x0(), job.z0(), job.lodScale(), job.regions().size(), (int) opaqueCount[0], (int) transparentCount[0]);
@@ -569,20 +589,21 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		view.mul(camera.getViewRotationMatrix(new org.joml.Matrix4f()));
 		view.mul(new org.joml.Matrix4f().translate((float)-camX, (float)-camY, (float)-camZ));
 
-		// Step 4 (wind drift): the port generates each chunk once (frozen noise), so
-		// the clouds are translated in the view matrix instead of scrolling the noise
-		// field. The original's noise sample is (worldPos + Scroll)/scale, so its
-		// clouds move by -Scroll; the drift is therefore -getScroll (world blocks).
-		// `view` gets the drift (all cloud passes use it); `terrainView` stays
-		// undrifted for the world-fixed terrain (the cloud-shadow depth pass is a
-		// step 5/6 stub, so the terrain shadow pass needs no cloud alignment).
+		// A2 (VISUAL-PARITY-PLAN addendum): NO global view translation anymore — the
+		// wind scroll is baked into the generated geometry (each chunk carries the
+		// scroll it was sampled with and regenerates when the scroll drifts more
+		// than SCROLL_REGEN_THRESHOLD, the CPU equivalent of the original's
+		// per-frame Scroll/Wiggle uniforms). `terrainView` equals `view` (kept for
+		// the terrain-shadow call).
 		org.joml.Matrix4f terrainView = new org.joml.Matrix4f(view);
 		var driftManager = CloudManager.get(Minecraft.getInstance().level);
+		float scrollX = 0.0F, scrollY = 0.0F, scrollZ = 0.0F;
 		if (driftManager != null)
-			view.mul(new org.joml.Matrix4f().translate(
-				-driftManager.getScrollX(partialTick),
-				-driftManager.getScrollY(partialTick),
-				-driftManager.getScrollZ(partialTick)));
+		{
+			scrollX = driftManager.getScrollX(partialTick);
+			scrollY = driftManager.getScrollY(partialTick);
+			scrollZ = driftManager.getScrollZ(partialTick);
+		}
 
 		// Full-region rendering (step 2, LOD). The cloud field is world-fixed (CLOUD_SCALE
 		// = 8 blocks per cloud unit). The chunk layout comes from LevelOfDetailConfig:
@@ -695,6 +716,9 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 					? RenderSystem.getDevice().createBuffer(() -> "simpleclouds.chunk.t." + r.coord().x0() + "." + r.coord().z0() + "." + r.coord().lodScale(), GpuBuffer.USAGE_VERTEX, r.transparent())
 					: null;
 			d.stormCoverage = r.stormCoverage();
+			d.genScrollX = r.scrollX();
+			d.genScrollY = r.scrollY();
+			d.genScrollZ = r.scrollZ();
 			// Free the replaced chunk's GPU buffers.
 			if (prev != null)
 			{
@@ -734,14 +758,20 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 			int lodScale = (int) c[2];
 			ChunkCoord key = new ChunkCoord((int) c[0], (int) c[1], lodScale);
 			ChunkData d = this.chunkCaches.get(key);
-			boolean stale = d == null || d.regionSig != regionSig || d.groupsHash != groupsHash || groupsChanged;
+			// A2: also stale when the wind scroll drifted beyond the threshold since
+			// this chunk was generated (the noise was sampled at the old phase).
+			boolean stale = d == null || d.regionSig != regionSig || d.groupsHash != groupsHash || groupsChanged
+					|| Math.abs(scrollX - d.genScrollX) > SCROLL_REGEN_THRESHOLD
+					|| Math.abs(scrollY - d.genScrollY) > SCROLL_REGEN_THRESHOLD
+					|| Math.abs(scrollZ - d.genScrollZ) > SCROLL_REGEN_THRESHOLD;
 			if (stale && this.pendingChunks.add(key))
 			{
 				enqueued++;
 				int x0 = (int) c[0], z0 = (int) c[1];
 				this.chunkJobQueue.add(new ChunkJob(key, x0, 0, z0,
 						x0 + PRIMARY_CHUNK * lodScale, maxLayerY, z0 + PRIMARY_CHUNK * lodScale, lodScale,
-						groups, regions, regionSig, groupsHash, camGridY, (float) cloudHeight));
+						groups, regions, regionSig, groupsHash, camGridY, (float) cloudHeight,
+						scrollX, scrollY, scrollZ));
 			}
 		}
 

@@ -54,8 +54,8 @@ import net.minecraft.world.phys.Vec2;
  * <li>{@code B} landscape: over land, held at y=100, pitch -15 &rarr; {@code devshot-B.png}</li>
  * <li>{@code C} up: straight up from the beach (same position as A) &rarr; {@code devshot-C.png}</li>
  * <li>{@code D} inside/above: the beach XZ held at y=260, pitch -20 &rarr; {@code devshot-D.png}</li>
- * <li>{@code E} motion: view A twice, 200 game ticks (10 s) apart &rarr;
- * {@code devshot-E1.png} / {@code devshot-E2.png}</li>
+ * <li>{@code E} motion: view A three times, 200 game ticks (10 s) apart &rarr;
+ * {@code devshot-E1.png} / {@code devshot-E2.png} / {@code devshot-E3.png}</li>
  * <li>{@code NOSPAWN} skip the automatic test-formation spawn (shows the world's own
  * persisted formations only).</li>
  * <li>{@code LOOP} (A1 memory proof) repeat the standard view sequence until
@@ -87,11 +87,13 @@ public final class DevShot
 	{
 		String file1;
 		String file2; // second shot of this view (motion), null otherwise
+		String file3; // third shot of this view (motion, A2), null otherwise
 		float pitch;
 		float yaw;
 		double x, y, z;
 		boolean pin; // teleport the player to (x,y,z) every frame
 		long waitTicks; // after file1: wait this many game ticks, then take file2
+		long waitTicks2; // after file2: wait this many game ticks, then take file3
 
 		View(String file1, float pitch, float yaw, double x, double y, double z)
 		{
@@ -117,7 +119,8 @@ public final class DevShot
 	// when devshot.request is deleted externally (the script's stop switch).
 	private static boolean loop;
 	private static int loopCycle;
-	private static long waitUntilTick = -1; // game tick at which the second (motion) shot fires
+	private static long waitUntilTick = -1; // game tick at which the pending (motion) shot fires
+	private static int pendingShot = 0; // 2 = file2 pending, 3 = file3 pending (motion view)
 	private static long firstTick = -1; // game time of the first frame with a player
 	private static final int POST_VIEW_FRAMES = 240; // settle time after switching views
 
@@ -752,7 +755,9 @@ public final class DevShot
 								v.pitch = 0.0F;
 								v.file1 = "devshot-E1.png";
 								v.file2 = "devshot-E2.png";
+								v.file3 = "devshot-E3.png"; // A2: three motion shots
 								v.waitTicks = 200; // 10 s
+								v.waitTicks2 = 200; // 10 s
 								break;
 							}
 							views.add(v);
@@ -819,14 +824,31 @@ public final class DevShot
 		if (boltTest && framesLeft > 0 && framesLeft % 30 == 0)
 			spawnTestBolt(mc); // keep a young bolt alive for the 240-frame shot
 
-		// Second shot of the motion view (E): fire on a game-tick boundary, not frames.
+		// Second/third shots of the motion view (E): fire on game-tick boundaries,
+		// not frames. A2: three shots (E1/E2/E3) 200 ticks (10 s) apart.
 		if (waitUntilTick > 0)
 		{
 			if (mc.level.getGameTime() >= waitUntilTick)
 			{
-				waitUntilTick = -1;
-				shoot(mc, currentView().file2);
-				finishOrAdvance(mc);
+				View v = currentView();
+				if (pendingShot == 2)
+				{
+					shoot(mc, v.file2);
+					if (v.file3 != null && v.waitTicks2 > 0)
+					{
+						pendingShot = 3;
+						waitUntilTick = mc.level.getGameTime() + v.waitTicks2;
+						return;
+					}
+					waitUntilTick = -1;
+					finishOrAdvance(mc);
+				}
+				else
+				{
+					shoot(mc, v.file3);
+					waitUntilTick = -1;
+					finishOrAdvance(mc);
+				}
 			}
 			return;
 		}
@@ -872,6 +894,7 @@ public final class DevShot
 			shoot(mc, v.file1);
 			if (v.waitTicks > 0)
 			{
+				pendingShot = 2;
 				waitUntilTick = mc.level.getGameTime() + v.waitTicks;
 				return;
 			}

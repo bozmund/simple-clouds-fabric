@@ -79,9 +79,9 @@ if [ "$drawn" -ne 1 ]; then echo "FAIL ($stage): no cloud draw within 400s"; tai
 #    rendered, so window stacking cannot hide the game. Standard-view runs
 #    produce devshot-A.png ... devshot-E2.png; the legacy run devshot.png.
 VIEWWANT=0; for t in ${DEVSHOT_EXTRA:-}; do case "$t" in A|B|C|D|E) VIEWWANT=$((VIEWWANT+1));; esac; done
-EVIEW=0; case " ${DEVSHOT_EXTRA:-} " in *" E "*) EVIEW=1;; esac
+EVIEW=0; case " ${DEVSHOT_EXTRA:-} " in *" E "*) EVIEW=2;; esac
 if [ "$VIEWWANT" -gt 0 ]; then
-  WANT=$(( VIEWWANT + EVIEW ))   # E produces two files
+  WANT=$(( VIEWWANT + EVIEW ))   # E produces three files (E1/E2/E3, A2)
   # 240 x 2s = 8 min: the LOD field fill-wait (step 2) can take ~2-3 min before the
   # first shot, then 12s settle per view.
   for i in $(seq 1 240); do

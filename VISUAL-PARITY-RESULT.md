@@ -9,7 +9,7 @@ Status legend: **done** = criteria met, evidence below · **partial** · **not s
 | Step | Status | Evidence |
 |---|---|---|
 | A1 memory (addendum) | **done** | below |
-| A2 motion (addendum) | not started | — |
+| A2 motion (addendum) | **done** | below |
 | A3 horizon/flat/above (addendum) | not started | — |
 | 5 transparency (port) | not started | — |
 | 6 shadows | not started | — |
@@ -86,3 +86,60 @@ whole terminal** (the client JVM was a child of the session, not of a unit).
   degradation over the run.
 
 **A1 criterion ("prove that its memory levels off") — MET.**
+
+---
+
+## A2 — motion: real scroll and wiggle (addendum, 2026-09-13)
+
+**Verdict: the wind scroll and the original's wiggle are baked into the generated
+noise; the E1/E2/E3 still shots (10 s apart, 32× wind) show genuinely different
+cloud patterns — reshaped, not a shifted copy. The global conveyor-belt view
+translation is gone.**
+
+### What changed
+
+- `SimpleCloudsRenderer`: the Step-4 global view-matrix translation
+  (`view.mul(translate(-scrollX, -scrollY, -scrollZ))`) is REMOVED. The current
+  lerp'd scroll is now (a) baked into every chunk generation
+  (`CpuCloudGenerator.generate(..., scrollX, scrollY, scrollZ, wiggle, ...)`, which
+  feeds `sampleLayer` exactly like the original shader's
+  `noise((pos + Scroll)/Scale, Wiggle)`), and (b) the staleness test: a chunk
+  regenerates when any scroll axis drifted more than `SCROLL_REGEN_THRESHOLD = 1.0`
+  cloud unit (8 blocks) from the snapshot in its geometry.
+- Wiggle: the original's exact formula, `(scrollX + scrollY + scrollZ) / 5.0F`
+  (the 1.20.1 `Wiggle` uniform — it is NOT an independent animation; it rides on
+  the scroll), computed per chunk job.
+- `ChunkJob` / `ChunkResult` / `ChunkData` carry the scroll snapshots.
+- `DevShot`: the E motion view now takes THREE shots, `devshot-E1/E2/E3.png`, 200
+  game ticks (10 s) apart; `dev-relaunch.sh` wait count updated (E = 3 files).
+
+This is a CPU approximation of the original (per-frame GPU noise evaluation): the
+field updates in 8-block scroll steps at the worker-pool/budget rate (nearest chunks
+first), instead of 60×/s. Documented as such in the renderer constant.
+
+### Proof (time-pinned E1/E2/E3)
+
+Run: `DEVSHOT_EXTRA='E FAST'` (32× cloud speed, pinned camera at
+8.0x70.0x8.0, pitch 0, yaw 0, noon locked, same formation field):
+
+| shot | scroll (X, Y, Z) at shot | Δ scroll vs E1 |
+|---|---|---|
+| E1 (12:22:52) | (-51.98, 0, -85.43) | — |
+| E2 (12:23:02, +200 ticks) | (-65.60, 0, -75.47) | (-13.62, 0, +9.96) ≈ 16.8 cloud units (134 blocks) |
+| E3 (12:23:12, +200 ticks) | (-64.09, 0, -76.76) | (-12.11, 0, +8.67) ≈ 14.8 cloud units (118 blocks) |
+
+Images (camera + terrain identical in all three — read back): `/tmp/sc-view-E1.png`,
+`/tmp/sc-view-E2.png`, `/tmp/sc-view-E3.png` (in-game copies `/tmp/sc-a2-final/`).
+The cloud pattern is DIFFERENT in each shot — gap positions, blob shapes and
+coverage change non-uniformly across the sky (the noise is re-sampled at the new
+scroll phase per layer scale), not a rigid translation of one copy. The E2→E3 net
+scroll delta is small because the wind's circular orbit (`scrollX/Z = cos/sin(θ)·100`)
+was rotating direction at that phase; the path length (and the visible reshaping)
+is the same order as E1→E2.
+
+Memory under the 32× load (continuous full-field regeneration at the budget rate):
+heap 1.1–1.6 GB, direct 102–308 MB, RSS 3.7–4.0 GB, unit peak 5.08 GB — no growth
+signs, consistent with A1.
+
+**A2 criterion ("the 26.2 shot shows swirl (a changed cloud pattern), not just a
+shifted copy") — MET.**
