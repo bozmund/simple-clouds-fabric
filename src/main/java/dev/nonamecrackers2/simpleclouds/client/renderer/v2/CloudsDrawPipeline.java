@@ -60,6 +60,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 	private static final Identifier CLOUDS_TRANSPARENCY_LOCATION = SimpleCloudsMod.id("core/clouds_transparency");
 	// Storm fog overlay (26.2 slice: fullscreen blend pass, see core/storm_fog.fsh).
 	private static final Identifier STORM_FOG_LOCATION = SimpleCloudsMod.id("core/storm_fog");
+	private static final Identifier SKY_FLASH_LOCATION = SimpleCloudsMod.id("core/sky_flash");
 	// Screen-covering triangle in clip space.
 	private static final float[] FULLSCREEN_TRIANGLE = { -1.0F, -1.0F, 3.0F, -1.0F, -1.0F, 3.0F };
 
@@ -100,6 +101,8 @@ public class CloudsDrawPipeline implements AutoCloseable
 	private final RenderPipeline stormFogPipeline;
 	private final GpuBuffer triangleBuffer;
 	private final GpuBuffer stormFogUbo;
+	private final RenderPipeline skyFlashPipeline;
+	private final GpuBuffer skyFlashUbo;
 
 	// Cloud shadow map (26.2 slice): top-down ortho depth pass over the same
 	// instances + a fullscreen terrain-shadow pass. See core/clouds_shadow.* and
@@ -278,6 +281,25 @@ public class CloudsDrawPipeline implements AutoCloseable
 		this.triangleBuffer = device.createBuffer(() -> "simpleclouds.fullscreenTriangle", GpuBuffer.USAGE_VERTEX, triangleData);
 
 		this.stormFogUbo = device.createBuffer(() -> "simpleclouds.stormFog", GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, 32L);
+
+		// Sky flash (storm plan step 1): same fullscreen-triangle shape as the
+		// storm fog — a short white brightening of the whole screen (see
+		// core/sky_flash.fsh for why the port draws this itself).
+		BindGroupLayout skyFlashBgl = BindGroupLayout.builder()
+				.withUniform("SkyFlash", UniformType.UNIFORM_BUFFER)
+				.build();
+		this.skyFlashPipeline = RenderPipeline.builder()
+				.withLocation(SKY_FLASH_LOCATION)
+				.withVertexShader(SKY_FLASH_LOCATION)
+				.withFragmentShader(SKY_FLASH_LOCATION)
+				.withBindGroupLayout(skyFlashBgl)
+				.withVertexBinding(0, triangleFormat)
+				.withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
+				.withCull(false)
+				.withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT))
+				.withDepthStencilState(Optional.empty())
+				.build();
+		this.skyFlashUbo = device.createBuffer(() -> "simpleclouds.skyFlash", GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, 16L);
 
 		// ---- Cloud shadow map ----
 		this.shadowTarget = new SimpleRenderTarget("simpleclouds.shadow", true, GpuFormat.RGBA8_UNORM);
@@ -565,6 +587,33 @@ public class CloudsDrawPipeline implements AutoCloseable
 		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.stormFog", colorView, Optional.empty(), depthView, OptionalDouble.empty());
 		pass.setPipeline(this.stormFogPipeline);
 		pass.setUniform("StormFog", this.stormFogUbo);
+		pass.setVertexBuffer(0, this.triangleBuffer.slice());
+		pass.draw(3, 1, 0, 0);
+		pass.close();
+	}
+
+	/**
+	 * Draws the sky flash (storm plan step 1): a short full-screen white
+	 * brightening while a nearby (<= 2000 blocks) bolt is bright. The strength is
+	 * the gated flash from WorldEffects.flashStrength (2-tick vanilla sky-flash
+	 * renewal + "Hide Sky Flashes" option); 0 means the pass is skipped.
+	 */
+	public void drawSkyFlash(float strength)
+	{
+		if (strength <= 0.0F)
+			return;
+		try (var view = this.skyFlashUbo.slice().map(true, false))
+		{
+			view.data().putFloat(0, strength);
+		}
+		RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
+		GpuTextureView colorView = main.getColorTextureView();
+		GpuTextureView depthView = main.getDepthTextureView();
+
+		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
+		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.skyFlash", colorView, Optional.empty(), depthView, OptionalDouble.empty());
+		pass.setPipeline(this.skyFlashPipeline);
+		pass.setUniform("SkyFlash", this.skyFlashUbo);
 		pass.setVertexBuffer(0, this.triangleBuffer.slice());
 		pass.draw(3, 1, 0, 0);
 		pass.close();

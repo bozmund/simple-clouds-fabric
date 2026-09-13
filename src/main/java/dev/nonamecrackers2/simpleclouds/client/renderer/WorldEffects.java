@@ -20,6 +20,8 @@ import dev.nonamecrackers2.simpleclouds.common.config.SimpleCloudsConfig;
 import dev.nonamecrackers2.simpleclouds.client.renderer.lightning.LightningBolt;
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.WorldEffectsDrop;
 import dev.nonamecrackers2.simpleclouds.common.cloud.CloudType;
+import dev.nonamecrackers2.simpleclouds.common.cloud.SimpleCloudsConstants;
+import net.minecraft.sounds.SoundEvent;
 import dev.nonamecrackers2.simpleclouds.common.init.SimpleCloudsSounds;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -51,7 +53,7 @@ import net.minecraft.world.level.levelgen.Heightmap;
  */
 public class WorldEffects
 {
-	private static final org.apache.logging.log4j.Logger LOGGER =
+	private static final org.apache.logging.log4j.Logger LOGGER = 
 			org.apache.logging.log4j.LogManager.getLogger("simpleclouds/WorldEffects");
 
 	// Scan box constants mirror the 1.20.1 WorldEffects (RAIN_SCAN_WIDTH/2, etc.).
@@ -121,8 +123,6 @@ public class WorldEffects
 	private final SimpleCloudsRenderer renderer;
 	private final Random random = new Random();
 	private final Map<Long, Drop> drops = new HashMap<>();
-	private int flashTicks;
-	private int flashTotal;
 
 	public WorldEffects(Minecraft mc, SimpleCloudsRenderer renderer)
 	{
@@ -155,7 +155,9 @@ public class WorldEffects
 
 	public boolean hasLightningToRender()
 	{
-		return this.flashTicks > 0;
+		// Original: bolts exist. (The port used to gate this on the spawn-time
+		// flash state, which made bolts invisible whenever the flash had lapsed.)
+		return !this.lightningBolts.isEmpty();
 	}
 
 	public void forLightning(Consumer<LightningBolt> consumer)
@@ -181,6 +183,15 @@ public class WorldEffects
 					(bolt.getPosition().x - camX) * (bolt.getPosition().x - camX)
 							+ (bolt.getPosition().y - camY) * (bolt.getPosition().y - camY)
 							+ (bolt.getPosition().z - camZ) * (bolt.getPosition().z - camZ));
+			// Storm plan step 1: mirror the 1.20.1 original — while a rendered bolt
+			// is within CLOSE_THUNDER_CUTOFF (2000 blocks) and still bright
+			// (lifetime fade > 0.5), keep the 2-tick vanilla sky flash renewed, so
+			// the flash lasts exactly as long as a nearby bolt is bright. Distant
+			// strikes (even 12,000 blocks away) apply NO flash. Vanilla's lightmap
+			// honors "Hide Sky Flashes"; the fog lift (flashStrength) is gated
+			// separately on the same option.
+			if (dist <= SimpleCloudsConstants.CLOSE_THUNDER_CUTOFF && bolt.getFade(partialTick) > 0.5F)
+				this.mc.level.setSkyFlashTime(2);
 			float fogStart = this.renderer.getFogStart();
 			float fogEnd = this.renderer.getFogEnd();
 			float alpha = net.minecraft.util.Mth.clamp(1.0F - (dist - fogStart) / (fogEnd - fogStart), 0.0F, 1.0F);
@@ -204,9 +215,6 @@ public class WorldEffects
 	 */
 	public void spawnLightning(BlockPos pos, boolean onlySound, int seed, int depth, int branchCount, float maxBranchLength, float maxWidth, float minimumPitch, float maximumPitch)
 	{
-		this.flashTotal = 24 + (seed & 31);
-		this.flashTicks = this.flashTotal;
-
 		ClientLevel level = this.mc.level;
 		Player player = this.mc.player;
 		if (level == null || player == null)
@@ -217,21 +225,51 @@ public class WorldEffects
 		double dy = player.getY() - (pos.getY() + 0.5);
 		double dz = player.getZ() - (pos.getZ() + 0.5);
 		double distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
-		// Storm plan step 0: every strike (server-spawned, client-spawned or
-		// DevShot-forced) logs its distance to the camera and the flash that
-		// this strike applies, so S5 has per-strike proof data for step 1.
-		LOGGER.info("[DEVSHOT-LIGHTNING] strike at {}x{}x{}: distToCam={} blocks, onlySound={}, flash {} ticks ({}-{} s) applied",
+		// Storm plan step 0/1: every strike (server-spawned, client-spawned or
+		// DevShot-forced) logs its distance to the camera and the flash it is
+		// ALLOWED to apply, so S5 has per-strike proof data.
+		LOGGER.info("[DEVSHOT-LIGHTNING] strike at {}x{}x{}: distToCam={} blocks, onlySound={}, flash {}",
 			pos.getX(), pos.getY(), pos.getZ(), Math.round(distance), onlySound,
-			this.flashTotal, String.format(java.util.Locale.ROOT, "%.2f", 24.0 / 20.0), String.format(java.util.Locale.ROOT, "%.2f", (24.0 + 31.0) / 20.0));
-		var sound = distance < 16.0 ? SimpleCloudsSounds.CLOSE_THUNDER : SimpleCloudsSounds.DISTANT_THUNDER;
-		// playLocalSound handles the distance attenuation for the local player.
-		level.playLocalSound(pos, sound, SoundSource.WEATHER, 1.0F, 1.0F, false);
+			distance <= SimpleCloudsConstants.CLOSE_THUNDER_CUTOFF
+					? "sky-flash (2t per frame while bolt bright, fade>0.5)"
+					: "none (beyond the 2000-block flash cutoff)");
+		// Storm plan step 2: the original's thunder. CLOSE_THUNDER within
+		// CLOSE_THUNDER_CUTOFF (2000 blocks, also the attenuation cutoff),
+		// otherwise DISTANT_THUNDER attenuated over the configured distance;
+		// pitch 0.5+fade*0.5 (fade 1 at THUNDER_PITCH_FULL_DIST=3000, 0 from
+		// THUNDER_PITCH_MINIMUM_DIST=5000 out), volume 1+rand*4, and a delay of
+		// dist / (SOUND_METERS_PER_SECOND=2000 blocks/s) * 20 ticks so the rumble
+		// arrives at the speed of sound. The port used to play an undelayed,
+		// fixed-pitch local sound at the strike position.
+		SoundEvent sound = SimpleCloudsSounds.DISTANT_THUNDER;
+		int attenuation = SimpleCloudsConfig.CLIENT.thunderAttenuationDistance.get();
+		float dist = (float) distance;
+		if (dist < SimpleCloudsConstants.CLOSE_THUNDER_CUTOFF)
+		{
+			sound = SimpleCloudsSounds.CLOSE_THUNDER;
+			attenuation = SimpleCloudsConstants.CLOSE_THUNDER_CUTOFF;
+		}
+		float fade = 1.0F - Math.min(Math.max(dist - (float) SimpleCloudsConstants.THUNDER_PITCH_FULL_DIST, 0.0F)
+				/ ((float) SimpleCloudsConstants.THUNDER_PITCH_MINIMUM_DIST - (float) SimpleCloudsConstants.THUNDER_PITCH_FULL_DIST), 1.0F);
+		// 1.20.1 parity: the bolt's seed also drives its shape — one RandomSource
+		// draws the thunder volume first, then the bolt geometry (same order as
+		// the original).
+		net.minecraft.util.RandomSource random = net.minecraft.util.RandomSource.create(seed & 0xFFFFFFFFL);
+		float volume = 1.0F + random.nextFloat() * 4.0F;
+		float pitch = 0.5F + fade * 0.5F;
+		dev.nonamecrackers2.simpleclouds.client.sound.AdjustableAttenuationSoundInstance instance =
+				new dev.nonamecrackers2.simpleclouds.client.sound.AdjustableAttenuationSoundInstance(
+						sound, SoundSource.WEATHER, volume, pitch, random,
+						pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5, attenuation);
+		int delayTicks = net.minecraft.util.Mth.floor(dist / SimpleCloudsConstants.SOUND_METERS_PER_SECOND) * 20;
+		this.mc.getSoundManager().playDelayed(instance, delayTicks);
+		LOGGER.info("[DEVSHOT-LIGHTNING] thunder: sound={}, delay={} ticks ({} s), pitch={}, volume={}, attenuation={}",
+				sound, delayTicks, String.format(java.util.Locale.ROOT, "%.2f", delayTicks / 20.0),
+				String.format(java.util.Locale.ROOT, "%.2f", pitch),
+				String.format(java.util.Locale.ROOT, "%.2f", volume), attenuation);
 		if (onlySound)
 			return;
 
-		// 1.20.1 parity: the bolt's seed also drives its shape; color from the
-		// weighted list when lightningColorVariation is on.
-		net.minecraft.util.RandomSource random = net.minecraft.util.RandomSource.create(seed & 0xFFFFFFFFL);
 		float r = 1.0F, g = 1.0F, b = 1.0F;
 		if (SimpleCloudsConfig.CLIENT.lightningColorVariation.get())
 		{
@@ -265,18 +303,30 @@ public class WorldEffects
 		return this.renderer.getStormCoverage();
 	}
 
-	/** 0..1 lightning flash strength at the given partial tick (flickering decay). */
+	/**
+	 * 0..1 lightning flash strength at the given partial tick. Storm plan step 1:
+	 * the port used to start a 1.2-2.75 s global flash on EVERY strike at any
+	 * distance (even sound-only ones) — that is what made far storms flash the
+	 * whole screen. Now the strength is driven by the VANILLA sky flash, which
+	 * renderLightning renews (2 ticks) per frame only while a rendered bolt is
+	 * within CLOSE_THUNDER_CUTOFF (2000 blocks) and still bright (lifetime fade
+	 * > 0.5) — the original's mechanism — and is zero when the player enabled
+	 * "Hide Sky Flashes" (vanilla's lightmap flash honors the option itself; the
+	 * storm-fog lift through this channel must as well).
+	 */
 	public float flashStrength(float partialTick)
 	{
-		if (this.flashTicks <= 0)
+		ClientLevel level = this.mc.level;
+		if (level == null || this.mc.options == null)
 			return 0.0F;
-		float t = 1.0F - (this.flashTicks - partialTick) / (float) this.flashTotal;
-		if (t <= 0.0F)
-			return 1.0F;
-		if (t >= 1.0F)
+		if (this.mc.options.hideLightningFlash().get())
 			return 0.0F;
-		float envelope = t < 0.15F ? t / 0.15F : 1.0F - (t - 0.15F) / 0.85F;
-		return (float) (Math.max(0.0, envelope) * (0.7 + 0.3 * Math.abs(Math.sin(t * 9.0))));
+		int remaining = ((dev.nonamecrackers2.simpleclouds.mixin.MixinClientLevelAccessor) level).simpleclouds$getSkyFlashTime();
+		if (remaining <= 0)
+			return 0.0F;
+		float t = Math.min(remaining, 2) / 2.0F;
+		// keep the original-style flicker so the lift reads as lightning
+		return (float) (t * (0.7 + 0.3 * Math.abs(Math.sin(t * 9.0))));
 	}
 
 	/**
@@ -309,9 +359,6 @@ public class WorldEffects
 			level.setRainLevel(1.0F);
 			level.setThunderLevel(1.0F);
 		}
-		if (this.flashTicks > 0)
-			this.flashTicks--;
-
 		float rain = level.getRainLevel(0.0F);
 		if (rain <= 0.02F)
 		{
@@ -377,7 +424,6 @@ public class WorldEffects
 	public void reset()
 	{
 		this.drops.clear();
-		this.flashTicks = 0;
 	}
 
 	public @Nullable CloudType getCloudTypeAtCamera()

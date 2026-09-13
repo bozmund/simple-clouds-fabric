@@ -1016,9 +1016,11 @@ public final class DevShot
 						View s2 = new View("devshot-S2.png", -90.0F, 0.0F, 0, 0, 0); // under the formation, looking up
 						View s3 = new View("devshot-S3.png", -20.0F, 90.0F, 0, 0, 0); // beside it at y=260, facing west (toward center)
 						View s4 = new View("devshot-S4.png", -45.0F, 0.0F, 0, 0, 0); // above it (cumulonimbus tops reach 256u = 2048 blocks)
-						View s5 = new View("devshot-S5-01.png", 0.0F, 180.0F, 0, 0, 0); // ground sequence, 30 frames x 2 s
-						s5.seqCount = 30;
-						s5.seqInterval = 40;
+						View s5 = new View("devshot-S5-01.png", 0.0F, 180.0F, 0, 0, 0); // ground sequence, 60 frames x 0.25 s
+						s5.seqCount = 60;
+						s5.seqInterval = 5; // storm plan step 1 proof: the gated flash flickers
+							// (original's pow(rand,2) duty ~30%), so 2 s cadence misses it -
+							// sample at 0.25 s across the 15 s window instead.
 						views.add(s1);
 						views.add(s2);
 						views.add(s3);
@@ -1167,7 +1169,7 @@ public final class DevShot
 			LOGGER.info("[DEVSHOT-LIGHTNING] FORCED strike at {} blocks north (dist index {})", dist, stormStrikeIdx);
 			stormStrikeIdx++;
 			stormStrikeTick = stormStrikeIdx < STRIKE_DISTANCES.length
-					? mc.level.getGameTime() + 200
+					? mc.level.getGameTime() + 80 // 4 s between forced strikes (all inside the 15 s window)
 					: -1;
 		}
 
@@ -1260,7 +1262,7 @@ public final class DevShot
 				pendingShot = 4;
 				waitUntilTick = mc.level.getGameTime() + v.seqInterval;
 				stormStrikeIdx = 0;
-				stormStrikeTick = mc.level.getGameTime() + 100; // first forced strike 5 s in
+				stormStrikeTick = mc.level.getGameTime() + 20; // first forced strike 1 s in (frames 03-08 catch its flash)
 				return;
 			}
 			if (v.waitTicks > 0)

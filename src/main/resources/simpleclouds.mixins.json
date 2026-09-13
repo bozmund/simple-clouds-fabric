@@ -10,6 +10,7 @@
   ],
   "client": [
     "MixinClientLevel",
+    "MixinClientLevelAccessor",
     "MixinLevelRenderer",
     "MixinMinecraft",
     "MixinOptionsScreen",

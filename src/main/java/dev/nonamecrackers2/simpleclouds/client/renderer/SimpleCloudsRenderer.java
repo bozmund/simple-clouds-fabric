@@ -943,6 +943,13 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 			this.drawPipeline.drawStormFog(this.cacheStormCoverage * 2.5F, lightningMul);
 		}
 
+		// Sky flash (storm plan step 1): the vanilla 26.2 sky flash is dead (nothing
+		// consumes ClientLevel.getSkyFlashTime), so the port draws its own short
+		// full-screen white brightening on the same gated strength — visible only
+		// while a rendered bolt is within 2000 blocks and bright, never for far
+		// strikes, and never with "Hide Sky Flashes" on.
+		this.drawPipeline.drawSkyFlash(this.getWorldEffectsManager().flashStrength(partialTick) * 0.5F);
+
 		// Cloud shadows (26.2 slice): top-down ortho depth pass over the cloud
 		// instances, then a fullscreen terrain-shadow pass (see CloudShadowPass
 		// section of CloudsDrawPipeline and PORTING.md).
