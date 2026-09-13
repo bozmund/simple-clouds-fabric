@@ -79,7 +79,7 @@ public class PreviewDrawPipeline implements AutoCloseable
 		float[] outStorm = new float[1];
 		// worldBaseY = 0: the preview screen renders in its own box-local space, not
 		// anchored at the world cloudHeight.
-		ByteBuffer[] buffers = generator.generate(-BOX, BOX_Y0, -BOX, BOX, BOX_Y1, BOX, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F,
+		ByteBuffer[] buffers = generator.generate(-BOX, BOX_Y0, -BOX, BOX, BOX_Y1, BOX, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1, 0.0F,
 				outOpaque, outTransparent, BOX_Y0, outStorm);
 		if (buffers == null || buffers.length == 0 || buffers[0] == null || outOpaque[0] <= 0.0F)
 			return;

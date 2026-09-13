@@ -52,6 +52,25 @@ Baseline (pre-fix) devshots from 2026-09-13 are in `before/`:
 | `repo-title-banner.png` | Mod title banner (from the repository README, i.imgur.com/eAtuHMR.png). |
 | `repo-icon.png` | Mod icon (repository `simpleclouds.png`). |
 
+## Step 2 evidence (the port's LOD, 2026-09-13)
+
+The port's LOD field (step 2) extends to ~10,500 blocks with 4 LOD levels
+(lod 1/2/4/8; cube spacing + radius grow with the LOD). The world's own
+formations are sparse, so the `BIG` devshot token spawns a large stratus deck
+(radius 1200 cloud units = 9600 blocks) to exercise the distant coarse chunks:
+
+- `step2-lod-A.png` (sea level, horizon): the sky is **filled to the horizon**;
+  nearby clouds are finer and the distant ones are **coarser (bigger blocks)**
+  and fade to white. Compare with `before/step0-baseline-A.png` (pre-step-2)
+  where the clouds ended a few hundred blocks out and the sky beyond was empty.
+- `step2-lod-C.png` (straight up, 56 blocks below the stratus): the near stratus
+  ceiling is solid (the LOD fill + step-3 fade-in), not the dithered mid-fill
+  state seen in the baseline.
+
+Field extent (dev log): chunks at X = ±1312 cloud units (±10,500 blocks) across
+lod 1 (near, ~13k cubes), lod 2 (~20k), lod 4 (~12k), lod 8 (~5k, far). No
+off-thread generation failures.
+
 ## Key observable properties (what the port must reproduce)
 
 1. **Altitude:** cloud bases float above sea level — the lowest layer (stratus,

@@ -104,7 +104,7 @@ public final class CpuCloudGenerator
 	 * @return a two-element array: [opaque data or null, transparent data or null]
 	 *         (native-endian floats, position 0, limit = bytes written).
 	 */
-	public ByteBuffer[] generate(int x0, int y0, int z0, int x1, int y1, int z1, float scale, float scrollX, float scrollY, float scrollZ, float wiggle, float worldBaseY, float[] outOpaqueCount, float[] outTransparentCount, int cameraGridY, float[] outStormCoverage)
+	public ByteBuffer[] generate(int x0, int y0, int z0, int x1, int y1, int z1, float scale, float scrollX, float scrollY, float scrollZ, float wiggle, int lodScale, float worldBaseY, float[] outOpaqueCount, float[] outTransparentCount, int cameraGridY, float[] outStormCoverage)
 	{
 		// Parity with 1.20.1 (VISUAL-PARITY-PLAN step 1): the cloud volume is anchored
 		// at WORLD Y = cloudHeight (passed in as worldBaseY), NEVER relative to the
@@ -114,8 +114,12 @@ public final class CpuCloudGenerator
 		// clouds track the player's altitude -- the two headline parity bugs.)
 		this.yBase = y0;
 		this.worldBaseY = worldBaseY;
+		// LOD (step 2): the grid steps by lodScale CLOUD UNITS and each cube is
+		// lodScale cloud units wide (radius lodScale/2), like the original compute
+		// shader (x = id*Scale + RenderOffset, createCube radius Scale/2).
 		int xSpan = x1 - x0, ySpan = y1 - y0, zSpan = z1 - z0;
-		int cells = xSpan * ySpan * zSpan;
+		int xCells = xSpan / lodScale, yCells = ySpan / lodScale, zCells = zSpan / lodScale;
+		int cells = xCells * yCells * zCells;
 		// Growable scratch buffers: only a small fraction of cells is filled, so start
 		// small (a full 256-unit band would otherwise preallocate ~80 MB) and grow on demand.
 		ByteBuffer opaqueBuffer = ByteBuffer.allocateDirect(Math.max(256, cells / 64 * 6 * CloudVertexFormat.BYTES_PER_INSTANCE)).order(ByteOrder.nativeOrder());
@@ -130,25 +134,25 @@ public final class CpuCloudGenerator
 		float minY = Float.MAX_VALUE, maxY = -Float.MAX_VALUE;
 		int groupCount = this.groups.size();
 		float[] groupNoises = new float[groupCount];
-		boolean[] columnStorm = new boolean[xSpan * zSpan];
+		boolean[] columnStorm = new boolean[xCells * zCells];
 
 		// Region mode: precompute the per-column formation mask (port of cloud_regions.comp).
 		// Regions are 2D, so this is xz-sized, not volume-sized.
 		boolean regionMode = !this.regions.isEmpty();
-		int[] columnGroup = regionMode ? new int[xSpan * zSpan] : null;
-		float[] columnFade = regionMode ? new float[xSpan * zSpan] : null;
+		int[] columnGroup = regionMode ? new int[xCells * zCells] : null;
+		float[] columnFade = regionMode ? new float[xCells * zCells] : null;
 		if (regionMode)
 		{
 			Arrays.fill(columnGroup, -1);
 			float edge = 1.0F / REGION_EDGE_FADE_FACTOR;
-			for (int x = x0; x < x1; x++)
+			for (int x = x0; x < x1; x += lodScale)
 			{
-				for (int z = z0; z < z1; z++)
+				for (int z = z0; z < z1; z += lodScale)
 				{
 					// Cloud units (1 unit = CLOUD_SCALE = 8 world blocks): the region
 					// positions/radii and the noise coordinates share this space, and the
 					// grid cell id at scale=8 is exactly a cloud-unit coordinate.
-					float wx = x + 0.5F, wz = z + 0.5F;
+					float wx = x + lodScale * 0.5F, wz = z + lodScale * 0.5F;
 					int best = -1;
 					float bestG = 0.0F;
 					for (RegionMask r : this.regions)
@@ -175,7 +179,7 @@ public final class CpuCloudGenerator
 							bestG *= Math.min((d - radius) * REGION_EDGE_FADE_FACTOR, 1.0F);
 						}
 					}
-					int i = (x - x0) * zSpan + (z - z0);
+					int i = ((x - x0) / lodScale) * zCells + ((z - z0) / lodScale);
 					columnGroup[i] = best;
 					// cube_mesh.comp: fade = -5 * (1 - g)^10
 					columnFade[i] = best < 0 ? 0.0F : -5.0F * (float) Math.pow(1.0F - bestG, 10.0);
@@ -183,13 +187,13 @@ public final class CpuCloudGenerator
 			}
 		}
 
-		for (int x = x0; x < x1; x++)
+		for (int x = x0; x < x1; x += lodScale)
 		{
-			for (int y = y0; y < y1; y++)
+			for (int y = y0; y < y1; y += lodScale)
 			{
-				for (int z = z0; z < z1; z++)
+				for (int z = z0; z < z1; z += lodScale)
 				{
-					int ci = (x - x0) * zSpan + (z - z0);
+					int ci = ((x - x0) / lodScale) * zCells + ((z - z0) / lodScale);
 					// Region mode: a column with no formation emits nothing.
 					if (regionMode && columnGroup[ci] < 0)
 						continue;
@@ -210,7 +214,7 @@ public final class CpuCloudGenerator
 					float brightness = 1.0F; // vertical slice: no storm darkening yet
 					if (anyOpaque)
 					{
-						float cubeY = (y + 0.5F) * scale + worldBaseY;
+						float cubeY = (y + lodScale * 0.5F) * scale + worldBaseY;
 						if (cubeY < minY) minY = cubeY;
 						if (cubeY > maxY) maxY = cubeY;
 						int needed = 6 * CloudVertexFormat.BYTES_PER_INSTANCE;
@@ -220,8 +224,8 @@ public final class CpuCloudGenerator
 						// groups are opaque (identical geometry; the original emitted one
 						// cube per group, which just overlapped).
 						opaqueWritten += regionMode
-								? emitVisibleFacesRegion(opaqueBuffer, opaqueWritten, x, y, z, scale, brightness, x0, y0, z0, x1, y1, z1, columnGroup, columnFade, scale, scrollX, scrollY, scrollZ, wiggle, gradient)
-								: emitVisibleFaces(opaqueBuffer, opaqueWritten, x, y, z, scale, brightness, scrollX, scrollY, scrollZ, wiggle);
+								? emitVisibleFacesRegion(opaqueBuffer, opaqueWritten, x, y, z, scale, lodScale, brightness, x0, y0, z0, x1, y1, z1, columnGroup, columnFade, scale, scrollX, scrollY, scrollZ, wiggle, gradient)
+								: emitVisibleFaces(opaqueBuffer, opaqueWritten, x, y, z, scale, lodScale, brightness, scrollX, scrollY, scrollZ, wiggle);
 
 						// Storm-coverage metric: does this column have storm-type cloud
 						// above the camera? (drives the 26.2 slice storm fog intensity)
@@ -258,7 +262,7 @@ public final class CpuCloudGenerator
 							int needed = 6 * CloudVertexFormat.BYTES_PER_INSTANCE_ALPHA;
 							if (transparentWritten + needed > transparentBuffer.capacity())
 								transparentBuffer = grow(transparentBuffer, transparentWritten, transparentBuffer.capacity() * 2);
-							transparentWritten += emitTransparentCube(transparentBuffer, transparentWritten, x, y, z, scale, brightness, alpha);
+							transparentWritten += emitTransparentCube(transparentBuffer, transparentWritten, x, y, z, scale, lodScale, brightness, alpha);
 						}
 					}
 				}
@@ -266,13 +270,15 @@ public final class CpuCloudGenerator
 		}
 
 		// Fraction of the 8x8 central columns (around the camera) with storm above.
-		int center = xSpan / 2;
+		int center = xCells / 2;
 		int marked = 0;
 		for (int dx = center - 4; dx < center + 4; dx++)
 		{
+			if (dx < 0 || dx >= xCells) continue;
 			for (int dz = center - 4; dz < center + 4; dz++)
 			{
-				if (columnStorm[dx * zSpan + dz])
+				if (dz < 0 || dz >= zCells) continue;
+				if (columnStorm[dx * zCells + dz])
 					marked++;
 			}
 		}
@@ -371,26 +377,26 @@ public final class CpuCloudGenerator
 	}
 
 	/** Emits visible faces for an opaque cloud voxel (port of createCube), returning bytes written. */
-	private int emitVisibleFaces(ByteBuffer buffer, int offset, int x, int y, int z, float scale, float brightness,
+	private int emitVisibleFaces(ByteBuffer buffer, int offset, int x, int y, int z, float scale, int lodScale, float brightness,
 			float scrollX, float scrollY, float scrollZ, float wiggle)
 	{
-		float radius = scale / 2.0F;
+		float radius = lodScale * scale / 2.0F;
 		// SidePos must be in WORLD coordinates (the shader adds it to the view-space
 		// position untransformed). Grid cell (x, y, z) spans cloud-unit
 		// [x*scale, (x+1)*scale); its center is (x + 0.5) * scale, and the cloud-unit
 		// Y 0 is world Y = worldBaseY (the cloudHeight anchor, step 1).
-		float cx = (x + 0.5F) * scale, cy = (y + 0.5F) * scale + this.worldBaseY, cz = (z + 0.5F) * scale;
+		float cx = (x + lodScale * 0.5F) * scale, cy = (y + lodScale * 0.5F) * scale + this.worldBaseY, cz = (z + lodScale * 0.5F) * scale;
 		int written = 0;
 
 		// Face order matches the shader: -X=0, +X=1, -Y=2, +Y=3, -Z=4, +Z=5.
-		// Neighbor validity is checked at ADJACENT cells (x +/- 1), not +/- one grid
-		// scale (that culls against the wrong cell and leaves coincident faces).
-		written += this.emitFaceIfVisible(buffer, offset + written, 0, cx, cy, cz, radius, brightness, this.isValid(x - 1, y, z, scale, scrollX, scrollY, scrollZ, wiggle));
-		written += this.emitFaceIfVisible(buffer, offset + written, 1, cx, cy, cz, radius, brightness, this.isValid(x + 1, y, z, scale, scrollX, scrollY, scrollZ, wiggle));
-		written += this.emitFaceIfVisible(buffer, offset + written, 2, cx, cy, cz, radius, brightness, this.isValid(x, y - 1, z, scale, scrollX, scrollY, scrollZ, wiggle));
-		written += this.emitFaceIfVisible(buffer, offset + written, 3, cx, cy, cz, radius, brightness, this.isValid(x, y + 1, z, scale, scrollX, scrollY, scrollZ, wiggle));
-		written += this.emitFaceIfVisible(buffer, offset + written, 4, cx, cy, cz, radius, brightness, this.isValid(x, y, z - 1, scale, scrollX, scrollY, scrollZ, wiggle));
-		written += this.emitFaceIfVisible(buffer, offset + written, 5, cx, cy, cz, radius, brightness, this.isValid(x, y, z + 1, scale, scrollX, scrollY, scrollZ, wiggle));
+		// Neighbor validity is checked at the adjacent LOD cell (x +/- lodScale), the
+		// next cube in the tiling (that is what is coincident with this face).
+		written += this.emitFaceIfVisible(buffer, offset + written, 0, cx, cy, cz, radius, brightness, this.isValid(x - lodScale, y, z, scale, scrollX, scrollY, scrollZ, wiggle));
+		written += this.emitFaceIfVisible(buffer, offset + written, 1, cx, cy, cz, radius, brightness, this.isValid(x + lodScale, y, z, scale, scrollX, scrollY, scrollZ, wiggle));
+		written += this.emitFaceIfVisible(buffer, offset + written, 2, cx, cy, cz, radius, brightness, this.isValid(x, y - lodScale, z, scale, scrollX, scrollY, scrollZ, wiggle));
+		written += this.emitFaceIfVisible(buffer, offset + written, 3, cx, cy, cz, radius, brightness, this.isValid(x, y + lodScale, z, scale, scrollX, scrollY, scrollZ, wiggle));
+		written += this.emitFaceIfVisible(buffer, offset + written, 4, cx, cy, cz, radius, brightness, this.isValid(x, y, z - lodScale, scale, scrollX, scrollY, scrollZ, wiggle));
+		written += this.emitFaceIfVisible(buffer, offset + written, 5, cx, cy, cz, radius, brightness, this.isValid(x, y, z + lodScale, scale, scrollX, scrollY, scrollZ, wiggle));
 		return written;
 	}
 
@@ -408,28 +414,30 @@ public final class CpuCloudGenerator
 	}
 
 	/** Opaque cube with region-aware face culling (the neighbor must be in the same formation and still cloud). */
-	private int emitVisibleFacesRegion(ByteBuffer buffer, int offset, int x, int y, int z, float scale, float brightness,
+	private int emitVisibleFacesRegion(ByteBuffer buffer, int offset, int x, int y, int z, float scale, int lodScale, float brightness,
 			int x0, int y0, int z0, int x1, int y1, int z1, int[] columnGroup, float[] columnFade,
 			float s, float scrollX, float scrollY, float scrollZ, float wiggle, float[] gradient)
 	{
-		float radius = scale / 2.0F;
-		float cx = (x + 0.5F) * scale, cy = (y + 0.5F) * scale + this.worldBaseY, cz = (z + 0.5F) * scale;
-		int gi = columnGroup[(x - x0) * (z1 - z0) + (z - z0)];
+		float radius = lodScale * scale / 2.0F;
+		float cx = (x + lodScale * 0.5F) * scale, cy = (y + lodScale * 0.5F) * scale + this.worldBaseY, cz = (z + lodScale * 0.5F) * scale;
+		// Cell-based index (matches the precompute + the spaced loop); the span-based
+		// (x-x0)*(z1-z0) is only valid for lodScale==1.
+		int gi = columnGroup[((x - x0) / lodScale) * ((z1 - z0) / lodScale) + ((z - z0) / lodScale)];
 		int written = 0;
-		written += this.emitRegionFace(buffer, offset + written, 0, cx, cy, cz, radius, brightness, x - 1, y, z, gi, x0, y0, z0, x1, y1, z1, columnGroup, columnFade, s, scrollX, scrollY, scrollZ, wiggle, gradient);
-		written += this.emitRegionFace(buffer, offset + written, 1, cx, cy, cz, radius, brightness, x + 1, y, z, gi, x0, y0, z0, x1, y1, z1, columnGroup, columnFade, s, scrollX, scrollY, scrollZ, wiggle, gradient);
-		written += this.emitRegionFace(buffer, offset + written, 2, cx, cy, cz, radius, brightness, x, y - 1, z, gi, x0, y0, z0, x1, y1, z1, columnGroup, columnFade, s, scrollX, scrollY, scrollZ, wiggle, gradient);
-		written += this.emitRegionFace(buffer, offset + written, 3, cx, cy, cz, radius, brightness, x, y + 1, z, gi, x0, y0, z0, x1, y1, z1, columnGroup, columnFade, s, scrollX, scrollY, scrollZ, wiggle, gradient);
-		written += this.emitRegionFace(buffer, offset + written, 4, cx, cy, cz, radius, brightness, x, y, z - 1, gi, x0, y0, z0, x1, y1, z1, columnGroup, columnFade, s, scrollX, scrollY, scrollZ, wiggle, gradient);
-		written += this.emitRegionFace(buffer, offset + written, 5, cx, cy, cz, radius, brightness, x, y, z + 1, gi, x0, y0, z0, x1, y1, z1, columnGroup, columnFade, s, scrollX, scrollY, scrollZ, wiggle, gradient);
+		written += this.emitRegionFace(buffer, offset + written, 0, cx, cy, cz, radius, brightness, x - lodScale, y, z, gi, x0, y0, z0, x1, y1, z1, columnGroup, columnFade, s, lodScale, scrollX, scrollY, scrollZ, wiggle, gradient);
+		written += this.emitRegionFace(buffer, offset + written, 1, cx, cy, cz, radius, brightness, x + lodScale, y, z, gi, x0, y0, z0, x1, y1, z1, columnGroup, columnFade, s, lodScale, scrollX, scrollY, scrollZ, wiggle, gradient);
+		written += this.emitRegionFace(buffer, offset + written, 2, cx, cy, cz, radius, brightness, x, y - lodScale, z, gi, x0, y0, z0, x1, y1, z1, columnGroup, columnFade, s, lodScale, scrollX, scrollY, scrollZ, wiggle, gradient);
+		written += this.emitRegionFace(buffer, offset + written, 3, cx, cy, cz, radius, brightness, x, y + lodScale, z, gi, x0, y0, z0, x1, y1, z1, columnGroup, columnFade, s, lodScale, scrollX, scrollY, scrollZ, wiggle, gradient);
+		written += this.emitRegionFace(buffer, offset + written, 4, cx, cy, cz, radius, brightness, x, y, z - lodScale, gi, x0, y0, z0, x1, y1, z1, columnGroup, columnFade, s, lodScale, scrollX, scrollY, scrollZ, wiggle, gradient);
+		written += this.emitRegionFace(buffer, offset + written, 5, cx, cy, cz, radius, brightness, x, y, z + lodScale, gi, x0, y0, z0, x1, y1, z1, columnGroup, columnFade, s, lodScale, scrollX, scrollY, scrollZ, wiggle, gradient);
 		return written;
 	}
 
 	private int emitRegionFace(ByteBuffer buffer, int offset, int side, float cx, float cy, float cz, float radius, float brightness,
 			int nx, int ny, int nz, int gi, int x0, int y0, int z0, int x1, int y1, int z1,
-			int[] columnGroup, float[] columnFade, float s, float scrollX, float scrollY, float scrollZ, float wiggle, float[] gradient)
+			int[] columnGroup, float[] columnFade, float s, int lodScale, float scrollX, float scrollY, float scrollZ, float wiggle, float[] gradient)
 	{
-		if (this.isValidRegion(nx, ny, nz, gi, x0, y0, z0, x1, y1, z1, columnGroup, columnFade, s, scrollX, scrollY, scrollZ, wiggle, gradient))
+		if (this.isValidRegion(nx, ny, nz, gi, x0, y0, z0, x1, y1, z1, columnGroup, columnFade, s, lodScale, scrollX, scrollY, scrollZ, wiggle, gradient))
 			return 0;
 		buffer.putFloat(offset, side);
 		buffer.putFloat(offset + 4, cx);
@@ -445,11 +453,12 @@ public final class CpuCloudGenerator
 	 * in-band, inside the same formation, and above the masked noise threshold.
 	 */
 	private boolean isValidRegion(int x, int y, int z, int gi, int x0, int y0, int z0, int x1, int y1, int z1,
-			int[] columnGroup, float[] columnFade, float scale, float scrollX, float scrollY, float scrollZ, float wiggle, float[] gradient)
+			int[] columnGroup, float[] columnFade, float scale, int lodScale, float scrollX, float scrollY, float scrollZ, float wiggle, float[] gradient)
 	{
 		if (x < x0 || x >= x1 || y < y0 || y >= y1 || z < z0 || z >= z1)
 			return false;
-		int i = (x - x0) * (z1 - z0) + (z - z0);
+		int zCells = (z1 - z0) / lodScale;
+		int i = ((x - x0) / lodScale) * zCells + ((z - z0) / lodScale);
 		if (columnGroup[i] != gi)
 			return false;
 		float noise = sampleGroup(this.groups.get(gi), x, y, z, scale, scrollX, scrollY, scrollZ, wiggle, gradient);
@@ -457,10 +466,10 @@ public final class CpuCloudGenerator
 	}
 
 	/** Emits all six faces of a transparent voxel (port of createTransparentCube), returning bytes written. */
-	private int emitTransparentCube(ByteBuffer buffer, int offset, int x, int y, int z, float scale, float brightness, float alpha)
+	private int emitTransparentCube(ByteBuffer buffer, int offset, int x, int y, int z, float scale, int lodScale, float brightness, float alpha)
 	{
-		float radius = scale / 2.0F;
-		float cx = (x + 0.5F) * scale, cy = (y + 0.5F) * scale + this.worldBaseY, cz = (z + 0.5F) * scale;
+		float radius = lodScale * scale / 2.0F;
+		float cx = (x + lodScale * 0.5F) * scale, cy = (y + lodScale * 0.5F) * scale + this.worldBaseY, cz = (z + lodScale * 0.5F) * scale;
 		int written = 0;
 		for (int side = 0; side < 6; side++)
 		{

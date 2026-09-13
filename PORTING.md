@@ -72,7 +72,7 @@ Statuses: **VERIFIED** = ported + confirmed on screen (devshot/play-test);
 | Cloud shadow map + terrain shadows (`distantShadows`) | **VERIFIED (2026-09-12, A/B devshot)** | 512px ortho shadow map + fullscreen terrain pass. Two 26.2 gotchas fixed: (1) shadow light-volume matrix sign errors (nothing landed in the frustum); (2) **per-frame UBO mapping silently kills a pass** -- the fixed buffer mapped every frame (and even MappableRingBuffer's size-only createBuffer, which also fails to map on this Mesa/Intel ARL machine) made the terrain pass draw nothing; fixed with a manual 3-deep ring built from the data-carrying createBuffer overload with UNIFORM|MAP_READ usage. Shadow volume extends 128 blocks BELOW camY (the original raymarch covered the ground). SHADOWTEST scene: shelf visibly darkened with shadows, bright with NOSHADOW. |
 | Atmospheric 2D cloud layer (`atmosphericClouds`, default ON) | **VERIFIED (2026-09-12)** | Full port: fullscreen pass (no PostChain in 26.2) sampling the main color target, psrdnoise ray-cast to a plane 5000 above the camera; biome-driven formations with cross-fade (Forge biome tags replaced by base-temperature/precipitation predicates); wind from the cloud manager; blindness/darkness alpha. 26.2 notes: level FOV from `gameRenderState().levelRenderState.cameraRenderState.hudFov` (no GameRenderer.getFov anymore); ring UBO per the per-frame-UBO rule. Sky + straight-up devshots show the wispy layer. |
 | Fog render modes (`fogMode`) | MISSING | single shader-fog implementation only |
-| LOD / frustum culling / generation interval / concurrent dispatches / occlusion-side testing | MISSING | perf/quality options are no-ops (config values kept) |
+| LOD / level-of-detail chunk layout (render distance) | **VERIFIED (Step 2, 2026-09-13)** | The original's `LevelOfDetailConfig`/`LevelOfDetailOptions` chunk layout (an 8-span core of fine chunks + 3 LOD rings, per `levelOfDetail` config, default HIGH) is now wired: the 2×2 full-detail band grid was replaced by the LOD chunk set, each chunk generated at its own `lodScale` (cube spacing + radius grow with the LOD), on a 12-thread worker pool with a nearest-first budgeted fill. The field extends to ~10,500 blocks (lod 1/2/4/8). Frustum culling / generation interval / occlusion-side testing remain no-ops (perf options). See the STEP 2 note below the table. |
 | GPU compute generation (cube_mesh.comp) | MISSING (shelved) | CPU path ships; spike evidence in SPIKE-GPU-RESULT.md |
 | Vanilla cloud layer removal | VERIFIED (dev client) | 26.2 addCloudsPass cancelled; flat+full variants both covered |
 | DH (Distant Horizons) support | VERIFIED | DH 3.2.0 detected, its clouds disabled, handlers registered |
@@ -124,14 +124,48 @@ Statuses: **VERIFIED** = ported + confirmed on screen (devshot/play-test);
 7. ~~Lightning bolt mesh~~ **DONE 2026-09-12** (sc-bolt-3).
    ~~Main-menu config button~~ **DONE 2026-09-12** (sc-optbtn-4).
    ~~Thunder audio assets~~ **DONE 2026-09-12** (27 oggs shipped).
-   **PORT COMPLETE for all user-visible features (2026-09-12).** Final forward-facing
-   devshot (sc-final-verify) confirms: terrain occludes clouds (depth), soft alpha edges
-   (transparency), discrete formations, atmospheric cirrus, no vanilla sheet.
-   Remaining (low-priority / niche, not started — see table above for rationale):
-   custom rain sound-replacement (26.2 sound API + version-fragile vanilla path match),
-   fogMode screen-space world fog (complex post-pass, subtle), previewer image export
-   (offscreen capture), debug overlay (debug-only), LOD/culling perf options, server
-   command tree (26.2 typed-arg bootstrap limitation).
+
+**STATUS (2026-09-13): the port is NOT visually complete.** Jan's
+`VISUAL-PARITY-PLAN.md` found the 2026-09-12 "port complete" call was wrong (the
+parity audit's noon straight-up devshots couldn't show altitude/range/detail). Work
+through the plan's steps 0–8:
+- **Step 0** (reference images + standard camera views A–E) — done.
+- **Step 1** (world-anchor the cloud volume at Y=cloudHeight; the old camera-anchored
+  base was wrong) — done.
+- **Step 2** (LOD chunk layout + per-lodScale generation + worker pool, render
+  distance ~10,500 blocks) — done.
+- Steps 3–8 (fog range, transparent-cube size/range, shading/lighting, color/
+  night/dusk/storm-fog, motion/fade-in parity, DH/depth-sorting) — pending.
+
+Remaining (low-priority / niche, see table above): custom rain sound-replacement,
+fogMode screen-space world fog, previewer image export, debug overlay, frustum/
+occlusion perf options, server command tree.
+
+## STEP 2 — LOD / render distance (2026-09-13)
+
+The 2026-09-12 "multi-band full-region rendering" (a 2×2/3×3 grid of 32×32-unit
+bands, all at full detail, so clouds ended ~256–384 blocks out) was replaced by
+the original's LOD system:
+
+- `LevelOfDetailConfig`/`LevelOfDetailOptions` (already ported, now wired): an 8-span
+  core of fine (lod 1) chunks + 3 LOD rings (lod 2/4/8), from the `levelOfDetail`
+  config (default HIGH). Each ring chunk is generated at its own `lodScale`: the
+  cube grid spacing AND cube radius grow with the LOD (cube_mesh.comp's `Scale`),
+  so a distant chunk covers more area with fewer, bigger cubes.
+- `CpuCloudGenerator.generate()` was generalized to take a `lodScale` (grid spacing
+  + cube radius + spaced cube centers + region-mask cell indexing). The chunk grid
+  span is `CHUNK_SIZE * lodScale` units; the grid is always 32 cells, so the
+  region-mask `columnGroup` is always 32×32.
+- The render thread enqueues stale chunks (nearest first, budget 6/frame) and
+  collects finished ones (budget 12/frame); a 12-thread worker pool (`simpleclouds-chunkgen-
+  <n>`) generates off-thread. A fresh chunk fades in (step 3) over 5 ticks.
+- Verified: field extends to ±1312 cloud units (±10,500 blocks) across lod 1/2/4/8;
+  no off-thread generation failures; the sky is filled to the horizon with coarser
+  distant cubes (see `docs/reference/step2-lod-A.png`, `step2-lod-C.png`).
+
+Gotcha fixed: the region-mask `columnGroup` index must use the spaced CELL index
+`((x-x0)/lodScale)*zCells + ((z-z0)/lodScale)`, not the span index `(x-x0)*(z1-z0)`
+(the latter only holds for lodScale==1 and overflowed for the coarse LODs).
 
 ## CLOUD VOLUME ANCHORING — **CORRECTED (2026-09-13, Step 1 of VISUAL-PARITY-PLAN)**
 

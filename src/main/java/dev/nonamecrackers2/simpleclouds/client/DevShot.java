@@ -104,7 +104,10 @@ public final class DevShot
 
 	private static final java.util.List<View> views = new java.util.ArrayList<>();
 	private static boolean viewSetupDone;
+	private static boolean fillWaitDone; // standard views: wait for the LOD field to fill first
+	private static final int FILL_WAIT_TIMEOUT_TICKS = 3000; // ~150s before shooting anyway
 	private static boolean noSpawn; // NOSPAWN token: show the world's own formations only
+	private static boolean bigFormation; // BIG token: spawn a large stratus deck (LOD test, step 2)
 	private static long waitUntilTick = -1; // game tick at which the second (motion) shot fires
 	private static long firstTick = -1; // game time of the first frame with a player
 	private static final int POST_VIEW_FRAMES = 240; // settle time after switching views
@@ -262,6 +265,50 @@ public final class DevShot
 	}
 
 	/**
+	 * Step 2 (LOD) visual test: a large stratus deck (radius 1200 cloud units = 9600
+	 * blocks) centered on the camera. The LOD field extends to ~10,500 blocks, so the
+	 * distant coarse chunks (lod 4/8) are exercised, not just the near fine ones.
+	 */
+	private static void spawnBigStratus(Minecraft mc)
+	{
+		forceNoon(mc);
+		try
+		{
+			ClientCloudManager manager = (ClientCloudManager) CloudManager.get(mc.level);
+			if (manager == null)
+			{
+				LOGGER.warn("[DEVSHOT] BIG: no client cloud manager");
+				return;
+			}
+			CloudType[] types = ClientSideCloudTypeManager.getInstance().getIndexedCloudTypes();
+			if (types == null || types.length == 0)
+			{
+				LOGGER.warn("[DEVSHOT] BIG: no cloud types");
+				return;
+			}
+			float px = (float) (mc.player.getX() / 8.0);
+			float pz = (float) (mc.player.getZ() / 8.0);
+			for (CloudType t : types)
+			{
+				String name = t.id().toString();
+				if (!name.endsWith("stratus") || name.endsWith("nimbostratus"))
+					continue;
+				CloudRegion r = new CloudRegion(t.id(), new Vec2(0.0F, 0.0F), 0.0F, 0.0F,
+					px, pz, 1200.0F, 0.0F, 1.0F, 240000, 20, 9);
+				manager.getCloudGenerator().addCloud(r, CloudGenerator.Order.USE_WEIGHT);
+				LOGGER.info("[DEVSHOT] BIG: spawned stratus deck r=1200u (9600 blocks) at {}x{}",
+						px, pz);
+				return;
+			}
+			LOGGER.warn("[DEVSHOT] BIG: no stratus type found");
+		}
+		catch (Throwable t)
+		{
+			LOGGER.warn("[DEVSHOT] BIG spawn failed", t);
+		}
+	}
+
+	/**
 	 * Deterministic shadow scene: the player stands at the world spawn (same for
 	 * every run) and a cumulus formation (world Y 144..400) is placed directly
 	 * overhead at an absolute position, so the terrain in view has cloud above it
@@ -359,7 +406,7 @@ public final class DevShot
 			int x0 = Mth.floor(cx) - 8;
 			int z0 = Mth.floor(cz) - 8;
 			// worldBaseY = 0: density probe only counts instances (box-local space).
-			gen.generate(x0, 0, z0, x0 + 16, 64, z0 + 16, 8.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, oc, tc, 0, sc);
+			gen.generate(x0, 0, z0, x0 + 16, 64, z0 + 16, 8.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1, 0.0F, oc, tc, 0, sc);
 			return (int) oc[0];
 		}
 		catch (Throwable t)
@@ -512,6 +559,7 @@ public final class DevShot
 	private static void setupViews(Minecraft mc)
 	{
 		viewSetupDone = true;
+		fillWaitDone = false;
 		forceNoon(mc);
 		double[] beach = findBeach(mc);
 		if (beach == null)
@@ -553,7 +601,9 @@ public final class DevShot
 		// restart the full settle so the camera (which follows the player with a
 		// one-tick lag) converges before the first shot.
 		framesLeft = framesTotal;
-		if (!noSpawn)
+		if (bigFormation)
+			spawnBigStratus(mc);
+		else if (!noSpawn)
 			spawnTestFormation(mc);
 	}
 
@@ -619,6 +669,11 @@ public final class DevShot
 					if (part.equalsIgnoreCase("NOSPAWN"))
 					{
 						noSpawn = true;
+						continue;
+					}
+					if (part.equalsIgnoreCase("BIG"))
+					{
+						bigFormation = true;
 						continue;
 					}
 					if (part.equalsIgnoreCase("SHADOWTEST"))
@@ -742,6 +797,24 @@ public final class DevShot
 		{
 			framesLeft = 1;
 			return;
+		}
+		// First standard view: wait for the LOD field to fill (step 2) so the distant
+		// coarse chunks are present, not just the near fine ones. Timeout as a guard.
+		if (!views.isEmpty() && viewIdx == 0 && !fillWaitDone)
+		{
+			SimpleCloudsRenderer r = SimpleCloudsRenderer.getInstance();
+			float frac = r != null ? r.getChunkFillFraction() : 1.0F;
+			if (frac >= 0.97F || mc.level.getGameTime() - firstTick >= FILL_WAIT_TIMEOUT_TICKS)
+			{
+				fillWaitDone = true;
+				framesLeft = framesTotal; // full settle after the fill
+				LOGGER.info("[DEVSHOT] LOD field {}% filled ({} chunks), settling {} frames",
+						Math.round(frac * 100), r != null ? "" : "", framesTotal);
+			}
+			else
+			{
+				return; // hold the countdown until the field is filled
+			}
 		}
 		if (--framesLeft > 0)
 			return;
