@@ -85,8 +85,10 @@ public class PreviewDrawPipeline implements AutoCloseable
 		ByteBuffer transparent = pool.borrow(Math.max(256, cells / 64 * 6 * CloudVertexFormat.BYTES_PER_INSTANCE_ALPHA));
 		// worldBaseY = 0: the preview screen renders in its own box-local space, not
 		// anchored at the world cloudHeight.
+		// Preview box: the camera origin for the TransparencyDistance gate is the box
+		// center (the box is far smaller than the gate radius, so all edges qualify).
 		java.nio.ByteBuffer[] out = generator.generate(-BOX, BOX_Y0, -BOX, BOX, BOX_Y1, BOX, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1, 0.0F,
-				opaque, transparent, pool::grow, outOpaque, outTransparent, BOX_Y0, outStorm);
+				opaque, transparent, pool::grow, outOpaque, outTransparent, BOX_Y0, new float[] { 0, 0 }, outStorm);
 		if (outOpaque[0] <= 0.0F)
 		{
 			pool.release(out[0]);

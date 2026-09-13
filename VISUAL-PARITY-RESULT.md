@@ -11,7 +11,7 @@ Status legend: **done** = criteria met, evidence below · **partial** · **not s
 | A1 memory (addendum) | **done** | below |
 | A2 motion (addendum) | **done** | below |
 | A3 horizon/flat/above (addendum) | **done** | below |
-| 5 transparency (port) | not started | — |
+| 5 transparency (port) | **done** | below |
 | 6 shadows | not started | — |
 | 7 LOD/pop-in (port) | not started | — |
 | 8 lighting/darkness (port) | not started | — |
@@ -205,3 +205,50 @@ with `fieldRadiusBlocks = lodConfig.getEffectiveChunkSpan() * PRIMARY_CHUNK / 2 
 (D/F) from above the clouds read as a 3D volume with white tops. Note for the
 final report: the "grey haze" Jan saw in the 00:11 devshot was this fog bug,
 not the in-volume interior.
+
+---
+
+## Step 5 — transparency (soft cloud edges)
+
+**Verdict: the 26.2 transparent shader path renders, and the original's
+TransparencyDistance gate is now ported; the cloud base silhouette shows
+multi-step alpha edges.**
+
+### State found
+
+- The per-group transparent-edge emission (`noise ∈ (−TransparencyFade, 0)` →
+  full cube, `alpha = (noise+fade)/fade`, independent of the opaque decision)
+  already matched `cube_mesh.comp`'s `TRANSPARENCY==1` block.
+- The path was in fact rendering: log `first transparent draw, 11664 instances`;
+  pre-gate run: 131,275,458 transparent instances over 25,699 chunk generations
+  (96% of chunks had some).
+- MISSING: the original's `TransparencyDistance` gate — `cube_mesh.comp` only
+  emits edge cubes where `distance((x,z), Origin.xz) < TransparencyDistance`
+  (uniform set from the mesh generator, default `maxRadius/2` = 640 cloud units
+  for HIGH).
+
+### Change
+
+- `CpuCloudGenerator.TRANSPARENCY_DISTANCE = 640.0F` (HIGH's maxRadius/2, the
+  original default); `generate()` now takes the camera's cloud-unit XZ and
+  skips transparent emission outside the gate (camera cloud-XZ flows through
+  `ChunkJob`).
+- Effect: transparent-bearing chunks dropped 96% → 78% (24,643 → 18,555 of
+  ~25k), total transparent instances 131.3M → 108.7M per equivalent run — the
+  far field (fogged to sky color by the 2560..10240 fog anyway) no longer
+  generates edge cubes, exactly like the original.
+
+### Proof
+
+- `/tmp/sc-view-G.png` (12:56, new view G: y=120 looking UP at the cloud base,
+  pitch −45): the silhouette between the white cloud base and the sky is a
+  multi-step alpha ramp, not a hard pixel step. Pixel samples along the edge:
+  (255,255,255) → (250,252,255) → (154,183,255) → (129,166,255 sky) — the
+  intermediate shades are the blended edge cubes. Faint isolated low-alpha
+  patches are visible too (transparency cubes over open sky).
+- `/tmp/sc-view-A.png` (same run, 12:54): horizon band unchanged (A3
+  regression check).
+
+**Step 5 criteria — MET:** cloud edges fade via the per-chunk transparent
+pass, the transparent shader path renders, and the distance gate matches the
+original.

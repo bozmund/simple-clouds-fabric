@@ -45,6 +45,13 @@ public final class CpuCloudGenerator
 	private static final Logger LOGGER = LogManager.getLogger("simpleclouds/CpuGenerator");
 	private static boolean loggedYRange = false; // one-shot step-1 proof log
 
+	/** Step 5: the original's TransparencyDistance gate (cube_mesh.comp: default
+	 *  {@code maxRadius / 2} cloud units; the uniform is set from the mesh generator,
+	 *  whose default is exactly that). Transparent edge cubes are only generated
+	 *  inside this radius around the camera — the outer half of the field is fogged
+	 *  away by the 2560..10240 fog anyway, so this also saves work. */
+	public static final float TRANSPARENCY_DISTANCE = 640.0F; // HIGH: 1280/2 cloud units
+
 	/** A single noise layer (mirrors the GLSL NoiseLayer struct / AbstractNoiseSettings.Param). */
 	public record NoiseLayer(float height, float valueOffset, float scaleX, float scaleY, float scaleZ,
 			float fadeDistance, float heightOffset, float valueScale)
@@ -120,10 +127,12 @@ public final class CpuCloudGenerator
 	 *         {@code [opaque, transparent]} bound to the bytes written.
 	 *
 	 * @param cameraGridY the camera's Y in grid units; used for the storm-coverage metric
+	 * @param camCloudXZ the camera's XZ in cloud units ({@code [x, z]}); step 5:
+	 *                    the original's TransparencyDistance gate for edge cubes
 	 * @param outStormCoverage [0] = fraction of the 8x8 columns around the camera center
 	 *                         that contain at least one opaque storm-type cell above the camera
 	 */
-	public ByteBuffer[] generate(int x0, int y0, int z0, int x1, int y1, int z1, float scale, float scrollX, float scrollY, float scrollZ, float wiggle, int lodScale, float worldBaseY, ByteBuffer opaqueOut, ByteBuffer transparentOut, BufferGrower grower, float[] outOpaqueCount, float[] outTransparentCount, int cameraGridY, float[] outStormCoverage)
+	public ByteBuffer[] generate(int x0, int y0, int z0, int x1, int y1, int z1, float scale, float scrollX, float scrollY, float scrollZ, float wiggle, int lodScale, float worldBaseY, ByteBuffer opaqueOut, ByteBuffer transparentOut, BufferGrower grower, float[] outOpaqueCount, float[] outTransparentCount, int cameraGridY, float[] camCloudXZ, float[] outStormCoverage)
 	{
 		// Parity with 1.20.1 (VISUAL-PARITY-PLAN step 1): the cloud volume is anchored
 		// at WORLD Y = cloudHeight (passed in as worldBaseY), NEVER relative to the
@@ -262,6 +271,12 @@ public final class CpuCloudGenerator
 					// own if/else-if, so a group with noise in (-TransparencyFade, 0) emits a
 					// full cube (all six faces, no culling) with an alpha ramp even on cells
 					// where another group is opaque.
+					// Step 5: the original's TransparencyDistance gate (cube_mesh.comp):
+					// transparent edge cubes are only generated within TransparencyDistance
+					// (default maxRadius/2) cloud units of the camera origin.
+					float tx = x + lodScale * 0.5F - camCloudXZ[0];
+					float tz = z + lodScale * 0.5F - camCloudXZ[1];
+					boolean inTranspDist = tx * tx + tz * tz <= TRANSPARENCY_DISTANCE * TRANSPARENCY_DISTANCE;
 					for (int g = 0; g < groupCount; g++)
 					{
 						if (regionMode && g != columnGroup[ci])
@@ -271,7 +286,7 @@ public final class CpuCloudGenerator
 						CloudLayerGroup group = this.groups.get(g);
 						float fade = group.transparencyFade();
 						float noise = groupNoises[g];
-						if (fade > 0.01F && noise > -fade)
+						if (inTranspDist && fade > 0.01F && noise > -fade)
 						{
 							float alpha = (noise + fade) / fade;
 							int needed = 6 * CloudVertexFormat.BYTES_PER_INSTANCE_ALPHA;

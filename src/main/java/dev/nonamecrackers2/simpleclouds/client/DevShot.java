@@ -431,7 +431,7 @@ public final class DevShot
 			java.nio.ByteBuffer transparent = pool.borrow(256 * 1024);
 			// worldBaseY = 0: density probe only counts instances (box-local space).
 			java.nio.ByteBuffer[] out = gen.generate(x0, 0, z0, x0 + 16, 64, z0 + 16, 8.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1, 0.0F,
-					opaque, transparent, pool::grow, oc, tc, 0, sc);
+					opaque, transparent, pool::grow, oc, tc, 0, new float[] { x0 + 8, z0 + 8 }, sc);
 			pool.release(out[0]);
 			pool.release(out[1]);
 			return (int) oc[0];
@@ -630,6 +630,16 @@ public final class DevShot
 				v.z = beach[2];
 				v.yaw = (float) beach[3];
 			}
+			else if (v.file1.endsWith("G.png"))
+			{
+				// Step 5: close-up of the cloud BASE from below (y=120, ~40 blocks
+				// under the 156.. volume base) — the transparent edge cubes form the
+				// silhouette of the base, so soft (alpha) edges must be visible.
+				v.x = beach[0];
+				v.y = 120.0;
+				v.z = beach[2];
+				v.yaw = (float) beach[3];
+			}
 		}
 		holdInAir(mc);
 		switchToView(mc, 0);
@@ -768,7 +778,7 @@ public final class DevShot
 					if (part.length() == 1)
 					{
 						char c = Character.toUpperCase(part.charAt(0));
-						if (c >= 'A' && c <= 'F')
+						if (c >= 'A' && c <= 'G')
 						{
 							View v = new View("devshot-" + c + ".png", 0.0F, 0.0F, 0, 0, 0);
 							switch (c)
@@ -778,6 +788,7 @@ public final class DevShot
 							case 'C': v.pitch = -90.0F; break;        // straight up
 							case 'D': v.pitch = -20.0F; break;        // inside the layer (y=260)
 							case 'F': v.pitch = -20.0F; break;        // above the layer (y=400, A3)
+								case 'G': v.pitch = -45.0F; break;        // look UP at the cloud base from below (step 5: soft edges)
 							case 'E':
 								v.pitch = 0.0F;
 								v.file1 = "devshot-E1.png";

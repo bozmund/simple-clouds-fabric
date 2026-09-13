@@ -421,7 +421,8 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	private record ChunkJob(ChunkCoord coord, int x0, int y0, int z0, int x1, int y1, int z1, int lodScale,
 			List<CpuCloudGenerator.CloudLayerGroup> groups, List<CpuCloudGenerator.RegionMask> regions,
 			long regionSig, int groupsHash, int camGridY, float cloudHeight,
-			float scrollX, float scrollY, float scrollZ)
+			float scrollX, float scrollY, float scrollZ,
+			float camCloudX, float camCloudZ)
 	{
 	}
 
@@ -505,7 +506,8 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 									ownedT[0] = bigger;
 								return bigger;
 							},
-							opaqueCount, transparentCount, job.camGridY(), stormCoverage);
+							opaqueCount, transparentCount, job.camGridY(),
+							new float[] { job.camCloudX(), job.camCloudZ() }, stormCoverage);
 					// The result carries the FINAL buffers (the grower may have swapped
 					// them for bigger pooled ones).
 					opaque = out[0];
@@ -778,10 +780,12 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 			{
 				enqueued++;
 				int x0 = (int) c[0], z0 = (int) c[1];
+				// Step 5: camera XZ in cloud units (TransparencyDistance gate).
 				this.chunkJobQueue.add(new ChunkJob(key, x0, 0, z0,
 						x0 + PRIMARY_CHUNK * lodScale, maxLayerY, z0 + PRIMARY_CHUNK * lodScale, lodScale,
 						groups, regions, regionSig, groupsHash, camGridY, (float) cloudHeight,
-						scrollX, scrollY, scrollZ));
+						scrollX, scrollY, scrollZ,
+						(float) (camX / CLOUD_SCALE_F), (float) (camZ / CLOUD_SCALE_F)));
 			}
 		}
 
