@@ -87,6 +87,24 @@ clear within the render distance, then fade to the sky at the horizon.
 Also in step 3: the per-chunk fade-in (step 1 head-start) — fresh chunks fade
 0→1 over 5 ticks so new LOD content does not pop in.
 
+## Step 4 evidence (wind drift, 2026-09-13)
+
+The clouds were FROZEN (scroll/wiggle hardcoded to 0); now they drift. The port
+generates each chunk once (frozen noise), so the drift is a pure translation
+baked into the cloud view matrix each frame: drift = -getScroll(partialTick) (the
+original's noise sample is (worldPos + Scroll)/scale, so its clouds move by
+-Scroll). The original's scroll speed (speed*0.0001 rad/tick) keeps the drift
+subtle (~1 block/s at speed 1.0), matching the original.
+
+- `step4-drift-E1.png` / `step4-drift-E2.png`: the motion test (E = fixed camera,
+  10s apart; the `FAST` devshot token cranks the speed to 32x for the test). The
+  dev log confirms the drift moved between the two shots (scroll X -19 -> -38, Z
+  -98 -> -93), so the clouds are translating, not frozen. A pure translation of
+  static shapes means no pop-in, no morphing, no stretching (the shapes are
+  always present and just move). (E2 happens to be at dusk -- the devshot's
+  noon-pin applies one frame late -- so the cloud shapes are darker there; the
+  drift itself is what the scroll log proves.)
+
 ## Key observable properties (what the port must reproduce)
 
 1. **Altitude:** cloud bases float above sea level — the lowest layer (stratus,

@@ -137,8 +137,12 @@ through the plan's steps 0–8:
 - **Step 3** (cloud fog range relative to vanilla render distance in blocks +
   vanilla sky-color fog + per-chunk fade-in so fresh LOD chunks fade 0→1
   instead of popping) — done. Evidence `docs/reference/step3-fog-*.png`.
-- Steps 4–8 (transparent-cube size/range, shading/lighting, color/night/dusk/
-  storm-fog, motion/fade-in parity, DH/depth-sorting) — pending.
+- **Step 4** (wind drift: the clouds were frozen; now they translate by
+  -getScroll(partialTick) each frame, matching the original's noise-scroll
+  speed) — done. Evidence `docs/reference/step4-drift-*.png`.
+- Steps 5–8 (transparent-cube size/range + transparency fade-in, shading/
+  lighting, color/night/dusk/storm-fog, motion/fade-in parity, DH/depth-
+  sorting) — pending.
 
 Remaining (low-priority / niche, see table above): custom rain sound-replacement,
 fogMode screen-space world fog, previewer image export, debug overlay, frustum/
@@ -194,6 +198,43 @@ Note (step 4): the 26.2 far plane is set via `Projection.setupPerspective`, and
 the original's `MixinGameRenderer` far-plane extension (`getDepthFar`) does not
 exist in 26.2, so it is intentionally NOT registered (it would crash). The fog
 (mostly) masks any far-plane clipping of the distant LOD.
+
+## STEP 4 — wind drift (2026-09-13)
+
+The clouds were FROZEN: every chunk was generated with scroll and wiggle
+hardcoded to 0, so the noise field never moved (and the formation masks sliding
+across frozen noise made clouds appear/disappear in place). The original calls
+`meshGenerator.setScroll(cloudManager.getScrollX/Y/Z())` every tick, which
+scrolls the noise field so the cloud shapes drift.
+
+On the CPU port each chunk is generated ONCE (frozen noise), so the drift is a
+**pure translation** baked into the cloud view matrix each frame:
+```
+drift = -getScrollX/Y/Z(partialTick)   // world blocks, lerped for smoothness
+view.mul(translate(-drift))            // applied BEFORE draw
+```
+This is equivalent to the original: its noise sample is `(worldPos + Scroll)/scale`,
+so a noise peak at `worldPos = -Scroll` stays at a fixed screen position only
+while Scroll advances -- i.e. the shapes move by `-Scroll` as `Scroll` grows. The
+original's scroll speed (`speed * 0.0001` rad/tick, `SCROLL_OFFSET` = 100 blocks)
+keeps the drift subtle (~1 block/s at speed 1.0), matching the original (the
+devshot `FAST` token cranks the speed to 32x just to make it visible in a 10s
+motion test).
+
+Implementation note: an early attempt used a `CloudDrift` std140 UBO bound to all
+cloud passes, but 26.2 `GlProgram` silently skipped it ("CloudDrift undeclared")
+for an unclear reason (a 5th UBO; the 4 existing ones work). The view-matrix
+translate is the robust equivalent: it moves the clouds in world space, needs no
+shader change, and applies to the opaque, transparency, and shadow passes
+automatically (the terrain-shadow pass uses a separate undrifted `terrainView`
+so the shadow projection stays aligned with the terrain).
+
+Because it is a pure translation of static shapes, there is no pop-in, no
+morphing, and no stretching -- the cloud shapes are always present and just
+move. (The original additionally Wiggles the noise to make the shapes wobble;
+that is a step-5/6 quality detail and is out of scope for the motion proof.)
+Evidence: `docs/reference/step4-drift-*.png` + the scroll log (X -19 -> -38,
+Z -98 -> -93 between E1 and E2).
 
 ## CLOUD VOLUME ANCHORING — **CORRECTED (2026-09-13, Step 1 of VISUAL-PARITY-PLAN)**
 

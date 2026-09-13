@@ -108,6 +108,7 @@ public final class DevShot
 	private static final int FILL_WAIT_TIMEOUT_TICKS = 3000; // ~150s before shooting anyway
 	private static boolean noSpawn; // NOSPAWN token: show the world's own formations only
 	private static boolean bigFormation; // BIG token: spawn a large stratus deck (LOD test, step 2)
+	private static boolean fastClouds; // FAST token: crank the cloud speed (wind-drift test, step 4)
 	private static long waitUntilTick = -1; // game tick at which the second (motion) shot fires
 	private static long firstTick = -1; // game time of the first frame with a player
 	private static final int POST_VIEW_FRAMES = 240; // settle time after switching views
@@ -605,6 +606,18 @@ public final class DevShot
 			spawnBigStratus(mc);
 		else if (!noSpawn)
 			spawnTestFormation(mc);
+
+		// FAST: crank the cloud speed so the wind drift is visible over a 10s motion test
+		// (step 4). The default speed (1.0) drifts <2 blocks in 10s, too slow to see.
+		if (fastClouds)
+		{
+			CloudManager manager = CloudManager.get(mc.level);
+			if (manager != null)
+			{
+				manager.setCloudSpeed(32.0F);
+				LOGGER.info("[DEVSHOT] FAST: cloud speed set to 32x for the drift test");
+			}
+		}
 	}
 
 	private static int viewIdx = -1;
@@ -674,6 +687,11 @@ public final class DevShot
 					if (part.equalsIgnoreCase("BIG"))
 					{
 						bigFormation = true;
+						continue;
+					}
+					if (part.equalsIgnoreCase("FAST"))
+					{
+						fastClouds = true;
 						continue;
 					}
 					if (part.equalsIgnoreCase("SHADOWTEST"))
@@ -860,12 +878,19 @@ public final class DevShot
 
 	private static void shoot(Minecraft mc, String name)
 	{
+		// Pin the clock so standard views (and the motion test E1/E2) differ only by the
+		// cloud drift, not by the advancing sun (forceNoon is applied once at setup).
+		forceNoon(mc);
 		var cam = mc.gameRenderer.mainCamera();
-		LOGGER.info("[DEVSHOT] shooting {}: cam pos {}x{}x{} camXRot {} camYRot {} (player xRot {} yRot {}, xRotO {} viewXRot(0.5) {})",
+		CloudManager cm = CloudManager.get(mc.level);
+		float sx = cm != null ? cm.getScrollX() : 0.0F;
+		float sy = cm != null ? cm.getScrollY() : 0.0F;
+		float sz = cm != null ? cm.getScrollZ() : 0.0F;
+		LOGGER.info("[DEVSHOT] shooting {}: cam pos {}x{}x{} camXRot {} camYRot {} (player xRot {} yRot {}, xRotO {} viewXRot(0.5) {}) scroll (drift) {}x{}x{}",
 				name, cam.position().x, cam.position().y, cam.position().z,
 				(int) cam.xRot(), (int) cam.yRot(),
 				(int) mc.player.getXRot(), (int) mc.player.getYRot(),
-				(int) mc.player.xRotO, (int) mc.player.getViewXRot(0.5F));
+				(int) mc.player.xRotO, (int) mc.player.getViewXRot(0.5F), sx, sy, sz);
 		Screenshot.grab(mc.gameDirectory, name, mc.gameRenderer.mainRenderTarget(), 1,
 				message -> LOGGER.info("[DEVSHOT] saved screenshots/{} ({})", name, message.getString()));
 	}

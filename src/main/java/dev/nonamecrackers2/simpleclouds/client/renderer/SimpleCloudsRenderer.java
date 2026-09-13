@@ -510,6 +510,21 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		view.mul(camera.getViewRotationMatrix(new org.joml.Matrix4f()));
 		view.mul(new org.joml.Matrix4f().translate((float)-camX, (float)-camY, (float)-camZ));
 
+		// Step 4 (wind drift): the port generates each chunk once (frozen noise), so
+		// the clouds are translated in the view matrix instead of scrolling the noise
+		// field. The original's noise sample is (worldPos + Scroll)/scale, so its
+		// clouds move by -Scroll; the drift is therefore -getScroll (world blocks).
+		// `view` gets the drift (all cloud passes use it); `terrainView` stays
+		// undrifted for the world-fixed terrain (the cloud-shadow depth pass is a
+		// step 5/6 stub, so the terrain shadow pass needs no cloud alignment).
+		org.joml.Matrix4f terrainView = new org.joml.Matrix4f(view);
+		var driftManager = CloudManager.get(Minecraft.getInstance().level);
+		if (driftManager != null)
+			view.mul(new org.joml.Matrix4f().translate(
+				-driftManager.getScrollX(partialTick),
+				-driftManager.getScrollY(partialTick),
+				-driftManager.getScrollZ(partialTick)));
+
 		// Full-region rendering (step 2, LOD). The cloud field is world-fixed (CLOUD_SCALE
 		// = 8 blocks per cloud unit). The chunk layout comes from LevelOfDetailConfig:
 		// a full-detail core plus coarser rings, camera-centered and snapped to the
@@ -779,7 +794,7 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		// instances, then a fullscreen terrain-shadow pass (see CloudShadowPass
 		// section of CloudsDrawPipeline and PORTING.md).
 		this.drawPipeline.renderCloudShadowMap(camX, camY, camZ, (float) cloudHeight);
-		this.drawPipeline.drawTerrainShadows(view, camX, camY, camZ, (float) cloudHeight);
+		this.drawPipeline.drawTerrainShadows(terrainView, camX, camY, camZ, (float) cloudHeight);
 
 		// Atmospheric (high cirrus-type) clouds: biome-driven 2D layer over the
 		// whole view (original: end of the DefaultPipeline render).
