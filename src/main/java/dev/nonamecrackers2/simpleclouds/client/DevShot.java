@@ -948,6 +948,15 @@ public final class DevShot
 						dev.nonamecrackers2.simpleclouds.client.renderer.SimpleCloudsRenderer.setOverlaysEnabled(false);
 						continue;
 					}
+					if (part.equalsIgnoreCase("HIDEFLASH"))
+					{
+						// Storm plan step 6: enable the vanilla "Hide Sky Flashes"
+						// accessibility option (26.2: Options.hideLightningFlash) for
+						// this run; the flash pass must not fire.
+						mc.options.hideLightningFlash().set(true);
+						LOGGER.info("[DEVSHOT] HIDEFLASH: vanilla Hide Sky Flashes enabled for this run");
+						continue;
+					}
 					if (part.equalsIgnoreCase("NOFOG"))
 					{
 						// Step 6 diagnosis: disable ONLY the storm-fog fullscreen

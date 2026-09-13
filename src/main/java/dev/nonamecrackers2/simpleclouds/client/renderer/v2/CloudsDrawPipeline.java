@@ -445,8 +445,11 @@ public class CloudsDrawPipeline implements AutoCloseable
 			// CloudShading layout: vec3 darkness(12) + float useNormals(4) = 16 bytes.
 			this.useNormalsRing[slot] = device.createBuffer(() -> "simpleclouds.useNormals" + slot, GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(16));
 		}
-		for (int slot = 0; slot < 3; slot++)
+		for (int i = 0; i < 3; i++)
+		{
+			final int slot = i;
 			this.offsetRing[slot] = device.createBuffer(() -> "simpleclouds.offset" + slot, GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(16));
+		}
 		this.offsetZero = device.createBuffer(() -> "simpleclouds.offsetZero", GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(16));
 		this.writeLighting(0.2F, 1.0F, -0.7F, -0.2F, 1.0F, 0.7F, 0.4F, 0.9F);
 		this.writeShading(0.0F, 0.0F, 0.15F, 1.0F);
