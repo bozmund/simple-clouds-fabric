@@ -35,8 +35,16 @@ void main()
 
 	// Vertical gradient: strongest near the bottom of the screen (the horizon where
 	// the original raymarch accumulated most density), fading upward.
-	float gradient = mix(1.0, 0.3, pow(clamp(texCoord.y, 0.0, 1.0), VerticalFade));
-	float density = clamp(Intensity * gradient * LightningMul, 0.0, 1.0);
+	//
+	// Step 3 (storm plan): the old pass saturated at alpha 1.0 under a storm
+	// (coverage*2.5 capped at 1.0) - a fully opaque flat layer that hid ALL of
+	// the cloud geometry, which is what read as the "smeared grey blobs with
+	// streaks" in Jan's shots 3-4. The original's raymarch fog darkens and
+	// softens but never fully occludes, so: cap the accumulated density well
+	// below opaque (0.45) and fade it to ZERO at the top of the screen, so the
+	// cube structure of the storm cloud stays visible through the fog.
+	float gradient = mix(1.0, 0.0, pow(clamp(texCoord.y, 0.0, 1.0), VerticalFade));
+	float density = clamp(Intensity * gradient * LightningMul * 0.45, 0.0, 1.0);
 
 	fragColor = vec4(FogColor, density);
 }

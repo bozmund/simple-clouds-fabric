@@ -159,6 +159,16 @@ public class CloudsDrawPipeline implements AutoCloseable
 	// this Mesa/Intel ARL machine ("Failed to map buffer"); the data-carrying
 	// createBuffer overload works (all other UBOs use it), so build the ring
 	// manually from zero-initialized data buffers.
+	// Step 5: per-chunk scroll-offset ring (see drawClouds). Rotates like
+	// useNormalsRing: mapping a fixed buffer within a frame and binding it in a
+	// pass encoded later in that same frame silently kills the pass on this
+	// Mesa/Intel ARL machine (shadowMatricesRing note), so never reuse a slot
+	// that a live pass still references.
+	private final GpuBuffer[] offsetRing = new GpuBuffer[3];
+	// Static zero offset for passes without scroll semantics (previewer box).
+	private final GpuBuffer offsetZero;
+	private int offsetSlotIdx = 0;
+
 	private final GpuBuffer[] shadowMatricesRing = new GpuBuffer[3];
 	private final GpuBuffer[] terrainPassRing = new GpuBuffer[3];
 	private final GpuBuffer[] atmosphericRing = new GpuBuffer[3];
@@ -180,6 +190,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 				.withUniform("CloudLighting", UniformType.UNIFORM_BUFFER)
 				.withUniform("CloudShading", UniformType.UNIFORM_BUFFER)
 				.withUniform("CloudFog", UniformType.UNIFORM_BUFFER)
+				.withUniform("CloudOffset", UniformType.UNIFORM_BUFFER)
 				.withSampler("BayerMatrixSampler")
 				.build();
 
@@ -236,6 +247,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 		BindGroupLayout transparencyBgl = BindGroupLayout.builder()
 				.withUniform("CloudShading", UniformType.UNIFORM_BUFFER)
 				.withUniform("CloudFog", UniformType.UNIFORM_BUFFER)
+				.withUniform("CloudOffset", UniformType.UNIFORM_BUFFER)
 				.withSampler("BayerMatrixSampler")
 				.build();
 		this.transparencyPipeline = RenderPipeline.builder(RenderPipelines.MATRICES_FOG_SNIPPET)
@@ -433,6 +445,9 @@ public class CloudsDrawPipeline implements AutoCloseable
 			// CloudShading layout: vec3 darkness(12) + float useNormals(4) = 16 bytes.
 			this.useNormalsRing[slot] = device.createBuffer(() -> "simpleclouds.useNormals" + slot, GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(16));
 		}
+		for (int slot = 0; slot < 3; slot++)
+			this.offsetRing[slot] = device.createBuffer(() -> "simpleclouds.offset" + slot, GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(16));
+		this.offsetZero = device.createBuffer(() -> "simpleclouds.offsetZero", GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(16));
 		this.writeLighting(0.2F, 1.0F, -0.7F, -0.2F, 1.0F, 0.7F, 0.4F, 0.9F);
 		this.writeShading(0.0F, 0.0F, 0.15F, 1.0F);
 		// Fog in world-block units: clouds start ~100 blocks from the camera. The fog
@@ -505,7 +520,16 @@ public class CloudsDrawPipeline implements AutoCloseable
 
 	/** Draws an explicit instance buffer with a global fade alpha
 	 *  (ColorModulator.a; the original per-chunk fade-in, step 3). */
-	public void drawClouds(Matrix4f viewMatrix, GpuBuffer instances, int count, float alpha)
+	/**
+	 * Draws one cloud chunk. Step 5: the chunk mesh was generated at a snapshot of
+	 * the scroll drift (genScroll), so it is drawn shifted by (scroll - genScroll)
+	 * — the field follows the drift continuously instead of jumping in
+	 * SCROLL_REGEN_THRESHOLD steps, and adjacent chunks at different generation
+	 * phases line up at their border (both show the exact field value at each
+	 * world position).
+	 */
+	public void drawClouds(Matrix4f viewMatrix, GpuBuffer instances, int count, float alpha,
+			float offX, float offY, float offZ)
 	{
 		if (instances == null || count == 0)
 			return;
@@ -551,6 +575,12 @@ public class CloudsDrawPipeline implements AutoCloseable
 		}
 		pass.setUniform("CloudShading", this.useNormalsRing[this.useNormalsRingSlot]);
 		pass.setUniform("CloudFog", this.fogUbo);
+		this.offsetSlotIdx = (this.offsetSlotIdx + 1) % 3;
+		try (var view = this.offsetRing[this.offsetSlotIdx].slice().map(true, false))
+		{
+			view.data().putFloat(0, offX).putFloat(4, offY).putFloat(8, offZ).putFloat(12, 0.0F);
+		}
+		pass.setUniform("CloudOffset", this.offsetRing[this.offsetSlotIdx]);
 		pass.setVertexBuffer(0, this.quadVertexBuffer.slice());
 		pass.setVertexBuffer(1, instances.slice());
 		pass.setIndexBuffer(this.quadIndexBuffer, IndexType.SHORT);
@@ -575,7 +605,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 			data.putFloat(4, 0.045F);
 			data.putFloat(8, 0.06F);
 			data.putFloat(12, Math.min(intensity, 1.0F));
-			data.putFloat(16, 0.6F);
+			data.putFloat(16, 0.45F); // step 3: steeper vertical fade, near-zero above the horizon
 			data.putFloat(20, lightningMul);
 		}
 
@@ -624,7 +654,8 @@ public class CloudsDrawPipeline implements AutoCloseable
 
 	/** Transparency variant of {@link #drawClouds} for one chunk (A1: persistent
 	 *  per-chunk GPU buffer; the fade-in alpha rides on ColorModulator.a). */
-	public void drawTransparencyClouds(Matrix4f viewMatrix, GpuBuffer instances, int count, float alpha)
+	public void drawTransparencyClouds(Matrix4f viewMatrix, GpuBuffer instances, int count, float alpha,
+			float offX, float offY, float offZ)
 	{
 		if (instances == null || count == 0)
 			return;
@@ -652,6 +683,12 @@ public class CloudsDrawPipeline implements AutoCloseable
 		pass.setUniform("DynamicTransforms", transforms);
 		pass.setUniform("CloudShading", this.shadingUbo);
 		pass.setUniform("CloudFog", this.fogUbo);
+		this.offsetSlotIdx = (this.offsetSlotIdx + 1) % 3;
+		try (var view = this.offsetRing[this.offsetSlotIdx].slice().map(true, false))
+		{
+			view.data().putFloat(0, offX).putFloat(4, offY).putFloat(8, offZ).putFloat(12, 0.0F);
+		}
+		pass.setUniform("CloudOffset", this.offsetRing[this.offsetSlotIdx]);
 		pass.setVertexBuffer(0, this.quadVertexBuffer.slice());
 		pass.setVertexBuffer(1, instances.slice());
 		pass.setIndexBuffer(this.quadIndexBuffer, IndexType.SHORT);
@@ -683,6 +720,8 @@ public class CloudsDrawPipeline implements AutoCloseable
 		pass.setUniform("CloudLighting", this.lightingUbo);
 		pass.setUniform("CloudShading", this.shadingUbo);
 		pass.setUniform("CloudFog", this.fogUbo);
+		// The preview box lives in box space (no world scroll) — zero offset.
+		pass.setUniform("CloudOffset", this.offsetZero);
 		pass.setVertexBuffer(0, this.quadVertexBuffer.slice());
 		pass.setVertexBuffer(1, instances.slice());
 		pass.setIndexBuffer(this.quadIndexBuffer, IndexType.SHORT);

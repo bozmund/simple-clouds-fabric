@@ -908,7 +908,10 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 			float alpha = chunkAlpha(d, nowTick, partialTick);
 			if (alpha <= 0.0F)
 				continue; // not visible yet this frame
-			this.drawPipeline.drawClouds(view, d.opaque, d.opaqueCount, alpha);
+			// Step 5: continuous scroll — draw the chunk at its grid position plus
+			// the drift accumulated since its mesh was generated (see drawClouds).
+			this.drawPipeline.drawClouds(view, d.opaque, d.opaqueCount, alpha,
+					scrollX - d.genScrollX, scrollY - d.genScrollY, scrollZ - d.genScrollZ);
 		}
 		// Transparent edges after the opaque pass (same chunk order; far-to-near
 		// blending order is a step-5 concern).
@@ -922,7 +925,10 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 				float alpha = chunkAlpha(d, nowTick, partialTick);
 				if (alpha <= 0.0F)
 					continue;
-				this.drawPipeline.drawTransparencyClouds(view, d.transparent, d.transparentCount, alpha);
+				// Step 5: same scroll offset as the opaque pass (one chunk = one
+				// generation phase).
+				this.drawPipeline.drawTransparencyClouds(view, d.transparent, d.transparentCount, alpha,
+						scrollX - d.genScrollX, scrollY - d.genScrollY, scrollZ - d.genScrollZ);
 			}
 		}
 

@@ -23,6 +23,18 @@ layout(std140) uniform CloudShading {
 	float UseNormals;
 };
 
+// Step 5: per-chunk scroll offset. Each chunk's mesh is generated at a snapshot
+// of the scroll drift (genScroll); drawing it at grid position + (scroll -
+// genScroll) makes the whole field follow the drift continuously instead of
+// jumping SCROLL_REGEN_THRESHOLD (8 cloud units) per chunk. The sampling is
+// rigid in world space (sampleLayer: px = (x + scrollX)/scaleX for every layer),
+// so one offset is exact for all layers. Regeneration only resets the phase
+// anchor to the identical content, so it is invisible.
+layout(std140) uniform CloudOffset {
+	vec3 Offset;
+	float _pad;
+};
+
 out vec4 vertexColor;
 out float fogDistance;
 
@@ -63,7 +75,7 @@ void main()
 {
 	int side = int(Side);
 
-	vec3 transformedPos = applySideTransform(Position, side) * Radius + SidePos;
+	vec3 transformedPos = applySideTransform(Position, side) * Radius + SidePos + Offset;
 	vec4 finalPos = vec4(transformedPos, 1.0);
 	gl_Position = ProjMat * ModelViewMat * finalPos;
 	fogDistance = length((ModelViewMat * finalPos).xz);

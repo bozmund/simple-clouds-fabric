@@ -1230,9 +1230,17 @@ public final class DevShot
 			if (frac >= 0.97F || mc.level.getGameTime() - firstTick >= FILL_WAIT_TIMEOUT_TICKS)
 			{
 				fillWaitDone = true;
-				framesLeft = framesTotal; // full settle after the fill
+				// STORM: the devshot cumulonimbus needs 300t to grow; in a warm world
+				// the field can fill in seconds, long before it is fully grown (the
+				// NOFOG run of 2026-09-13 shot S2 four seconds after spawn = empty
+				// sky). Hold the view at least 20 s after the fill in that case.
+				// Frame-based, not tick-based: the dev client is uncapped (60-100+ FPS),
+				// so 1200 frames ~= 12-20 s, covering the formation's 300-tick (15 s)
+				// growth at any render rate.
+				int settle = storm ? Math.max(framesTotal, 1200) : framesTotal;
+				framesLeft = settle;
 				LOGGER.info("[DEVSHOT] LOD field {}% filled ({} chunks), settling {} frames",
-						Math.round(frac * 100), r != null ? "" : "", framesTotal);
+						Math.round(frac * 100), r != null ? "" : "", settle);
 			}
 			else
 			{
