@@ -22,18 +22,44 @@ import net.minecraft.util.Mth;
 import net.minecraft.client.Screenshot;
 import net.minecraft.client.server.IntegratedServer;
 import net.minecraft.core.registries.Registries;
+import net.minecraft.world.level.GameType;
+import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.clock.ClockTimeMarkers;
 import net.minecraft.world.clock.ServerClockManager;
 import net.minecraft.world.clock.WorldClocks;
 import net.minecraft.world.phys.Vec2;
 
 /**
- * Dev-only deterministic screenshot for the automated test loop (dev-relaunch.sh).
- * When {@code <gameDir>/devshot.request} exists (it holds a frame count), the camera is
- * pointed straight up once a world is loaded and, after that many rendered frames,
- * the level is captured to {@code screenshots/devshot.png} straight from the render
- * target, so no other window can cover it and the HUD is not in it. The request file
- * is deleted afterwards. Without the file this costs one existence check.
+ * Dev-only deterministic screenshots for the automated test loop (dev-relaunch.sh).
+ * When {@code <gameDir>/devshot.request} exists, the camera is controlled and the
+ * level is captured straight from the render target (no HUD, no window stacking).
+ *
+ * Request format: {@code FRAMES [xRot] [yaw] [TOKEN ...]}
+ *
+ * Legacy tokens (single shot to {@code screenshots/devshot.png}):
+ * <ul>
+ * <li>two numeric tokens: camera xRot (default -90, straight up) and yaw</li>
+ * <li>{@code NOSHADOW} skip the terrain shadow pass, {@code SHADOWTEST} deterministic
+ * cloud-over-terrain scene, {@code BOLT} deterministic lightning, {@code OPTIONS} open
+ * the options screen after the shot.</li>
+ * </ul>
+ *
+ * Standard views (VISUAL-PARITY-PLAN step 0) — each letter queues one shot, taken in
+ * order after a settle delay; positions are probed from the live terrain so the same
+ * world always yields the same views:
+ * <ul>
+ * <li>{@code A} horizon: on a beach at sea level (y~63-67), pitch 0, facing open water
+ * &rarr; {@code devshot-A.png}</li>
+ * <li>{@code B} landscape: over land, held at y=100, pitch -15 &rarr; {@code devshot-B.png}</li>
+ * <li>{@code C} up: straight up from the beach (same position as A) &rarr; {@code devshot-C.png}</li>
+ * <li>{@code D} inside/above: the beach XZ held at y=260, pitch -20 &rarr; {@code devshot-D.png}</li>
+ * <li>{@code E} motion: view A twice, 200 game ticks (10 s) apart &rarr;
+ * {@code devshot-E1.png} / {@code devshot-E2.png}</li>
+ * <li>{@code NOSPAWN} skip the automatic test-formation spawn (shows the world's own
+ * persisted formations only).</li>
+ * </ul>
+ * Held (pinned) views teleport the player to the view position every frame and switch
+ * it to creative flying, so the camera stays exactly where the view says.
  */
 public final class DevShot
 {
@@ -41,6 +67,7 @@ public final class DevShot
 	private static boolean checked;
 	private static boolean done;
 	private static int framesLeft;
+	private static int framesTotal;
 	private static float savedXRot;
 	private static float savedYRot;
 	private static boolean saved;
@@ -49,6 +76,38 @@ public final class DevShot
 	private static float shotYaw = Float.NaN; // NaN = keep current yaw
 	private static boolean shadowTest; // SHADOWTEST token: deterministic cloud-over-terrain scene
 	private static boolean boltTest; // BOLT token: deterministic lightning bolt for the screenshot
+
+	// ---- standard views (A-E) ----
+
+	/** One queued camera view: where to stand, where to look, what to capture. */
+	private static final class View
+	{
+		String file1;
+		String file2; // second shot of this view (motion), null otherwise
+		float pitch;
+		float yaw;
+		double x, y, z;
+		boolean pin; // teleport the player to (x,y,z) every frame
+		long waitTicks; // after file1: wait this many game ticks, then take file2
+
+		View(String file1, float pitch, float yaw, double x, double y, double z)
+		{
+			this.file1 = file1;
+			this.pitch = pitch;
+			this.yaw = yaw;
+			this.x = x;
+			this.y = y;
+			this.z = z;
+			this.pin = true;
+		}
+	}
+
+	private static final java.util.List<View> views = new java.util.ArrayList<>();
+	private static boolean viewSetupDone;
+	private static boolean noSpawn; // NOSPAWN token: show the world's own formations only
+	private static long waitUntilTick = -1; // game tick at which the second (motion) shot fires
+	private static long firstTick = -1; // game time of the first frame with a player
+	private static final int POST_VIEW_FRAMES = 240; // settle time after switching views
 
 	private DevShot() {}
 
@@ -92,7 +151,7 @@ public final class DevShot
 			return;
 		}
 		double px = mc.player.getX(), py = mc.player.getY(), pz = mc.player.getZ();
-		effects.spawnLightning(new net.minecraft.core.BlockPos((int) (px + 3.0), (int) (py + 40.0), (int) pz),
+		effects.spawnLightning(new net.minecraft.core.BlockPos((int) px + 2, (int) (py + 40), (int) pz + 2),
 				false, 12345, 3, 5, 2.0F, 1.5F, 20.0F, 160.0F);
 		LOGGER.info("[DEVSHOT] bolt test: spawn at ({}, {}, {})", (int) (px + 3), (int) (py + 40), (int) pz);
 	}
@@ -308,6 +367,221 @@ public final class DevShot
 		}
 	}
 
+	// ------------------------------------------------------------------
+	// Standard views (A-E): terrain probes + deterministic view setup
+	// ------------------------------------------------------------------
+
+	/** Terrain surface height at (x, z) ignoring liquids; -1 when the chunk is not loaded. */
+	private static double terrainTop(Minecraft mc, int x, int z)
+	{
+		if (mc.level.getChunk(x >> 4, z >> 4) == null)
+			return -1;
+		return mc.level.getHeight(Heightmap.Types.WORLD_SURFACE, x, z); // 26.2: was MOTION_BLOCKING_NO_LIQUID
+	}
+
+	/** Whether the column ahead is open sea (terrain well below the sea level of 63). */
+	private static boolean isOpenWater(Minecraft mc, int cx, int cz, double ang)
+	{
+		int run = 0;
+		for (int s = 8; s <= 16; s++) // 128..256 blocks ahead in 16-block steps
+		{
+			int x = cx + (int) Math.round(Math.cos(ang) * s * 16);
+			int z = cz + (int) Math.round(Math.sin(ang) * s * 16);
+			double top = terrainTop(mc, x, z);
+			if (top < 0)
+				continue; // unloaded column: cannot confirm, cannot break the run
+			if (top < 63)
+				run++;
+			else
+				run = 0;
+			if (run >= 4) // >= 64 continuous blocks of open sea
+				return true;
+		}
+		return false;
+	}
+
+	/**
+	 * Probe origin: the player's block XZ (NOT its Y: the dev client persists the
+	 * player's last pinned position between runs, e.g. y=260 after a view-D run,
+	 * and its gamemode to creative). The player's XZ is stable in the CloudClean
+	 * world and — crucially — chunk loading follows the player, so a scan around
+	 * the world spawn (usually kilometres away) would only see unloaded columns.
+	 */
+	private static int[] probeOrigin(Minecraft mc)
+	{
+		return new int[] { mc.player.getBlockX(), mc.player.getBlockZ() };
+	}
+
+	/**
+	 * Finds a sea-level beach: standing surface (heightmap) at y 63..72 near the
+	 * coast, with open water reachable in some direction. Deterministic scan of
+	 * the world spawn column first, then Chebyshev rings in 16-block steps.
+	 * The heightmap value is the standing surface Y (first empty slot), so the
+	 * camera eye goes at surface + 1.62. Returns {x, eyeY, z, yawDegrees} or null.
+	 */
+	private static double[] findBeach(Minecraft mc)
+	{
+		int[] o = probeOrigin(mc);
+		int px = o[0];
+		int pz = o[1];
+		for (int r = 0; r <= 20; r++)
+		{
+			for (int a = 0; a < 16; a++)
+			{
+				if (r == 0 && a != 0)
+					continue;
+				double ang = Math.toRadians(a * 22.5);
+				int cx = px + (int) Math.round(Math.cos(ang) * r * 16);
+				int cz = pz + (int) Math.round(Math.sin(ang) * r * 16);
+				double surface = terrainTop(mc, cx, cz);
+				if (surface < 63 || surface > 72)
+					continue; // must be land at sea level (unloaded or high ground rejected)
+				if (mc.level.getBlockState(new net.minecraft.core.BlockPos(cx, (int) surface, cz)).isSolid())
+					continue; // the surface slot must be standable (air or water)
+				for (int wa = 0; wa < 16; wa++)
+				{
+					double wang = Math.toRadians(wa * 22.5);
+					if (isOpenWater(mc, cx, cz, wang))
+					{
+						// MC yaw: 0 = +Z, 90 = -X; view direction (cos wang, sin wang)
+						// -> yaw = atan2(-dx, dz) in degrees (setYRot takes degrees).
+						float yaw = (float) Math.toDegrees(Math.atan2(-Math.cos(wang), Math.sin(wang)));
+						LOGGER.info("[DEVSHOT] view A beach: {}x{} (surface {}), feet y {}, facing yaw {} (origin {}x{})",
+								cx, cz, surface, surface, (int) yaw, px, pz);
+					// The pin sets the player FEET; the camera eye ends up at surface + 1.62.
+						return new double[] { cx, surface, cz, yaw };
+					}
+				}
+			}
+		}
+		LOGGER.warn("[DEVSHOT] no sea-level beach found near world spawn ({}, {}); falling back to the player column", px, pz);
+		return null;
+	}
+
+	/** Finds higher land (surface y 66..97) for view B; deterministic ring scan. Returns {x, z} or null. */
+	private static double[] findLand(Minecraft mc)
+	{
+		int[] o = probeOrigin(mc);
+		int px = o[0];
+		int pz = o[1];
+		for (int r = 0; r <= 20; r++)
+		{
+			for (int a = 0; a < 8; a++)
+			{
+				if (r == 0 && a != 0)
+					continue;
+				double ang = Math.toRadians(a * 45.0);
+				int cx = px + (int) Math.round(Math.cos(ang) * r * 16);
+				int cz = pz + (int) Math.round(Math.sin(ang) * r * 16);
+				double surface = terrainTop(mc, cx, cz);
+				if (surface < 66 || surface > 97)
+					continue;
+				if (mc.level.getBlockState(new net.minecraft.core.BlockPos(cx, (int) surface, cz)).isSolid())
+					continue;
+				LOGGER.info("[DEVSHOT] view B land: {}x{} (surface {}) (origin {}x{})", cx, cz, surface, px, pz);
+				return new double[] { cx, cz };
+			}
+		}
+		LOGGER.warn("[DEVSHOT] no land found near world spawn ({}, {}); falling back to the beach position", px, pz);
+		return null;
+	}
+
+	/** Server-side creative + flying + invulnerable so pinned views hold their altitude. */
+	private static void holdInAir(Minecraft mc)
+	{
+		try
+		{
+			IntegratedServer server = mc.getSingleplayerServer();
+			if (server == null)
+				return;
+			net.minecraft.server.level.ServerPlayer sp = server.getPlayerList().getPlayer(mc.player.getUUID());
+			if (sp == null)
+				return;
+			sp.setGameMode(GameType.CREATIVE);
+			sp.getAbilities().flying = true;
+			sp.getAbilities().invulnerable = true;
+		}
+		catch (Throwable t)
+		{
+			LOGGER.warn("[DEVSHOT] holdInAir failed (the per-frame pin still holds the camera)", t);
+		}
+	}
+
+	/** Probes the terrain, builds the queued views, and moves to the first one. */
+	private static void setupViews(Minecraft mc)
+	{
+		viewSetupDone = true;
+		forceNoon(mc);
+		double[] beach = findBeach(mc);
+		if (beach == null)
+		{
+			int[] o = probeOrigin(mc);
+			beach = new double[] { o[0], 70.0, o[1], 0.0 };
+		}
+		double[] land = findLand(mc);
+		if (land == null)
+			land = new double[] { beach[0], beach[2] };
+		for (View v : views)
+		{
+			if (v.file1.endsWith("A.png") || v.file1.endsWith("C.png") || v.file1.endsWith("E1.png"))
+			{
+				v.x = beach[0];
+				v.y = beach[1];
+				v.z = beach[2];
+				v.yaw = (float) beach[3];
+			}
+			else if (v.file1.endsWith("B.png"))
+			{
+				v.x = land[0];
+				v.y = 100.0;
+				v.z = land[1];
+				if (Float.isNaN(v.yaw))
+					v.yaw = 0.0F;
+			}
+			else if (v.file1.endsWith("D.png"))
+			{
+				v.x = beach[0];
+				v.y = 260.0;
+				v.z = beach[2];
+				v.yaw = (float) beach[3];
+			}
+		}
+		holdInAir(mc);
+		switchToView(mc, 0);
+		// The pre-setup guard held framesLeft at 1; now that the pin is applied,
+		// restart the full settle so the camera (which follows the player with a
+		// one-tick lag) converges before the first shot.
+		framesLeft = framesTotal;
+		if (!noSpawn)
+			spawnTestFormation(mc);
+	}
+
+	private static int viewIdx = -1;
+
+	private static void switchToView(Minecraft mc, int idx)
+	{
+		viewIdx = idx;
+		View v = views.get(idx);
+		shotAngle = v.pitch;
+		shotYaw = v.yaw;
+		if (v.pin)
+		{
+			mc.player.teleportSetPosition(new net.minecraft.world.entity.PositionMoveRotation(
+					new net.minecraft.world.phys.Vec3(v.x, v.y, v.z), net.minecraft.world.phys.Vec3.ZERO,
+					v.yaw, v.pitch), java.util.EnumSet.noneOf(net.minecraft.world.entity.Relative.class));
+			LOGGER.info("[DEVSHOT] pin {}: requested {}x{}x{} -> actual {}x{}x{} (xRot {})",
+					v.file1, v.x, v.y, v.z, mc.player.getX(), mc.player.getY(), mc.player.getZ(),
+					(int) mc.player.getXRot());
+		}
+		LOGGER.info("[DEVSHOT] view {}: {} at {}x{}x{} pitch {} deg, yaw {} deg",
+				idx, v.file1, v.x, v.y, v.z, (int) v.pitch, (int) v.yaw);
+	}
+
+	private static View currentView()
+	{
+		return views.get(viewIdx);
+	}
+
 	/** Called once per rendered world frame, after the clouds were drawn. */
 	public static void onWorldFrame()
 	{
@@ -328,8 +602,10 @@ public final class DevShot
 				String content = Files.readString(request).trim();
 				String[] parts = content.split("\\s+");
 				// First token = frame count. The rest: numeric tokens are the camera
-				// xRot (first) and yaw (second); keywords switch test scenes.
+				// xRot (first) and yaw (second); letters A-E queue standard views;
+				// keywords switch test scenes.
 				framesLeft = Integer.parseInt(parts[0]);
+				framesTotal = framesLeft;
 				int numericSeen = 0;
 				for (int i2 = 1; i2 < parts.length; i2++)
 				{
@@ -337,6 +613,11 @@ public final class DevShot
 					if (part.equalsIgnoreCase("NOSHADOW"))
 					{
 						dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudsDrawPipeline.TERRAIN_SHADOWS_ENABLED = false;
+						continue;
+					}
+					if (part.equalsIgnoreCase("NOSPAWN"))
+					{
+						noSpawn = true;
 						continue;
 					}
 					if (part.equalsIgnoreCase("SHADOWTEST"))
@@ -361,6 +642,29 @@ public final class DevShot
 							shotAngle = -20.0F;
 						continue;
 					}
+					if (part.length() == 1)
+					{
+						char c = Character.toUpperCase(part.charAt(0));
+						if (c >= 'A' && c <= 'E')
+						{
+							View v = new View("devshot-" + c + ".png", 0.0F, 0.0F, 0, 0, 0);
+							switch (c)
+							{
+							case 'A': v.pitch = 0.0F; break;          // horizon over water
+							case 'B': v.pitch = -15.0F; break;        // landscape from y=100
+							case 'C': v.pitch = -90.0F; break;        // straight up
+							case 'D': v.pitch = -20.0F; break;        // inside/above the layer
+							case 'E':
+								v.pitch = 0.0F;
+								v.file1 = "devshot-E1.png";
+								v.file2 = "devshot-E2.png";
+								v.waitTicks = 200; // 10 s
+								break;
+							}
+							views.add(v);
+							continue;
+						}
+					}
 					try
 					{
 						float v = Float.parseFloat(part);
@@ -372,15 +676,25 @@ public final class DevShot
 					catch (NumberFormatException ignored) { /* unknown token */ }
 				}
 			}
-			catch (Exception e) { framesLeft = 240; }
-			LOGGER.info("[DEVSHOT] requested: capturing after {} frames", framesLeft);
+			catch (Exception e) { framesLeft = 240; framesTotal = 240; }
+			LOGGER.info("[DEVSHOT] requested: {} frames, {} standard views, noSpawn={}",
+					framesLeft, views.size(), noSpawn);
 		}
 		if (mc.player == null)
 			return;
+
+		// Standard views: probe terrain + teleport a few seconds after join (tick-based:
+		// the render FPS varies, and the terrain around the target must be loaded first;
+		// the test formation then spawns at the FINAL camera position).
+		if (firstTick < 0)
+			firstTick = mc.level.getGameTime();
+		if (!views.isEmpty() && !viewSetupDone && mc.level.getGameTime() - firstTick >= 60)
+			setupViews(mc);
+
 		// Verification helper (automated loop only, i.e. devshot.request existed): the
 		// world's formations may have drifted far outside the render band, so make sure
 		// one exists above the player for the screenshot to verify cloud rendering.
-		if (!testSpawned && framesLeft <= 230) // spawn early: band regen needs ~40 frames
+		if (views.isEmpty() && !testSpawned && framesLeft <= 230) // spawn early: band regen needs ~40 frames
 		{
 			testSpawned = true;
 			if (shadowTest)
@@ -396,19 +710,89 @@ public final class DevShot
 			savedYRot = mc.player.getYRot();
 			saved = true;
 		}
+		if (!views.isEmpty() && viewIdx >= 0)
+		{
+			View v = currentView();
+			shotAngle = v.pitch;
+			shotYaw = v.yaw;
+			// Teleport ONCE per view switch (in switchToView), not every frame:
+			// a per-frame teleportSetPosition left the player's xRotO stuck at its
+			// pre-setup value and the camera rotation would not converge.
+		}
 		mc.player.setXRot(shotAngle);
 		if (!Float.isNaN(shotYaw))
 			mc.player.setYRot(shotYaw);
 		if (boltTest && framesLeft > 0 && framesLeft % 30 == 0)
 			spawnTestBolt(mc); // keep a young bolt alive for the 240-frame shot
+
+		// Second shot of the motion view (E): fire on a game-tick boundary, not frames.
+		if (waitUntilTick > 0)
+		{
+			if (mc.level.getGameTime() >= waitUntilTick)
+			{
+				waitUntilTick = -1;
+				shoot(mc, currentView().file2);
+				finishOrAdvance(mc);
+			}
+			return;
+		}
+		// Standard views: never shoot before the view setup (probe + teleport) ran.
+		if (!views.isEmpty() && viewIdx < 0)
+		{
+			framesLeft = 1;
+			return;
+		}
 		if (--framesLeft > 0)
 			return;
-		mc.player.setXRot(savedXRot); // restore the user's view
-		mc.player.setYRot(savedYRot);
-		done = true;
-		Screenshot.grab(mc.gameDirectory, "devshot.png", mc.gameRenderer.mainRenderTarget(), 1,
-				message -> LOGGER.info("[DEVSHOT] saved screenshots/devshot.png ({})", message.getString()));
+
+		if (views.isEmpty())
+		{
+			// Legacy single-shot path.
+			mc.player.setXRot(savedXRot); // restore the user's view
+			mc.player.setYRot(savedYRot);
+			done = true;
+			Screenshot.grab(mc.gameDirectory, "devshot.png", mc.gameRenderer.mainRenderTarget(), 1,
+					message -> LOGGER.info("[DEVSHOT] saved screenshots/devshot.png ({})", message.getString()));
+		}
+		else
+		{
+			View v = currentView();
+			shoot(mc, v.file1);
+			if (v.waitTicks > 0)
+			{
+				waitUntilTick = mc.level.getGameTime() + v.waitTicks;
+				return;
+			}
+			finishOrAdvance(mc);
+		}
 		try { Files.deleteIfExists(request); }
 		catch (Exception ignored) {}
+	}
+
+	/** After a shot: either start the wait for the view's second shot, switch to the
+	 * next queued view, or finish the run (restore the user's view). */
+	private static void finishOrAdvance(Minecraft mc)
+	{
+		if (viewIdx + 1 < views.size())
+		{
+			switchToView(mc, viewIdx + 1);
+			framesLeft = POST_VIEW_FRAMES;
+			return;
+		}
+		mc.player.setXRot(savedXRot);
+		mc.player.setYRot(savedYRot);
+		done = true;
+	}
+
+	private static void shoot(Minecraft mc, String name)
+	{
+		var cam = mc.gameRenderer.mainCamera();
+		LOGGER.info("[DEVSHOT] shooting {}: cam pos {}x{}x{} camXRot {} camYRot {} (player xRot {} yRot {}, xRotO {} viewXRot(0.5) {})",
+				name, cam.position().x, cam.position().y, cam.position().z,
+				(int) cam.xRot(), (int) cam.yRot(),
+				(int) mc.player.getXRot(), (int) mc.player.getYRot(),
+				(int) mc.player.xRotO, (int) mc.player.getViewXRot(0.5F));
+		Screenshot.grab(mc.gameDirectory, name, mc.gameRenderer.mainRenderTarget(), 1,
+				message -> LOGGER.info("[DEVSHOT] saved screenshots/{} ({})", name, message.getString()));
 	}
 }

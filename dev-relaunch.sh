@@ -17,6 +17,9 @@ LOG=run/logs/latest.log
 REQUEST=run/devshot.request   # read by the mod (client/DevShot.java)
 DEVSHOT=run/screenshots/devshot.png
 SHOT=/tmp/sc-latest.png
+# DEVSHOT_EXTRA="A B C D E [NOSPAWN]" makes the mod take the standard views
+# (VISUAL-PARITY-PLAN step 0) as devshot-A.png ... devshot-E2.png; without view
+# tokens it takes the legacy single straight-up shot to devshot.png.
 UNIT=simpleclouds-devclient
 FRAMES=240                    # rendered frames after joining the world before the shot
 JAR=build/libs/simple-clouds-0.7.3+26.2-fabric.jar
@@ -36,7 +39,7 @@ sleep 3
 #    script (so Jan can play-test), and the fixed unit name makes a second
 #    concurrent dev client impossible.
 mkdir -p run/screenshots
-rm -f "$DEVSHOT"
+rm -f run/screenshots/devshot*.png
 TOKENS="${DEVSHOT_ANGLE:-} ${DEVSHOT_YAW:-} ${DEVSHOT_EXTRA:-}"; [ -n "${DEVSHOT_NOSHADOW:-}" ] && TOKENS="$TOKENS NOSHADOW"
 echo "$FRAMES $TOKENS" | sed 's/ *$//g; s/  */ /g' > "$REQUEST"   # optional tokens: camera xRot (default -90), yaw, NOSHADOW
 T0=$(date +%s)
@@ -61,9 +64,21 @@ for i in $(seq 1 100); do
 done
 if [ "$drawn" -ne 1 ]; then echo "FAIL ($stage): no cloud draw within 400s"; tail -30 "$OUT"; exit 1; fi
 
-# 4. The mod takes its own screenshot (camera straight up, no HUD) once FRAMES
-#    frames have rendered, so window stacking cannot hide the game.
-for i in $(seq 1 45); do [ -s "$DEVSHOT" ] && break; sleep 2; done
+# 4. The mod takes its own screenshots (no HUD) once FRAMES frames have
+#    rendered, so window stacking cannot hide the game. Standard-view runs
+#    produce devshot-A.png ... devshot-E2.png; the legacy run devshot.png.
+VIEWWANT=0; for t in ${DEVSHOT_EXTRA:-}; do case "$t" in A|B|C|D|E) VIEWWANT=$((VIEWWANT+1));; esac; done
+EVIEW=0; case " ${DEVSHOT_EXTRA:-} " in *" E "*) EVIEW=1;; esac
+if [ "$VIEWWANT" -gt 0 ]; then
+  WANT=$(( VIEWWANT + EVIEW ))   # E produces two files
+  for i in $(seq 1 90); do
+    n=$(ls run/screenshots/devshot-*.png 2>/dev/null | wc -l)
+    [ "$n" -ge "$WANT" ] && break
+    sleep 2
+  done
+else
+  for i in $(seq 1 45); do [ -s "$DEVSHOT" ] && break; sleep 2; done
+fi
 
 # 5. Log check. "unsupported uniform" means a shader uses a uniform block the
 #    pipeline did not declare -- it is silently NOT bound. GLSL errors look like
@@ -72,15 +87,26 @@ grep "first draw" "$LOG" | tail -1
 BAD=$(grep -iE "unsupported uniform|render pass failed|missing sampler|compil.*(error|fail)|[0-9]+:[0-9]+\([0-9]+\): error|simpleclouds.*(ERROR|Exception)" "$LOG" \
       | grep -vE "Unknown registry key|Could not find root Simple Clouds config" | head -20)
 
-if [ -s "$DEVSHOT" ]; then
-  cp "$DEVSHOT" "$SHOT"; SRC="in-game devshot: camera straight up, no HUD"
+# Collect the shots: legacy devshot.png -> /tmp/sc-latest.png, standard views
+# devshot-X.png -> /tmp/sc-view-X.png.
+SHOTS=()
+for f in run/screenshots/devshot*.png; do
+  [ -s "$f" ] || continue
+  b=$(basename "$f")
+  case "$b" in
+    devshot.png) cp "$f" "$SHOT"; SHOTS+=("$SHOT") ;;
+    devshot-*.png) cp "$f" "/tmp/sc-view-${b#devshot-}"; SHOTS+=("/tmp/sc-view-${b#devshot-}") ;;
+  esac
+done
+if [ ${#SHOTS[@]} -gt 0 ]; then
+  SRC="in-game devshot, no HUD"
 else
   load_env; spectacle -b -n -o "$SHOT" >/dev/null 2>&1
-  SRC="desktop capture (no devshot within 90s -- the game window may be covered)"
+  SHOTS=("$SHOT"); SRC="desktop capture (no devshot within the wait -- the game window may be covered)"
 fi
 
 if [ -n "$BAD" ]; then
-  echo "FAIL (runtime): render warnings in the log:"; echo "$BAD"; echo "screenshot ($SRC): $SHOT"; exit 1
+  echo "FAIL (runtime): render warnings in the log:"; echo "$BAD"; echo "screenshot ($SRC): ${SHOTS[*]}"; exit 1
 fi
 
 if [ "${1:-}" = "--install" ]; then
@@ -89,5 +115,5 @@ if [ "${1:-}" = "--install" ]; then
     || { echo "FAIL (build): jar build/install failed"; tail -20 "$HOME/.cache/simpleclouds/build.out"; exit 1; }
 fi
 
-echo "PASS (log clean). Screenshot: $SHOT ($SRC). READ it and confirm what you changed is actually visible."
+for s in "${SHOTS[@]}"; do echo "PASS (log clean). Screenshot: $s ($SRC). READ it and confirm what you changed is actually visible."; done
 echo "The dev client keeps running as user unit $UNIT for play-testing (stop it: systemctl --user stop $UNIT)."
