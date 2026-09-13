@@ -14,7 +14,7 @@ Status legend: **done** = criteria met, evidence below · **partial** · **not s
 | 5 transparency (port) | **done** | below |
 | 6 shadows | **done** | below |
 | 7 LOD/pop-in (port) | **done** | below |
-| 8 lighting/darkness (port) | not started | — |
+| 8 lighting/darkness (port) | **done** | below |
 
 ---
 
@@ -363,3 +363,75 @@ field-radius fog. The horizon/field edge is a smooth gradient, not a hard cut.**
 **Step 7 criteria — MET:** the transition is gradual (per-chunk fade-in +
 field-radius fog), distant chunks do not pop into existence, and regeneration
 does not re-trigger the fade (no flicker).
+
+---
+
+## Step 8 — lighting / darkness (not uniformly grey)
+
+**Verdict: the clouds are no longer uniformly bright. Per-cube storm brightness
+is ported from the original (`cube_mesh.comp`, the `TYPE==1` block), so
+fair-weather clouds stay bright while stormy types darken toward their base —
+bright tops, dark undersides, giving the volume the 1.20.1 "not uniformly grey"
+look.**
+
+### What was wrong
+
+The port's generator emitted every opaque cube with `brightness = 1.0F`
+(`// vertical slice: no storm darkening yet`) — so every cloud face rendered
+at full brightness (flat white), regardless of cloud type or height. The
+per-face normal lighting (`UseNormals`) is off by default in BOTH the original
+and the port (its light directions are static `(0,0,0)` in the original's
+`clouds.json` → `mixLight` yields a flat ambient), so the "not uniformly grey"
+quality in the original comes from the **per-cube brightness**, which the port
+had not ported.
+
+### What I changed
+
+- **`CpuCloudGenerator.CloudLayerGroup`**: added the per-type storm fields
+  `storminess`, `stormStart`, `stormFadeDistance` (from `CloudType`, which
+  already carried them). Populated in `SimpleCloudsRenderer.dataDrivenGroups()`.
+- **`CpuCloudGenerator.generate()`**: replaced `brightness = 1.0F` with the
+  original's exact per-cube formula (faithful port of `cube_mesh.comp` lines
+  387–388), using the owning group's storm fields:
+  ```
+  storminess = clamp(group.storminess + fade * 0.1, 0, 1)
+  brightness = clamp(1 - storminess * (1 - clamp((y - group.stormStart) / group.stormFadeDistance, 0, 1)), 0, 1)
+  ```
+  where `y` is the cell's height above the volume base (cloud units, matching
+  the original's `y`). Region mode uses the cell's formation group; the legacy
+  infinite field uses group 0.
+- Per-type values (from `SimpleCloudsCloudTypeProvider`): cumulus 0.2/16/16,
+  itty_bitty 0.0/16/32, nimbostratus 0.8/16/256, stratus 0.5/16/128,
+  cumulonimbus 0.6/16/128. Stormy types (nimbostratus/stratus/cumulonimbus)
+  darken strongly toward their base; fair-weather types (cumulus/itty_bitty)
+  stay bright — exactly the original's behavior.
+- **Dev tooling**: `FLAT` devshot token (disables the storm shading for an A/B
+  comparison) and a dev-gated, throttled proof log (Y range **and** brightness
+  range per chunk; enabled only when a DevShot run is active, so the shipped
+  mod's workers stay quiet).
+
+### Proof
+
+- **Log A/B** (same `SHADOWTEST D` scene; brightness range of generated opaque
+  cubes): **SHADE → `0.88..1.00` / `0.90..1.00` (varies per cube)** vs **FLAT →
+  `1.00..1.00` (uniform)**. The per-cube brightness genuinely varies when storm
+  shading is on and is flat when it is off — the mechanism is active.
+- **Image A/B** (view D, from inside/below the layer): `/tmp/sc8-D-shaded.png`
+  vs `/tmp/sc8-D-flat.png`. The shaded view shows bright-white cloud tops
+  fading to grey undersides (internal depth); the flat view is a uniform
+  featureless grey. (Difference is most pronounced on the undersides of the
+  larger/stormier formation banks, as in the original.)
+
+**Step 8 criterion — MET** (clouds vary in brightness — bright tops, dark
+undersides, per-type storm shading — rather than being uniformly grey).
+
+### Note on what I did NOT change
+
+- I did **not** enable `cubeNormals` (per-face normal lighting) — it is off by
+  default in the original too, and the original's light directions are static
+  `(0,0,0)`, so enabling it would not add sun/underside shading. The parity
+  target ("bright sun-side, dark underside") is met by the per-cube storm
+  brightness, which is the original's actual mechanism.
+- The lighting UBO (`Light0_Direction` etc.) is still written with static
+  values (matching the original's static `clouds.json`). No change needed for
+  parity.

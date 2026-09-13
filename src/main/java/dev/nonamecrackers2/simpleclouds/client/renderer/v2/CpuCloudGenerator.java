@@ -43,7 +43,7 @@ import org.apache.logging.log4j.Logger;
 public final class CpuCloudGenerator
 {
 	private static final Logger LOGGER = LogManager.getLogger("simpleclouds/CpuGenerator");
-	private static boolean loggedYRange = false; // one-shot step-1 proof log
+	private static long lastYRangeLog = 0L; // step-1/8 proof log (throttled ~every 5 s)
 
 	/** Step 5: the original's TransparencyDistance gate (cube_mesh.comp: default
 	 *  {@code maxRadius / 2} cloud units; the uniform is set from the mesh generator,
@@ -59,7 +59,25 @@ public final class CpuCloudGenerator
 	}
 
 	/** All noise layers of one cloud type plus its transparency fade (a compute-shader LayerGroup). */
-	public record CloudLayerGroup(List<NoiseLayer> layers, float transparencyFade, boolean stormType)
+	/**
+	 * One cloud type's render group (port of the original's LayerGroup SSBO entry).
+	 *
+	 * Step 8 (lighting/darkness): the per-cube brightness is computed from the
+	 * type's storm fields (cube_mesh.comp, TYPE==1 block):
+	 * <pre>
+	 *   storminess = clamp(group.Storminess + fade * 0.1, 0, 1)
+	 *   brightness = clamp(1.0 - storminess * (1.0 - clamp((y - group.StormStart)
+	 *                 / group.StormFadeDistance, 0, 1)), 0, 1)
+	 * </pre>
+	 * where {@code y} is the cube's grid Y (cloud units above the volume base).
+	 * Stormy types (cumulonimbus/nimbostratus/stratus) darken toward their base;
+	 * fair-weather types (cumulus/itty_bitty) stay bright. This is the "not
+	 * uniformly white" shading of the 1.20.1 mod (the light directions are static
+	 * (0,0,0) even in the original, so per-face normal lighting — {@code cubeNormals},
+	 * default off — is a separate, weaker effect).
+	 */
+	public record CloudLayerGroup(List<NoiseLayer> layers, float transparencyFade, boolean stormType,
+			float storminess, float stormStart, float stormFadeDistance)
 	{
 	}
 
@@ -156,6 +174,9 @@ public final class CpuCloudGenerator
 		// Step 1 proof: track the min/max WORLD Y of emitted opaque cubes so the
 		// anchoring (world Y = cloudHeight + 8*y) can be verified in the log.
 		float minY = Float.MAX_VALUE, maxY = -Float.MAX_VALUE;
+		// Step 8 proof: track the min/max brightness of emitted opaque cubes so the
+		// per-cube storm shading (not uniformly 1.0) can be verified in the log.
+		float minBright = 1.0F, maxBright = 0.0F;
 		int groupCount = this.groups.size();
 		float[] groupNoises = new float[groupCount];
 		boolean[] columnStorm = new boolean[xCells * zCells];
@@ -235,12 +256,30 @@ public final class CpuCloudGenerator
 							anyOpaque = true;
 					}
 
-					float brightness = 1.0F; // vertical slice: no storm darkening yet
+					// Step 8 (lighting/darkness): per-cube brightness from the owning
+					// group's storm fields (original cube_mesh.comp, TYPE==1 block).
+					// Region mode: the cell's formation group; legacy infinite field:
+					// group 0. Stormy types darken toward their base; fair-weather
+					// types stay bright — the "not uniformly white" 1.20.1 look.
+					int ownGroup = regionMode ? columnGroup[ci] : 0;
+					float fade0 = regionMode ? columnFade[ci] : 0.0F;
+					float brightness = 1.0F;
+					if (stormShading && ownGroup >= 0 && ownGroup < groupCount)
+					{
+						CloudLayerGroup g0 = this.groups.get(ownGroup);
+						float storminess = clamp(g0.storminess() + fade0 * 0.1F, 0.0F, 1.0F);
+						float above = g0.stormFadeDistance() > 0.0F
+								? clamp((y - g0.stormStart()) / g0.stormFadeDistance(), 0.0F, 1.0F)
+							: 1.0F;
+						brightness = clamp(1.0F - storminess * (1.0F - above), 0.0F, 1.0F);
+					}
 					if (anyOpaque)
 					{
 						float cubeY = (y + lodScale * 0.5F) * scale + worldBaseY;
 						if (cubeY < minY) minY = cubeY;
 						if (cubeY > maxY) maxY = cubeY;
+						if (brightness < minBright) minBright = brightness;
+						if (brightness > maxBright) maxBright = brightness;
 						int needed = 6 * CloudVertexFormat.BYTES_PER_INSTANCE;
 						if (opaqueWritten + needed > opaqueOut.capacity())
 							opaqueOut = grower.grow(opaqueOut, opaqueWritten + needed, opaqueWritten);
@@ -316,14 +355,22 @@ public final class CpuCloudGenerator
 
 		outOpaqueCount[0] = opaqueWritten / CloudVertexFormat.BYTES_PER_INSTANCE;
 		outTransparentCount[0] = transparentWritten / CloudVertexFormat.BYTES_PER_INSTANCE_ALPHA;
-		// Step 1 proof log (one-shot): the generated cloud volume must
-		// sit at world Y = cloudHeight + 8*y (>= ~128 by default), never at sea level.
-		if (opaqueWritten > 0 && !loggedYRange)
+		// Step 1/8 proof log (throttled ~every 5 s): the generated cloud volume must
+		// sit at world Y = cloudHeight + 8*y (>= ~128 by default), never at sea level,
+		// and the per-cube brightness (step 8) must vary (not all 1.0) when stormy
+		// types are present. Throttled (not one-shot) so chunks generated after the
+		// DevShot tokens take effect are also sampled.
+		if (opaqueWritten > 0 && devProofLogging)
 		{
-			loggedYRange = true;
-			LOGGER.info("Simple Clouds clouds: generated Y range {}..{} (worldBaseY={}, {} opaque instances)",
-					String.format(java.util.Locale.ROOT, "%.1f", minY), String.format(java.util.Locale.ROOT, "%.1f", maxY),
-					String.format(java.util.Locale.ROOT, "%.1f", worldBaseY), (int) outOpaqueCount[0]);
+			long now = System.nanoTime();
+			if (now - lastYRangeLog >= 5_000_000_000L)
+			{
+				lastYRangeLog = now;
+				LOGGER.info("Simple Clouds clouds: generated Y range {}..{} (worldBaseY={}, {} opaque instances, brightness {}..{})",
+						String.format(java.util.Locale.ROOT, "%.1f", minY), String.format(java.util.Locale.ROOT, "%.1f", maxY),
+						String.format(java.util.Locale.ROOT, "%.1f", worldBaseY), (int) outOpaqueCount[0],
+						String.format(java.util.Locale.ROOT, "%.2f", minBright), String.format(java.util.Locale.ROOT, "%.2f", maxBright));
+			}
 		}
 		// Hand the buffers back bound to the bytes written (the caller uploads /
 		// copies [0, limit) and then releases them to the pool). The returned
@@ -335,6 +382,14 @@ public final class CpuCloudGenerator
 		transparentOut.limit(transparentWritten);
 		return new ByteBuffer[] { opaqueOut, transparentOut };
 	}
+
+	/** Step 8 diagnostic (DevShot FLAT): false = force brightness 1.0 (no storm
+	 *  shading) for an A/B comparison. Default true. */
+	public static volatile boolean stormShading = true;
+
+	/** Step 1/8 proof log: only when a DevShot run is active (DevShot sets it),
+	 *  so the shipped mod's chunk workers stay quiet. */
+	public static volatile boolean devProofLogging = false;
 
 	/** Reused gradient scratch (A1: one generator per worker thread, no per-cell allocation). */
 	private final float[] gradient = new float[3];

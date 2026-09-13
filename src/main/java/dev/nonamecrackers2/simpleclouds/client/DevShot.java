@@ -720,6 +720,9 @@ public final class DevShot
 			try
 			{
 				String content = Files.readString(request).trim();
+				// A DevShot run is active: enable the (throttled) generator proof logs
+				// so chunk generation / brightness can be verified from the log.
+				dev.nonamecrackers2.simpleclouds.client.renderer.v2.CpuCloudGenerator.devProofLogging = true;
 				String[] parts = content.split("\\s+");
 				// First token = frame count. The rest: numeric tokens are the camera
 				// xRot (first) and yaw (second); letters A-E queue standard views;
@@ -786,6 +789,13 @@ public final class DevShot
 						// under storm clouds) so the terrain cloud-shadow can be seen
 						// on its own.
 						dev.nonamecrackers2.simpleclouds.client.renderer.SimpleCloudsRenderer.setStormFogEnabled(false);
+						continue;
+					}
+					if (part.equalsIgnoreCase("FLAT"))
+					{
+						// Step 8 diagnostic: disable the per-cube storm shading
+						// (all cubes bright white) for an A/B comparison.
+						dev.nonamecrackers2.simpleclouds.client.renderer.v2.CpuCloudGenerator.stormShading = false;
 						continue;
 					}
 					if (part.equalsIgnoreCase("SHADNEAR"))

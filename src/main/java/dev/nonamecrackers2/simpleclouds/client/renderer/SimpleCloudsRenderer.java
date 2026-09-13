@@ -230,7 +230,9 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 			}
 			if (!layers.isEmpty())
 				out.add(new CpuCloudGenerator.CloudLayerGroup(layers, type.transparencyFade(),
-						type.weatherType() == WeatherType.THUNDERSTORM));
+						type.weatherType() == WeatherType.THUNDERSTORM,
+						// Step 8: per-type storm shading (dark undersides).
+						type.storminess(), type.stormStart(), type.stormFadeDistance()));
 		}
 		return out;
 	}
