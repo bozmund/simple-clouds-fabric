@@ -10,6 +10,7 @@ import org.apache.logging.log4j.Logger;
 
 import dev.nonamecrackers2.simpleclouds.client.cloud.ClientSideCloudTypeManager;
 import dev.nonamecrackers2.simpleclouds.client.renderer.SimpleCloudsRenderer;
+import dev.nonamecrackers2.simpleclouds.client.renderer.v2.ChunkBufferPool;
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.CpuCloudGenerator;
 import dev.nonamecrackers2.simpleclouds.client.world.ClientCloudManager;
 import dev.nonamecrackers2.simpleclouds.api.common.cloud.weather.WeatherType;
@@ -57,6 +58,8 @@ import net.minecraft.world.phys.Vec2;
  * {@code devshot-E1.png} / {@code devshot-E2.png}</li>
  * <li>{@code NOSPAWN} skip the automatic test-formation spawn (shows the world's own
  * persisted formations only).</li>
+ * <li>{@code LOOP} (A1 memory proof) repeat the standard view sequence until
+ * {@code devshot.request} is deleted.</li>
  * </ul>
  * Held (pinned) views teleport the player to the view position every frame and switch
  * it to creative flying, so the camera stays exactly where the view says.
@@ -109,6 +112,11 @@ public final class DevShot
 	private static boolean noSpawn; // NOSPAWN token: show the world's own formations only
 	private static boolean bigFormation; // BIG token: spawn a large stratus deck (LOD test, step 2)
 	private static boolean fastClouds; // FAST token: crank the cloud speed (wind-drift test, step 4)
+	// A1 (memory proof): LOOP cycles the standard views forever (each cycle teleports
+	// between LOD grid cells, so chunks keep regenerating and moving). The run ends
+	// when devshot.request is deleted externally (the script's stop switch).
+	private static boolean loop;
+	private static int loopCycle;
 	private static long waitUntilTick = -1; // game tick at which the second (motion) shot fires
 	private static long firstTick = -1; // game time of the first frame with a player
 	private static final int POST_VIEW_FRAMES = 240; // settle time after switching views
@@ -406,8 +414,15 @@ public final class DevShot
 			float[] sc = new float[1];
 			int x0 = Mth.floor(cx) - 8;
 			int z0 = Mth.floor(cz) - 8;
+			// A1: the probe writes into pooled buffers (16x64x16 cells is tiny).
+			ChunkBufferPool pool = new ChunkBufferPool();
+			java.nio.ByteBuffer opaque = pool.borrow(256 * 1024);
+			java.nio.ByteBuffer transparent = pool.borrow(256 * 1024);
 			// worldBaseY = 0: density probe only counts instances (box-local space).
-			gen.generate(x0, 0, z0, x0 + 16, 64, z0 + 16, 8.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1, 0.0F, oc, tc, 0, sc);
+			java.nio.ByteBuffer[] out = gen.generate(x0, 0, z0, x0 + 16, 64, z0 + 16, 8.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1, 0.0F,
+					opaque, transparent, pool::grow, oc, tc, 0, sc);
+			pool.release(out[0]);
+			pool.release(out[1]);
 			return (int) oc[0];
 		}
 		catch (Throwable t)
@@ -694,6 +709,11 @@ public final class DevShot
 						fastClouds = true;
 						continue;
 					}
+					if (part.equalsIgnoreCase("LOOP"))
+					{
+						loop = true;
+						continue;
+					}
 					if (part.equalsIgnoreCase("SHADOWTEST"))
 					{
 						shadowTest = true;
@@ -751,8 +771,8 @@ public final class DevShot
 				}
 			}
 			catch (Exception e) { framesLeft = 240; framesTotal = 240; }
-			LOGGER.info("[DEVSHOT] requested: {} frames, {} standard views, noSpawn={}",
-					framesLeft, views.size(), noSpawn);
+			LOGGER.info("[DEVSHOT] requested: {} frames, {} standard views, noSpawn={}, loop={}",
+					framesLeft, views.size(), noSpawn, loop);
 		}
 		if (mc.player == null)
 			return;
@@ -857,8 +877,13 @@ public final class DevShot
 			}
 			finishOrAdvance(mc);
 		}
-		try { Files.deleteIfExists(request); }
-		catch (Exception ignored) {}
+		// In LOOP mode the request file is the external stop switch — keep it (the
+		// loop ends when the script deletes it); one-shot runs delete it as before.
+		if (!loop || done)
+		{
+			try { Files.deleteIfExists(request); }
+			catch (Exception ignored) {}
+		}
 	}
 
 	/** After a shot: either start the wait for the view's second shot, switch to the
@@ -868,6 +893,16 @@ public final class DevShot
 		if (viewIdx + 1 < views.size())
 		{
 			switchToView(mc, viewIdx + 1);
+			framesLeft = POST_VIEW_FRAMES;
+			return;
+		}
+		// A1: LOOP restarts the whole view sequence (the view-setup positions are
+		// already pinned, so this just re-teleports; the fill-wait stays latched).
+		if (loop && Files.exists(mc.gameDirectory.toPath().resolve("devshot.request")))
+		{
+			loopCycle++;
+			LOGGER.info("[DEVSHOT] LOOP cycle {} — restarting the view sequence", loopCycle);
+			switchToView(mc, 0);
 			framesLeft = POST_VIEW_FRAMES;
 			return;
 		}

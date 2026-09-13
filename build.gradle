@@ -21,6 +21,18 @@ repositories {
     }
 }
 
+// A1 (VISUAL-PARITY-PLAN addendum): hard limits for the dev client run. The
+// unbounded default (heap ~1/4 of 46 GB + as much direct memory) is how the
+// 2026-09-13 dev client reached 25 GB RSS and got OOM-killed. dev-relaunch.sh
+// adds MemoryMax=10G to the systemd unit as the outer bound.
+loom {
+    runConfigs {
+        client {
+            vmArgs("-Xmx4G", "-XX:MaxDirectMemorySize=2G")
+        }
+    }
+}
+
 dependencies {
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
     implementation "net.fabricmc:fabric-loader:${project.loader_version}"

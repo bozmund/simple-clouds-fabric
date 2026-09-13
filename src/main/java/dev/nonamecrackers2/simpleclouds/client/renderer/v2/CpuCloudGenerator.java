@@ -43,7 +43,7 @@ import org.apache.logging.log4j.Logger;
 public final class CpuCloudGenerator
 {
 	private static final Logger LOGGER = LogManager.getLogger("simpleclouds/CpuGenerator");
-	private static boolean loggedYRange = false;
+	private static boolean loggedYRange = false; // one-shot step-1 proof log
 
 	/** A single noise layer (mirrors the GLSL NoiseLayer struct / AbstractNoiseSettings.Param). */
 	public record NoiseLayer(float height, float valueOffset, float scaleX, float scaleY, float scaleZ,
@@ -95,16 +95,35 @@ public final class CpuCloudGenerator
 	}
 
 	/**
+	 * Grows a generation buffer when a chunk turns out denser than the borrow. The
+	 * implementation releases {@code current} and returns a buffer of at least
+	 * {@code minCapacity} bytes containing the first {@code written} bytes of it.
+	 * (A1: the render-side implementation does this through the {@link ChunkBufferPool}.)
+	 */
+	@FunctionalInterface
+	public interface BufferGrower
+	{
+		ByteBuffer grow(ByteBuffer current, int minCapacity, int written);
+	}
+
+	/**
 	 * Generates per-instance cloud data for the voxel grid [x0..x1) x [y0..y1) x [z0..z1)
-	 * at the given scale/scroll.
+	 * at the given scale/scroll, writing into the caller-provided buffers.
+	 *
+	 * A1 (VISUAL-PARITY-PLAN addendum): NO direct allocation on this path. The caller
+	 * borrows {@code opaqueOut} / {@code transparentOut} from a {@link ChunkBufferPool},
+	 * and hands them back after uploading the result. When a chunk is denser than the
+	 * borrow, {@code grower} swaps in a bigger pooled buffer (rare: the pool reuses
+	 * high-water buffers, so a stable sky never allocates again).
+	 *
+	 * @return the FINAL buffers (the grower may have swapped them for bigger ones):
+	 *         {@code [opaque, transparent]} bound to the bytes written.
 	 *
 	 * @param cameraGridY the camera's Y in grid units; used for the storm-coverage metric
 	 * @param outStormCoverage [0] = fraction of the 8x8 columns around the camera center
 	 *                         that contain at least one opaque storm-type cell above the camera
-	 * @return a two-element array: [opaque data or null, transparent data or null]
-	 *         (native-endian floats, position 0, limit = bytes written).
 	 */
-	public ByteBuffer[] generate(int x0, int y0, int z0, int x1, int y1, int z1, float scale, float scrollX, float scrollY, float scrollZ, float wiggle, int lodScale, float worldBaseY, float[] outOpaqueCount, float[] outTransparentCount, int cameraGridY, float[] outStormCoverage)
+	public ByteBuffer[] generate(int x0, int y0, int z0, int x1, int y1, int z1, float scale, float scrollX, float scrollY, float scrollZ, float wiggle, int lodScale, float worldBaseY, ByteBuffer opaqueOut, ByteBuffer transparentOut, BufferGrower grower, float[] outOpaqueCount, float[] outTransparentCount, int cameraGridY, float[] outStormCoverage)
 	{
 		// Parity with 1.20.1 (VISUAL-PARITY-PLAN step 1): the cloud volume is anchored
 		// at WORLD Y = cloudHeight (passed in as worldBaseY), NEVER relative to the
@@ -120,15 +139,11 @@ public final class CpuCloudGenerator
 		int xSpan = x1 - x0, ySpan = y1 - y0, zSpan = z1 - z0;
 		int xCells = xSpan / lodScale, yCells = ySpan / lodScale, zCells = zSpan / lodScale;
 		int cells = xCells * yCells * zCells;
-		// Growable scratch buffers: only a small fraction of cells is filled, so start
-		// small (a full 256-unit band would otherwise preallocate ~80 MB) and grow on demand.
-		ByteBuffer opaqueBuffer = ByteBuffer.allocateDirect(Math.max(256, cells / 64 * 6 * CloudVertexFormat.BYTES_PER_INSTANCE)).order(ByteOrder.nativeOrder());
-		// A cell can emit up to one transparent cube per group (groups overlap in Y), so the
-		// one-cube-per-cell capacity is a lower bound; grow on demand.
-		ByteBuffer transparentBuffer = ByteBuffer.allocateDirect(Math.max(256, cells / 64 * 6 * CloudVertexFormat.BYTES_PER_INSTANCE_ALPHA)).order(ByteOrder.nativeOrder());
+		// A1: the buffers are borrowed by the caller (pool) and grown in place only
+		// when the chunk outgrows the borrow; nothing here allocates.
 		int opaqueWritten = 0;
 		int transparentWritten = 0;
-		float[] gradient = new float[3];
+		float[] gradient = this.gradient;
 		// Step 1 proof: track the min/max WORLD Y of emitted opaque cubes so the
 		// anchoring (world Y = cloudHeight + 8*y) can be verified in the log.
 		float minY = Float.MAX_VALUE, maxY = -Float.MAX_VALUE;
@@ -218,14 +233,14 @@ public final class CpuCloudGenerator
 						if (cubeY < minY) minY = cubeY;
 						if (cubeY > maxY) maxY = cubeY;
 						int needed = 6 * CloudVertexFormat.BYTES_PER_INSTANCE;
-						if (opaqueWritten + needed > opaqueBuffer.capacity())
-							opaqueBuffer = grow(opaqueBuffer, opaqueWritten, opaqueBuffer.capacity() * 2);
+						if (opaqueWritten + needed > opaqueOut.capacity())
+							opaqueOut = grower.grow(opaqueOut, opaqueWritten + needed, opaqueWritten);
 						// Opaque cube (port of createCube): one per cell even when several
 						// groups are opaque (identical geometry; the original emitted one
 						// cube per group, which just overlapped).
 						opaqueWritten += regionMode
-								? emitVisibleFacesRegion(opaqueBuffer, opaqueWritten, x, y, z, scale, lodScale, brightness, x0, y0, z0, x1, y1, z1, columnGroup, columnFade, scale, scrollX, scrollY, scrollZ, wiggle, gradient)
-								: emitVisibleFaces(opaqueBuffer, opaqueWritten, x, y, z, scale, lodScale, brightness, scrollX, scrollY, scrollZ, wiggle);
+								? emitVisibleFacesRegion(opaqueOut, opaqueWritten, x, y, z, scale, lodScale, brightness, x0, y0, z0, x1, y1, z1, columnGroup, columnFade, scale, scrollX, scrollY, scrollZ, wiggle, gradient)
+								: emitVisibleFaces(opaqueOut, opaqueWritten, x, y, z, scale, lodScale, brightness, scrollX, scrollY, scrollZ, wiggle);
 
 						// Storm-coverage metric: does this column have storm-type cloud
 						// above the camera? (drives the 26.2 slice storm fog intensity)
@@ -260,9 +275,9 @@ public final class CpuCloudGenerator
 						{
 							float alpha = (noise + fade) / fade;
 							int needed = 6 * CloudVertexFormat.BYTES_PER_INSTANCE_ALPHA;
-							if (transparentWritten + needed > transparentBuffer.capacity())
-								transparentBuffer = grow(transparentBuffer, transparentWritten, transparentBuffer.capacity() * 2);
-							transparentWritten += emitTransparentCube(transparentBuffer, transparentWritten, x, y, z, scale, lodScale, brightness, alpha);
+							if (transparentWritten + needed > transparentOut.capacity())
+								transparentOut = grower.grow(transparentOut, transparentWritten + needed, transparentWritten);
+							transparentWritten += emitTransparentCube(transparentOut, transparentWritten, x, y, z, scale, lodScale, brightness, alpha);
 						}
 					}
 				}
@@ -286,7 +301,7 @@ public final class CpuCloudGenerator
 
 		outOpaqueCount[0] = opaqueWritten / CloudVertexFormat.BYTES_PER_INSTANCE;
 		outTransparentCount[0] = transparentWritten / CloudVertexFormat.BYTES_PER_INSTANCE_ALPHA;
-		// Step 1 proof log (throttled to ~every 4 s): the generated cloud volume must
+		// Step 1 proof log (one-shot): the generated cloud volume must
 		// sit at world Y = cloudHeight + 8*y (>= ~128 by default), never at sea level.
 		if (opaqueWritten > 0 && !loggedYRange)
 		{
@@ -295,31 +310,19 @@ public final class CpuCloudGenerator
 					String.format(java.util.Locale.ROOT, "%.1f", minY), String.format(java.util.Locale.ROOT, "%.1f", maxY),
 					String.format(java.util.Locale.ROOT, "%.1f", worldBaseY), (int) outOpaqueCount[0]);
 		}
-		return new ByteBuffer[] { bound(opaqueBuffer, opaqueWritten), bound(transparentBuffer, transparentWritten) };
+		// Hand the buffers back bound to the bytes written (the caller uploads /
+		// copies [0, limit) and then releases them to the pool). The returned
+		// buffers are the FINAL ones (grower swaps are invisible to the argument
+		// references).
+		opaqueOut.position(0);
+		opaqueOut.limit(opaqueWritten);
+		transparentOut.position(0);
+		transparentOut.limit(transparentWritten);
+		return new ByteBuffer[] { opaqueOut, transparentOut };
 	}
 
-	/** Copies a scratch buffer (bytes 0..size) into a larger buffer. */
-	private static ByteBuffer grow(ByteBuffer buffer, int size, int newCapacity)
-	{
-		ByteBuffer grown = ByteBuffer.allocateDirect(newCapacity).order(buffer.order());
-		buffer.position(0);
-		buffer.limit(size);
-		grown.put(buffer);
-		return grown;
-	}
-
-	/** Binds a scratch buffer to the bytes written (null when empty). */
-	private static ByteBuffer bound(ByteBuffer buffer, int written)
-	{
-		if (written == 0)
-			return null;
-		buffer.position(0);
-		buffer.limit(written);
-		ByteBuffer result = ByteBuffer.allocateDirect(written).order(ByteOrder.nativeOrder());
-		result.put(buffer);
-		result.flip();
-		return result;
-	}
+	/** Reused gradient scratch (A1: one generator per worker thread, no per-cell allocation). */
+	private final float[] gradient = new float[3];
 
 	/** Absolute grid Y of the current volume base; noise Y is sampled relative to it. */
 	private int yBase;
@@ -488,7 +491,7 @@ public final class CpuCloudGenerator
 	/** Whether a position is inside the cloud (infinite-field mode; port of isPosValid, no region/fade). */
 	private boolean isValid(float x, float y, float z, float scale, float scrollX, float scrollY, float scrollZ, float wiggle)
 	{
-		float[] gradient = new float[3];
+		float[] gradient = this.gradient;
 		float combined = 0.0F;
 		boolean any = false;
 		for (CloudLayerGroup group : this.groups)

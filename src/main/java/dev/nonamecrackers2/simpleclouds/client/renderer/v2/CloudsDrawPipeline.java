@@ -2,6 +2,7 @@ package dev.nonamecrackers2.simpleclouds.client.renderer.v2;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.List;
 import java.util.Optional;
 import java.util.OptionalDouble;
 
@@ -96,10 +97,6 @@ public class CloudsDrawPipeline implements AutoCloseable
 	private final GpuBuffer[] useNormalsRing = new GpuBuffer[3];
 	private int useNormalsRingSlot = 0;
 	private static final float[] CLOUD_SHADING_BASE = { 0.0F, 0.0F, 0.15F };
-	private GpuBuffer instanceBuffer;
-	private int instanceCount = 0;
-	private GpuBuffer transparencyInstanceBuffer;
-	private int transparencyInstanceCount = 0;
 	private final RenderPipeline stormFogPipeline;
 	private final GpuBuffer triangleBuffer;
 	private final GpuBuffer stormFogUbo;
@@ -461,57 +458,6 @@ public class CloudsDrawPipeline implements AutoCloseable
 		this.writeFog(r, g, b, 1.0F, fogStart, fogEnd, 0.05F);
 	}
 
-	/** Uploads new per-instance data (replacing the previous). A null buffer means "no
-	 * instances" (the generation can be empty for a frame) -- keep an empty valid buffer
-	 * so the draw's buffer bind stays legal. */
-	public void setInstances(ByteBuffer instanceData, int count)
-	{
-		if (this.instanceBuffer != null)
-			this.instanceBuffer.close();
-		if (instanceData == null)
-		{
-			// A zero-byte buffer is rejected by createBuffer; use one dummy float (0
-			// instances are drawn, so its content never matters).
-			instanceData = ByteBuffer.allocateDirect(4).order(java.nio.ByteOrder.nativeOrder());
-			count = 0;
-		}
-		this.instanceBuffer = RenderSystem.getDevice().createBuffer(() -> "simpleclouds.instances", GpuBuffer.USAGE_VERTEX, instanceData);
-		this.instanceCount = count;
-		// CPU data replaces any GPU-spike instances.
-		this.useSpikeInstances = false;
-	}
-
-	// SPIKE (26.2, SPIKE-GPU.md): the original cube_mesh.comp compute shader writes
-	// directly into a Blaze3D buffer; draw() binds it in place of the CPU one.
-	private GpuBuffer spikeInstanceBuffer;
-	private boolean useSpikeInstances;
-
-	/** Uses the compute-generated buffer for the next draws (the buffer is owned by the spike). */
-	public void setSpikeInstances(GpuBuffer buffer, int count)
-	{
-		this.spikeInstanceBuffer = buffer;
-		this.useSpikeInstances = true;
-		this.instanceCount = count;
-	}
-
-	/** Falls back to the CPU-generated buffer. */
-	public void clearSpikeInstances()
-	{
-		this.useSpikeInstances = false;
-	}
-
-	/** Uploads new transparent per-instance data (replacing the previous). */
-	public void setTransparencyInstances(ByteBuffer instanceData, int count)
-	{
-		if (this.transparencyInstanceBuffer != null)
-			this.transparencyInstanceBuffer.close();
-		this.transparencyInstanceBuffer = instanceData != null
-				? RenderSystem.getDevice().createBuffer(() -> "simpleclouds.instancesTransparent", GpuBuffer.USAGE_VERTEX, instanceData)
-				: null;
-		this.transparencyInstanceCount = count;
-	}
-
-	/** Draws the current cloud faces into the main render target. */
 	private boolean loggedFirstDraw = false;
 
 	/**
@@ -520,10 +466,6 @@ public class CloudsDrawPipeline implements AutoCloseable
 	 *                   world at the origin; the model-view stack is already popped by the
 	 *                   time our LevelRenderer.render TAIL hook runs.
 	 */
-	public void draw(Matrix4f viewMatrix)
-	{
-		drawClouds(viewMatrix, this.instanceBuffer, this.instanceCount, 1.0F);
-	}
 
 	/** Draws an explicit instance buffer with a global fade alpha
 	 *  (ColorModulator.a; the original per-chunk fade-in, step 3). */
@@ -617,44 +559,8 @@ public class CloudsDrawPipeline implements AutoCloseable
 	/** Draws the transparent cloud edges after the opaque pass (no depth write, blended). */
 	private boolean loggedFirstTransparencyDraw = false;
 
-	/** One fade pass from CPU instance data (the band's own buffer; a transient GPU
-	 *  upload, closed after the draw). */
-	public void drawCloudsCpu(Matrix4f viewMatrix, java.nio.ByteBuffer instanceData, int count, float alpha)
-	{
-		if (instanceData == null || count == 0)
-			return;
-		GpuBuffer buf = RenderSystem.getDevice().createBuffer(() -> "simpleclouds.fadeOpaque", GpuBuffer.USAGE_VERTEX, instanceData);
-		try
-		{
-			drawClouds(viewMatrix, buf, count, alpha);
-		}
-		finally
-		{
-			buf.close();
-		}
-	}
-
-	/** Transparency variant of {@link #drawCloudsCpu}. */
-	public void drawTransparencyCpu(Matrix4f viewMatrix, java.nio.ByteBuffer instanceData, int count, float alpha)
-	{
-		if (instanceData == null || count == 0)
-			return;
-		GpuBuffer buf = RenderSystem.getDevice().createBuffer(() -> "simpleclouds.fadeTransp", GpuBuffer.USAGE_VERTEX, instanceData);
-		try
-		{
-			drawTransparencyClouds(viewMatrix, buf, count, alpha);
-		}
-		finally
-		{
-			buf.close();
-		}
-	}
-	public void drawTransparency(Matrix4f viewMatrix)
-	{
-		drawTransparencyClouds(viewMatrix, this.transparencyInstanceBuffer, this.transparencyInstanceCount, 1.0F);
-	}
-
-	/** Transparency variant of {@link #drawClouds} for one fade band. */
+	/** Transparency variant of {@link #drawClouds} for one chunk (A1: persistent
+	 *  per-chunk GPU buffer; the fade-in alpha rides on ColorModulator.a). */
 	public void drawTransparencyClouds(Matrix4f viewMatrix, GpuBuffer instances, int count, float alpha)
 	{
 		if (instances == null || count == 0)
@@ -725,9 +631,15 @@ public class CloudsDrawPipeline implements AutoCloseable
 	 * Renders the cloud instances into the top-down ortho shadow depth target
 	 * (cleared to 1.0; a cloud writes its window-space depth per XZ texel).
 	 */
-	public void renderCloudShadowMap(double camX, double camY, double camZ, float cloudHeight)
+	/** One per-chunk instance source (A1: the shadow pass draws the persistent
+	 *  per-chunk GPU buffers, one drawIndexed per chunk inside a single pass). */
+	public record InstanceSource(GpuBuffer buffer, int count)
 	{
-		if (this.instanceBuffer == null || this.instanceCount == 0)
+	}
+
+	public void renderCloudShadowMap(double camX, double camY, double camZ, float cloudHeight, List<InstanceSource> sources)
+	{
+		if (sources == null || sources.isEmpty())
 		{
 			this.shadowRenderedThisFrame = false;
 			return;
@@ -764,9 +676,12 @@ public class CloudsDrawPipeline implements AutoCloseable
 		pass.setPipeline(this.shadowPipeline);
 		pass.setUniform("ShadowMatrices", matricesBuf);
 		pass.setVertexBuffer(0, this.quadVertexBuffer.slice());
-		pass.setVertexBuffer(1, this.instanceBuffer.slice());
-		pass.setIndexBuffer(this.quadIndexBuffer, IndexType.SHORT);
-		pass.drawIndexed(QUAD_INDICES.length, this.instanceCount, 0, 0, 0);
+		for (InstanceSource source : sources)
+		{
+			pass.setVertexBuffer(1, source.buffer().slice());
+			pass.setIndexBuffer(this.quadIndexBuffer, IndexType.SHORT);
+			pass.drawIndexed(QUAD_INDICES.length, source.count(), 0, 0, 0);
+		}
 		pass.close();
 		this.shadowRenderedThisFrame = true;
 	}
@@ -949,16 +864,8 @@ public class CloudsDrawPipeline implements AutoCloseable
 
 	public void close()
 	{
-		if (this.instanceBuffer != null)
-		{
-			this.instanceBuffer.close();
-			this.instanceBuffer = null;
-		}
-		if (this.transparencyInstanceBuffer != null)
-		{
-			this.transparencyInstanceBuffer.close();
-			this.transparencyInstanceBuffer = null;
-		}
+		// A1: the per-chunk instance GpuBuffers are owned by the renderer's chunk cache
+		// (freed there on eviction / shutdown).
 		this.triangleBuffer.close();
 		this.stormFogUbo.close();
 		this.shadowTarget.destroyBuffers();

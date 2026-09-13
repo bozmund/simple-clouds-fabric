@@ -77,16 +77,30 @@ public class PreviewDrawPipeline implements AutoCloseable
 		float[] outOpaque = new float[1];
 		float[] outTransparent = new float[1];
 		float[] outStorm = new float[1];
+		// A1: the preview box is generated into pooled buffers (the preview is static,
+		// so a throwaway pool is fine — no per-call direct allocation).
+		ChunkBufferPool pool = new ChunkBufferPool();
+		int cells = (2 * BOX) * (BOX_Y1 - BOX_Y0) * (2 * BOX);
+		ByteBuffer opaque = pool.borrow(Math.max(256, cells / 64 * 6 * CloudVertexFormat.BYTES_PER_INSTANCE));
+		ByteBuffer transparent = pool.borrow(Math.max(256, cells / 64 * 6 * CloudVertexFormat.BYTES_PER_INSTANCE_ALPHA));
 		// worldBaseY = 0: the preview screen renders in its own box-local space, not
 		// anchored at the world cloudHeight.
-		ByteBuffer[] buffers = generator.generate(-BOX, BOX_Y0, -BOX, BOX, BOX_Y1, BOX, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1, 0.0F,
-				outOpaque, outTransparent, BOX_Y0, outStorm);
-		if (buffers == null || buffers.length == 0 || buffers[0] == null || outOpaque[0] <= 0.0F)
+		java.nio.ByteBuffer[] out = generator.generate(-BOX, BOX_Y0, -BOX, BOX, BOX_Y1, BOX, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1, 0.0F,
+				opaque, transparent, pool::grow, outOpaque, outTransparent, BOX_Y0, outStorm);
+		if (outOpaque[0] <= 0.0F)
+		{
+			pool.release(out[0]);
+			pool.release(out[1]);
 			return;
+		}
 		if (this.instanceBuffer != null)
 			this.instanceBuffer.close();
-		this.instanceBuffer = RenderSystem.getDevice().createBuffer(() -> "simpleclouds.preview.instances", GpuBuffer.USAGE_VERTEX, buffers[0]);
+		// Upload first (createBuffer copies synchronously), then the CPU copies go
+		// back to the pool (the FINAL buffers — the grower may have swapped them).
+		this.instanceBuffer = RenderSystem.getDevice().createBuffer(() -> "simpleclouds.preview.instances", GpuBuffer.USAGE_VERTEX, out[0]);
 		this.instanceCount = (int) outOpaque[0];
+		pool.release(out[0]);
+		pool.release(out[1]);
 		LOGGER.info("Simple Clouds preview: {} preview instances", this.instanceCount);
 	}
 

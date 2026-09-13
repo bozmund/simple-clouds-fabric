@@ -38,13 +38,24 @@ sleep 3
 # 2. Launch as its own user unit: it survives the symbiote_job that ran this
 #    script (so Jan can play-test), and the fixed unit name makes a second
 #    concurrent dev client impossible.
+# A1 (VISUAL-PARITY-PLAN addendum):
+#  - --no-daemon: the Gradle client JVM must be a CHILD of this systemd unit, not
+#    of a daemon started inside the terminal (a 2026-09-13 daemon-forked client
+#    lived in the tmux scope and its 25 GB OOM-kill took the whole terminal down).
+#  - MemoryHigh/MemoryMax: cgroup ceiling for the unit; a leak kills only the
+#    client, never the host or the terminal.
+#  - SIMPLECLOUDS_DEV=1: enables the in-game 30 s heap/direct/RSS logger
+#    (client/DevMemoryLogger.java); the real profile never sees it.
 mkdir -p run/screenshots
 rm -f run/screenshots/devshot*.png
 TOKENS="${DEVSHOT_ANGLE:-} ${DEVSHOT_YAW:-} ${DEVSHOT_EXTRA:-}"; [ -n "${DEVSHOT_NOSHADOW:-}" ] && TOKENS="$TOKENS NOSHADOW"
-echo "$FRAMES $TOKENS" | sed 's/ *$//g; s/  */ /g' > "$REQUEST"   # optional tokens: camera xRot (default -90), yaw, NOSHADOW
+echo "$FRAMES $TOKENS" | sed 's/ *$//g; s/  */ /g' > "$REQUEST"   # optional tokens: camera xRot (default -90), yaw, NOSHADOW, LOOP
 T0=$(date +%s)
-systemd-run --user --unit="$UNIT" --collect --quiet --property=WorkingDirectory="$PROJECT" \
-  bash -c 'while IFS= read -r -d "" kv; do export "$kv"; done < "$1"; exec ./gradlew runClient --console=plain --args="--quickPlaySingleplayer CloudClean" > "$2" 2>&1' _ "$ENVF" "$OUT" \
+systemd-run --user --unit="$UNIT" --collect --quiet \
+  --property=WorkingDirectory="$PROJECT" \
+  --property=MemoryHigh=9G --property=MemoryMax=10G \
+  --property=Environment=SIMPLECLOUDS_DEV=1 \
+  bash -c 'while IFS= read -r -d "" kv; do export "$kv"; done < "$1"; exec ./gradlew --no-daemon runClient --console=plain --args="--quickPlaySingleplayer CloudClean" > "$2" 2>&1' _ "$ENVF" "$OUT" \
   || { echo "FAIL (launch): could not start user unit $UNIT"; exit 1; }
 echo "launched at $(date +%H:%M:%S) as user unit $UNIT; waiting for the first cloud draw..."
 
@@ -112,7 +123,7 @@ if [ -n "$BAD" ]; then
 fi
 
 if [ "${1:-}" = "--install" ]; then
-  ./gradlew build -x test --console=plain > "$HOME/.cache/simpleclouds/build.out" 2>&1 \
+  ./gradlew --no-daemon build -x test --console=plain > "$HOME/.cache/simpleclouds/build.out" 2>&1 \
     && cp "$JAR" "$MODS/" && echo "installed $JAR into the real profile mods/" \
     || { echo "FAIL (build): jar build/install failed"; tail -20 "$HOME/.cache/simpleclouds/build.out"; exit 1; }
 fi

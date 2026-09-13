@@ -158,3 +158,72 @@ that clouds still sort correctly against DH terrain far away). Read every screen
    and what still differs.
 3. Commit, then STOP and send Jan one short message with the result and the image paths. Do not mark the task
    complete; Jan decides.
+
+
+---
+
+# ADDENDUM (Jan, 2026-09-13 10:30) — do A1-A3 before steps 5-8
+
+Steps 0-4 are committed (`06985dc` … `5b7cb77`). The session that did them died at **07:24**: the Linux
+out-of-memory killer killed a Java process at **25 GB RSS** (44 GB virtual) inside the terminal's tmux scope,
+and systemd took the whole scope (both symbiote sessions) down with it. The last chat entry was 05:22 (reading
+the original's brightness code for step 5). Jan's real profile is safe: its jar is from 2026-09-12 23:21, before
+step 2. The views from steps 1-4 also show that the work is not done yet (see A2, A3).
+
+## A1 — Memory (first; nothing else until this is proven)
+**Evidence:**
+- `CpuCloudGenerator` allocates new direct `ByteBuffer`s for every chunk it generates (l.125 opaque, l.128
+  transparent), again when growing (l.304) and for the result copy (l.318). Step 2 turned 4-9 bands into dozens of
+  LOD chunks on a worker pool, regenerated continuously. Direct memory is only freed when the GC collects the buffer
+  objects; the JVM's defaults allow about ¼ of RAM for the heap plus as much again for direct memory (mony: 46 GB,
+  no swap), which is how the dev client reached 25 GB.
+- `dev-relaunch.sh` runs `./gradlew runClient` under `systemd-run --user`, with no heap or direct-memory limit. The
+  Gradle daemon was started earlier from your own shell (inside tmux), and Loom forks the Minecraft JVM from that
+  daemon, so the client lived in the tmux scope, not in its own unit, and took your terminal down with it.
+
+**Fix:**
+1. Reuse memory: one scratch buffer set per worker thread (grown only when too small, never per call); hand each
+   finished chunk's data to its GPU buffer and reuse or free the CPU copy; free GPU buffers of chunks that leave the
+   LOD layout; cap the number of cached chunks. No `allocateDirect` on the per-frame or per-chunk path.
+2. Limit the dev client: in `build.gradle` give the Loom client run `-Xmx4G -XX:MaxDirectMemorySize=2G`; in
+   `dev-relaunch.sh` run Gradle with `--no-daemon` (so the client JVM is a child of the systemd unit) and add
+   `-p MemoryMax=10G` to the `systemd-run` call. Stop the dev client after every verification
+   (`systemctl --user stop simpleclouds-devclient`); never leave it running for hours.
+3. In dev builds, log heap and direct memory (`BufferPoolMXBean` "direct") and the process RSS every 30 s.
+
+**Proof:** a 30-minute run in the dev client that cycles the standard views (so chunks keep regenerating and moving),
+RSS logged every minute: it must level off (target < 6 GB) instead of climbing. Put the numbers in the commit message
+and in `VISUAL-PARITY-RESULT.md`. Repeat the check in the real profile at step 7 before Jan plays with it.
+
+## A2 — Redo step 4 (motion): the clouds must also change shape
+**What is wrong:** step 4 slides frozen shapes with the view matrix and still generates with wiggle 0. Your commit
+says this is "mathematically identical" to the original with "no missing morph". It is not:
+- the original sets `Wiggle = (scrollX + scrollY + scrollZ) / 5` (`CloudMeshGenerator.prepareMeshGen`, orig. l.783-785)
+  and `cube_mesh.comp` passes it as psrdnoise's rotation (`psrdnoise(samplePos, TILE_PERIOD, Wiggle, gradient)`), so the
+  gradients rotate as the clouds drift and the shapes slowly change;
+- the view-matrix slide also moves the formation outlines (region masks and their edge fade) at wind speed, while in the
+  original the formations move by their own region velocity.
+
+**Fix:** generate with the real scroll and wiggle (plan step 4 as written), keep region masks world-fixed, regenerate
+chunks continuously nearest-first within a time budget, and let the step-3 fade hide the swaps. A per-chunk offset for the
+scroll change since its generation is allowed only as smoothing between regenerations, never instead of them.
+
+**Proof (the old one did not count):** the DevShot must pin the time and weather (and wait at least one frame after
+setting them) before each E shot. Take E1, E2 (10 s later) and E3 (60 s later) from the same camera; the only difference
+may be the clouds. READ the three images and describe the drift and the shape change. A log line is not proof.
+
+## A3 — What the current views show
+- **View A (horizon, pitch 0) shows no clouds at all**, while view B shows a layer overhead. Find out why the distant
+  clouds are invisible: fog range (`fogStart`/`fogEnd`), `setCullDistance(fogEnd / 8)`, frustum culling of LOD chunks,
+  alpha/fog of the far rings. Compare with `docs/reference/modrinth-distant-*.png`: the original shows clouds near the
+  horizon.
+- **View B: the layer looks flat, grey and see-through** instead of white and three-dimensional. Check the fog mix
+  (too early a `fogStart` tints most clouds to the sky colour), how many cubes are transparent, and the per-cube shading
+  from the noise gradient (orig. `cube_mesh.comp` main: storm brightness, then `gradient = normalize(gradient);
+  strength = dot(gradient, SHADE_DIRECTION) * 0.5 + 0.5`).
+- **View D (above the layer): dark, foggy, translucent slabs and a striped artifact.** Look for overlapping faces between
+  LOD rings (the first ring's `noOcclusion` faces), transparent cubes drawn in the wrong order or depth, and the fog colour.
+
+Then continue with plan steps 5-8. Step 5 overlaps A3: do not repeat work, but compare every view with the references.
+The ground rules at the top still apply (one editor, standard views read after every step, commit per step, no
+"complete", stop at step 8 and report to Jan).
