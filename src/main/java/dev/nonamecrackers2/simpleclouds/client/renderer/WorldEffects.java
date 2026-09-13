@@ -51,6 +51,9 @@ import net.minecraft.world.level.levelgen.Heightmap;
  */
 public class WorldEffects
 {
+	private static final org.apache.logging.log4j.Logger LOGGER =
+			org.apache.logging.log4j.LogManager.getLogger("simpleclouds/WorldEffects");
+
 	// Scan box constants mirror the 1.20.1 WorldEffects (RAIN_SCAN_WIDTH/2, etc.).
 	private static final int SCAN_RADIUS = 16;
 	private static final int RAIN_Y_MIN = 8; // RAIN_HEIGHT_OFFSET above the camera
@@ -214,6 +217,12 @@ public class WorldEffects
 		double dy = player.getY() - (pos.getY() + 0.5);
 		double dz = player.getZ() - (pos.getZ() + 0.5);
 		double distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+		// Storm plan step 0: every strike (server-spawned, client-spawned or
+		// DevShot-forced) logs its distance to the camera and the flash that
+		// this strike applies, so S5 has per-strike proof data for step 1.
+		LOGGER.info("[DEVSHOT-LIGHTNING] strike at {}x{}x{}: distToCam={} blocks, onlySound={}, flash {} ticks ({}-{} s) applied",
+			pos.getX(), pos.getY(), pos.getZ(), Math.round(distance), onlySound,
+			this.flashTotal, String.format(java.util.Locale.ROOT, "%.2f", 24.0 / 20.0), String.format(java.util.Locale.ROOT, "%.2f", (24.0 + 31.0) / 20.0));
 		var sound = distance < 16.0 ? SimpleCloudsSounds.CLOSE_THUNDER : SimpleCloudsSounds.DISTANT_THUNDER;
 		// playLocalSound handles the distance attenuation for the local player.
 		level.playLocalSound(pos, sound, SoundSource.WEATHER, 1.0F, 1.0F, false);

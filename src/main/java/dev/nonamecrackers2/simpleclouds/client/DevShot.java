@@ -66,6 +66,13 @@ import net.minecraft.world.phys.Vec2;
  * {@code devshot.request} is deleted.</li>
  * <li>{@code FPSLOG} (step 7 real-profile performance) log the game's own FPS /
  * frame time every 60 s of game time while the run is active.</li>
+ * <li>{@code STORM} (storm plan step 0) spawn a cumulonimbus formation at a
+ * fixed offset from the player and queue the storm views S1-S5: S1 ground
+ * facing the formation's near edge, S2 from under it looking up, S3 beside it
+ * at y=260, S4 above it, S5 a 30-frame / 2 s (60 s) ground sequence while
+ * lightning runs (four strikes at 200/1500/3000/8000 blocks are forced at
+ * 5/15/25/35 s; every strike — natural or forced — logs distance + flash).
+ * Implies no standard test formation (the storm IS the scene).</li>
  * </ul>
  * Held (pinned) views teleport the player to the view position every frame and switch
  * it to creative flying, so the camera stays exactly where the view says.
@@ -89,6 +96,17 @@ public final class DevShot
 	// active, log the game's own FPS / frame time every 60 s of game time.
 	private static boolean fpsLog;
 	private static long fpsLogNextTick = -1;
+	// STORM token (storm plan step 0): the chosen formation center (cloud units)
+	// and the S5 forced-strike schedule (storm plan step 1 proof needs strikes at
+	// known distances: 200/1500/3000/8000 blocks north of the camera).
+	private static boolean storm;
+	private static double stormCxCu = Double.NaN;
+	private static double stormCzCu = Double.NaN;
+	private static int seqFrame; // 1 = file1 taken, then 2..seqCount
+	private static long seqNextFrameTick = -1;
+	private static final int[] STRIKE_DISTANCES = { 200, 1500, 3000, 8000 };
+	private static long stormStrikeTick = -1; // game tick of the next forced strike
+	private static int stormStrikeIdx = 0; // index into STRIKE_DISTANCES (4 = done)
 
 	// ---- standard views (A-E) ----
 
@@ -104,6 +122,10 @@ public final class DevShot
 		boolean pin; // teleport the player to (x,y,z) every frame
 		long waitTicks; // after file1: wait this many game ticks, then take file2
 		long waitTicks2; // after file2: wait this many game ticks, then take file3
+		// S5 (storm plan): after file1, take seqCount-1 more frames named
+		// file1-with-suffix (-02 .. -NN), seqInterval game ticks apart.
+		int seqCount;
+		long seqInterval;
 
 		View(String file1, float pitch, float yaw, double x, double y, double z)
 		{
@@ -287,6 +309,96 @@ public final class DevShot
 		catch (Throwable t)
 		{
 			LOGGER.warn("[DEVSHOT] test formation spawn failed", t);
+		}
+	}
+
+	/**
+	 * Storm plan step 0: a cumulonimbus at a fixed offset from the player (nominal
+	 * center 250 cloud units = 2000 blocks NORTH, radius 200 units = 1600 blocks).
+	 * The world noise field is dense in some places and empty in others, so the
+	 * exact center is the densest of a 4x4 probe grid around the nominal offset
+	 * (±30/±40 units); the choice is logged and deterministic per world. Growth is
+	 * 300 ticks (the original 6000-10000 is 5-8 minutes, too slow for a test),
+	 * lifetime 72000 (the original exist_ticks max), stretch 0.5 (original spawn
+	 * range 0.3-0.6), order weight 1000 (the original's). The near edge of the
+	 * formation then sits ~400 blocks north of the S1/S5 camera, inside the
+	 * 32-chunk render distance.
+	 */
+	private static void spawnStormFormation(Minecraft mc)
+	{
+		forceNoon(mc);
+		try
+		{
+			ClientCloudManager manager = (ClientCloudManager) CloudManager.get(mc.level);
+			if (manager == null)
+			{
+				LOGGER.warn("[DEVSHOT] STORM: no client cloud manager");
+				return;
+			}
+			CloudType[] types = ClientSideCloudTypeManager.getInstance().getIndexedCloudTypes();
+			CloudType nimbus = null;
+			if (types != null)
+			{
+				for (CloudType t : types)
+				{
+					if (t.id().toString().endsWith("cumulonimbus"))
+					{
+						nimbus = t;
+						break;
+					}
+				}
+			}
+			if (nimbus == null)
+			{
+				LOGGER.warn("[DEVSHOT] STORM: no cumulonimbus cloud type loaded");
+				return;
+			}
+			float px = (float) (mc.player.getX() / 8.0);
+			float pz = (float) (mc.player.getZ() / 8.0);
+			List<CpuCloudGenerator.CloudLayerGroup> groups = SimpleCloudsRenderer.dataDrivenGroups();
+			Map<net.minecraft.resources.Identifier, Integer> typeToGroup = SimpleCloudsRenderer.dataDrivenGroupIndices();
+			float[] dxs = { -30.0F, -10.0F, 10.0F, 30.0F };
+			float[] dzs = { -280.0F, -260.0F, -240.0F, -220.0F };
+			int bestI = -1, bestJ = -1, bestCount = 0;
+			for (int i = 0; i < dxs.length; i++)
+			{
+				for (int j = 0; j < dzs.length; j++)
+				{
+					int count = probeDensity(groups, typeToGroup, nimbus, px + dxs[i], pz + dzs[j]);
+					if (count > bestCount)
+					{
+						bestCount = count;
+						bestI = i;
+						bestJ = j;
+					}
+				}
+			}
+			if (bestI < 0 || bestCount <= 0)
+			{
+				LOGGER.warn("[DEVSHOT] STORM: noise field empty around the nominal offset ({}x{}); spawning at the nominal center anyway",
+					px, pz - 250.0F);
+				bestI = 1;
+				bestJ = 1;
+			}
+			float cx = px + dxs[bestI];
+			float cz = pz + dzs[bestJ];
+			CloudRegion region = new CloudRegion(nimbus.id(), new Vec2(0.001F, 0.0F), 0.0F, 0.0F,
+				cx, cz, 200.0F, 0.0F, 0.5F, 72000, 300, 1000);
+			if (manager.getCloudGenerator().addCloud(region, CloudGenerator.Order.USE_WEIGHT))
+			{
+				stormCxCu = cx;
+				stormCzCu = cz;
+				LOGGER.info("[DEVSHOT] STORM: spawned {} (r=200u, stretch 0.5, grow 300t) at cloud units {}x{} (offset {}x{} from player, probe density {})",
+					nimbus.id(), cx, cz, cx - px, cz - pz, bestCount);
+			}
+			else
+			{
+				LOGGER.warn("[DEVSHOT] STORM: addCloud refused the cumulonimbus");
+			}
+		}
+		catch (Throwable t)
+		{
+			LOGGER.warn("[DEVSHOT] STORM: storm formation spawn failed", t);
 		}
 	}
 
@@ -658,6 +770,51 @@ public final class DevShot
 				v.yaw = (float) beach[3];
 			}
 		}
+		// STORM: spawn the cumulonimbus FIRST — the S view positions (S2-S4)
+		// depend on the chosen formation center.
+		if (storm)
+			spawnStormFormation(mc);
+		if (storm)
+		{
+			double px = mc.player.getX(), pz = mc.player.getZ();
+			double pxCu = px / 8.0, pzCu = pz / 8.0;
+			for (View v : views)
+			{
+				String f = v.file1;
+				if (f.endsWith("S1.png") || f.endsWith("S5-01.png"))
+				{
+					// Ground level at the probe origin, facing north (the near edge
+					// of the formation is ~400 blocks away, inside the 32-chunk
+					// render distance).
+					v.x = beach[0];
+					v.y = beach[1];
+					v.z = beach[2];
+				}
+				else if (f.endsWith("S2.png"))
+				{
+					// Under the formation, ~150 cloud units from its center.
+					v.x = px;
+					v.y = beach[1];
+					v.z = pz - 100 * 8.0;
+				}
+				else if (f.endsWith("S3.png"))
+				{
+					// Beside it (east of center, 20u inside the 200u edge), y=260
+					// (in the 0..256-block base layers), facing the column.
+					v.x = (stormCxCu + 180.0) * 8.0;
+					v.y = 260.0;
+					v.z = stormCzCu * 8.0;
+				}
+				else if (f.endsWith("S4.png"))
+				{
+					// Above it: 256 cloud units = 2048 blocks is the max height;
+					// 2300 puts the camera ~250 blocks over the tops.
+					v.x = stormCxCu * 8.0;
+					v.y = 2300.0;
+					v.z = stormCzCu * 8.0;
+				}
+			}
+		}
 		holdInAir(mc);
 		switchToView(mc, 0);
 		// The pre-setup guard held framesLeft at 1; now that the pin is applied,
@@ -666,6 +823,9 @@ public final class DevShot
 		framesLeft = framesTotal;
 		if (bigFormation)
 			spawnBigStratus(mc);
+		else if (storm)
+			LOGGER.info("[DEVSHOT] STORM scene: cumulonimbus center at cloud units {}x{} (r=200u); skipping the standard test formation",
+					stormCxCu, stormCzCu);
 		else if (!noSpawn)
 			spawnTestFormation(mc);
 
@@ -846,6 +1006,26 @@ public final class DevShot
 						fpsLog = true;
 						continue;
 					}
+					if (part.equalsIgnoreCase("STORM"))
+					{
+						// Storm plan step 0: cumulonimbus at a fixed offset + the
+						// storm views S1-S5 (the storm replaces the standard test
+						// formation; request "240 STORM" for the storm scene).
+						storm = true;
+						View s1 = new View("devshot-S1.png", 0.0F, 180.0F, 0, 0, 0); // ground, facing the near edge (north)
+						View s2 = new View("devshot-S2.png", -90.0F, 0.0F, 0, 0, 0); // under the formation, looking up
+						View s3 = new View("devshot-S3.png", -20.0F, 90.0F, 0, 0, 0); // beside it at y=260, facing west (toward center)
+						View s4 = new View("devshot-S4.png", -45.0F, 0.0F, 0, 0, 0); // above it (cumulonimbus tops reach 256u = 2048 blocks)
+						View s5 = new View("devshot-S5-01.png", 0.0F, 180.0F, 0, 0, 0); // ground sequence, 30 frames x 2 s
+						s5.seqCount = 30;
+						s5.seqInterval = 40;
+						views.add(s1);
+						views.add(s2);
+						views.add(s3);
+						views.add(s4);
+						views.add(s5);
+						continue;
+					}
 					if (part.length() == 1)
 					{
 						char c = Character.toUpperCase(part.charAt(0));
@@ -968,6 +1148,29 @@ public final class DevShot
 		if (boltTest && framesLeft > 0 && framesLeft % 30 == 0)
 			spawnTestBolt(mc); // keep a young bolt alive for the 240-frame shot
 
+		// S5 (storm plan step 0/1): forced strikes at KNOWN distances from the camera
+		// (200/1500/3000/8000 blocks north, 10 s apart) so the flash behavior has
+		// deterministic proof data; every strike — forced or natural — is logged by
+		// WorldEffects.spawnLightning with distance + applied flash.
+		if (storm && pendingShot == 4 && stormStrikeTick > 0
+				&& stormStrikeIdx < STRIKE_DISTANCES.length
+				&& mc.level.getGameTime() >= stormStrikeTick)
+		{
+			int dist = STRIKE_DISTANCES[stormStrikeIdx];
+			double px = mc.player.getX(), py = mc.player.getY(), pz = mc.player.getZ();
+			dev.nonamecrackers2.simpleclouds.client.renderer.WorldEffects effects =
+					SimpleCloudsRenderer.getOptionalInstance().map(SimpleCloudsRenderer::getWorldEffectsManager).orElse(null);
+			if (effects != null)
+				effects.spawnLightning(new net.minecraft.core.BlockPos(
+						(int) px, (int) (py + 100), (int) (pz - dist)),
+						false, 12345 + dist, 4, 2, 300.0F, 20.0F, 20.0F, 90.0F);
+			LOGGER.info("[DEVSHOT-LIGHTNING] FORCED strike at {} blocks north (dist index {})", dist, stormStrikeIdx);
+			stormStrikeIdx++;
+			stormStrikeTick = stormStrikeIdx < STRIKE_DISTANCES.length
+					? mc.level.getGameTime() + 200
+					: -1;
+		}
+
 		// Second/third shots of the motion view (E): fire on game-tick boundaries,
 		// not frames. A2: three shots (E1/E2/E3) 200 ticks (10 s) apart.
 		if (waitUntilTick > 0)
@@ -985,6 +1188,20 @@ public final class DevShot
 						return;
 					}
 					waitUntilTick = -1;
+					finishOrAdvance(mc);
+				}
+				else if (pendingShot == 4)
+				{
+					// S5 sequence frame (devshot-S5-01.png is file1; 02..30 follow).
+					seqFrame++;
+					shoot(mc, String.format("devshot-S5-%02d.png", seqFrame));
+					if (seqFrame < v.seqCount)
+					{
+						waitUntilTick = mc.level.getGameTime() + v.seqInterval;
+						return;
+					}
+					waitUntilTick = -1;
+					stormStrikeTick = -1;
 					finishOrAdvance(mc);
 				}
 				else
@@ -1036,6 +1253,16 @@ public final class DevShot
 		{
 			View v = currentView();
 			shoot(mc, v.file1);
+			if (v.seqCount > 0)
+			{
+				// S5 (storm plan): a frame every seqInterval ticks for seqCount frames.
+				seqFrame = 1;
+				pendingShot = 4;
+				waitUntilTick = mc.level.getGameTime() + v.seqInterval;
+				stormStrikeIdx = 0;
+				stormStrikeTick = mc.level.getGameTime() + 100; // first forced strike 5 s in
+				return;
+			}
 			if (v.waitTicks > 0)
 			{
 				pendingShot = 2;
