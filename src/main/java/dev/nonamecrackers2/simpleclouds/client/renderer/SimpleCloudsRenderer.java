@@ -335,18 +335,24 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		java.nio.ByteBuffer transparent;
 		int transparentCount;
 		float stormCoverage;
+		// Fade-in (step 3, original CHUNK_FADE_IN_ALPHA_PER_TICK = 0.2/tick): the
+		// game tick at which this data was published; the band ramps alpha 0->1
+		// over five ticks so new content fades in instead of popping.
+		long lastGenTick;
 	}
 
-	/** Band identity: XZ origin plus the quantized volume base (clouds follow the camera in Y). */
-	private record BandCoord(int x0, int z0, int baseU)
+	/** Band identity: XZ origin. The volume base is fixed at world cloudHeight
+	 *  (VISUAL-PARITY-PLAN step 1), so it is no longer part of the key. */
+	private record BandCoord(int x0, int z0)
 	{
 	}
 
 	// Band geometry (cloud units): one 32x32-unit band; Y = 256 units (2048 blocks),
-	// the original's VERTICAL_CHUNK_SPAN * CHUNK_SIZE, camera-anchored (see below).
+	// the original's VERTICAL_CHUNK_SPAN * CHUNK_SIZE, anchored at world cloudHeight
+	// (NEVER camera-relative -- step 1).
 	private static final int BAND_CELL = 32;
+	private static final int BAND_Y0 = 0; // volume base in cloud units (world Y = cloudHeight)
 	private static final int BAND_Y1 = 256;
-	private static final int BAND_Y_STEP = 16; // baseU quantization (128-block steps)
 	private static final float BAND_SCALE = 8.0F;
 
 	// Off-thread band generation: a full band (32x64x32 cells x every noise layer)
@@ -361,9 +367,11 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	@Nullable
 	private java.util.concurrent.ExecutorService bandWorker;
 
-	/** One off-thread band generation request (immutable inputs). */
+	/** One off-thread band generation request (immutable inputs). camGridY is the
+	 *  camera height in CLOUD UNITS above cloudHeight (negative below the clouds);
+	 *  cloudHeight is the world Y of cloud-unit 0 (blocks). */
 	private record BandJob(BandCoord coord, int x0, int z0, List<CpuCloudGenerator.CloudLayerGroup> groups,
-			List<CpuCloudGenerator.RegionMask> regions, long regionSig, int groupsHash, int camGridY)
+			List<CpuCloudGenerator.RegionMask> regions, long regionSig, int groupsHash, int camGridY, float cloudHeight)
 	{
 	}
 
@@ -405,9 +413,9 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 					float[] stormCoverage = new float[1];
 					long t0 = System.nanoTime();
 					java.nio.ByteBuffer[] data = generator.generate(
-							job.x0(), job.coord().baseU(), job.z0(), job.x0() + BAND_CELL,
-							job.coord().baseU() + BAND_Y1, job.z0() + BAND_CELL,
-							BAND_SCALE, 0.0F, 0.0F, 0.0F, 0.0F, opaqueCount, transparentCount, job.camGridY(), stormCoverage);
+							job.x0(), BAND_Y0, job.z0(), job.x0() + BAND_CELL,
+							BAND_Y1, job.z0() + BAND_CELL,
+							BAND_SCALE, 0.0F, 0.0F, 0.0F, 0.0F, job.cloudHeight(), opaqueCount, transparentCount, job.camGridY(), stormCoverage);
 					BandData d = new BandData();
 					d.regionSig = job.regionSig();
 					d.groupsHash = job.groupsHash();
@@ -417,8 +425,8 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 					d.transparentCount = (int) transparentCount[0];
 					d.stormCoverage = stormCoverage[0];
 					this.completedBands.add(new BandResult(job.coord(), d));
-					LOGGER.info("Simple Clouds clouds: band {}x{} (baseY {}) generated off-thread, {} formations, {} opaque / {} transparent instances (CPU {} us)",
-							job.x0(), job.z0(), job.coord().baseU(), job.regions().size(), d.opaqueCount, d.transparentCount, (System.nanoTime() - t0) / 1000L);
+					LOGGER.info("Simple Clouds clouds: band {}x{} generated off-thread, {} formations, {} opaque / {} transparent instances (CPU {} us)",
+							job.x0(), job.z0(), job.regions().size(), d.opaqueCount, d.transparentCount, (System.nanoTime() - t0) / 1000L);
 
 				}
 				catch (Throwable t)
@@ -458,6 +466,14 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	// per second instead of blacking out silently forever.
 	private long pipelineRetryFrame;
 
+	/** Fade-in alpha for one band (step 3): 0 -> 1 at CHUNK_FADE_IN_ALPHA_PER_TICK
+	 *  per tick after its data was published; 1.0 once settled. */
+	private float bandAlpha(BandData d, long nowTick, float partialTick)
+	{
+		double age = nowTick + partialTick - d.lastGenTick;
+		return (float) Mth.clamp(age * CHUNK_FADE_IN_ALPHA_PER_TICK, 0.0, 1.0);
+	}
+
 	private void generateAndDrawClouds(double camX, double camY, double camZ, float partialTick)
 	{
 		if (this.drawPipeline == null || this.cpuGenerator == null)
@@ -485,21 +501,21 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		float scale = 8.0F;
 		final int cell = 32;
 		final int cellBlocks = (int) (cell * scale);
-		int camGridY = Mth.floor(camY / scale);
-		// Parity with 1.20.1: the cloud volume is anchored cloudHeight (config,
-		// default 128 blocks) BELOW the camera, so it follows the player's altitude.
-		// Quantized to BAND_Y_STEP units (128-block steps) so the per-band cache stays
-		// valid while the player moves vertically within a step.
+		// Step 1 (VISUAL-PARITY-PLAN): the cloud volume is anchored at WORLD
+		// Y = cloudHeight (default 128), exactly like the original -- it does NOT
+		// follow the player's altitude. The band cache is therefore XZ-only.
 		int cloudHeight = 128;
 		var cloudManager = CloudManager.get(Minecraft.getInstance().level);
 		if (cloudManager != null)
 			cloudHeight = cloudManager.getCloudHeight();
-		int baseU = Mth.floor((camY - (double) cloudHeight) / scale / (double) BAND_Y_STEP) * BAND_Y_STEP;
+		// Camera height in cloud units above the volume base (negative when the player
+		// is below the cloud layer): used only for the "storm above the camera" metric.
+		int camGridY = Mth.floor((camY - (double) cloudHeight) / scale);
 		int renderDistance = Mth.clamp(this.mc.options.renderDistance().get(), 2, 64);
 		int bands = Mth.clamp(Mth.ceil(renderDistance * 16.0 / (double) cellBlocks), 2, 3);
 		int cx = Mth.floor(camX / cellBlocks);
 		int cz = Mth.floor(camZ / cellBlocks);
-		String gridKey = cx + "," + cz + "," + bands + "," + baseU;
+		String gridKey = cx + "," + cz + "," + bands;
 
 		List<CpuCloudGenerator.CloudLayerGroup> groups = dataDrivenGroups();
 		int groupsHash = groups.hashCode();
@@ -551,6 +567,13 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 			BandData d = result.data();
 			d.regionSig = regionSig;
 			d.groupsHash = groupsHash;
+			// Fade-in only for NEW bands (the original only resets a chunk's alpha
+			// after 120 ticks without regeneration; a regenerated chunk keeps its
+			// alpha). Stamping the tick on every completion made formation worlds
+			// (the global region signature drifts) re-fade the whole sky constantly
+			// -- permanent 50% dither.
+			BandData prev = this.bandCaches.get(result.coord());
+			d.lastGenTick = prev != null ? prev.lastGenTick : mc.level.getGameTime();
 			this.bandCaches.put(result.coord(), d);
 			this.instanceBuffersDirty = true;
 		}
@@ -561,32 +584,43 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		{
 			int x0 = (int) c[0] * cell;
 			int z0 = (int) c[1] * cell;
-			BandCoord key = new BandCoord(x0, z0, baseU);
+			BandCoord key = new BandCoord(x0, z0);
 			BandData d = this.bandCaches.get(key);
 			boolean stale = d == null || d.regionSig != regionSig || d.groupsHash != groupsHash || groupsChanged;
 			if (stale && this.pendingBands.add(key))
-				this.bandQueue.add(new BandJob(key, x0, z0, groups, regions, regionSig, groupsHash, camGridY));
+				this.bandQueue.add(new BandJob(key, x0, z0, groups, regions, regionSig, groupsHash, camGridY, (float) cloudHeight));
 		}
 
 		float maxStorm = 0.0F;
 		int totalOpaque = 0, totalTransp = 0;
+		long nowTick = mc.level.getGameTime();
+		// Fading bands (alpha < 1, step 1) are excluded from the combined buffer
+		// and drawn in their own passes below; the combined set changes every
+		// fade tick, so the rebuild also runs while any band is fading.
+		java.util.List<BandData> fadingBands = new java.util.ArrayList<>();
 		for (long[] c : cells)
 		{
-			BandData d = this.bandCaches.get(new BandCoord((int) c[0] * cell, (int) c[1] * cell, baseU));
-			if (d != null)
+			BandData d = this.bandCaches.get(new BandCoord((int) c[0] * cell, (int) c[1] * cell));
+			if (d == null)
+				continue;
+			if (d.stormCoverage > maxStorm)
+				maxStorm = d.stormCoverage;
+			float alpha = bandAlpha(d, nowTick, partialTick);
+			if (alpha < 1.0F)
 			{
-				totalOpaque += d.opaqueCount;
-				totalTransp += d.transparentCount;
-				if (d.stormCoverage > maxStorm)
-					maxStorm = d.stormCoverage;
+				fadingBands.add(d);
+				continue;
 			}
+			totalOpaque += d.opaqueCount;
+			totalTransp += d.transparentCount;
 		}
+		boolean anyFading = !fadingBands.isEmpty();
 		// Evict bands that left the grid (keeps the map bounded to the grid size).
 		if (bandSetChanged)
 		{
 			java.util.Set<BandCoord> keep = new java.util.HashSet<>(cells.size());
 			for (long[] c : cells)
-				keep.add(new BandCoord((int) c[0] * cell, (int) c[1] * cell, baseU));
+				keep.add(new BandCoord((int) c[0] * cell, (int) c[1] * cell));
 			this.bandCaches.keySet().retainAll(keep);
 			this.instanceBuffersDirty = true;
 		}
@@ -594,17 +628,18 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 
 		// Rebuild the combined instance buffers only when something actually changed
 		// (setInstances uploads a fresh GPU buffer, so it must not run every frame).
-		if (bandSetChanged || this.instanceBuffersDirty)
+		if (bandSetChanged || this.instanceBuffersDirty || anyFading)
 		{
-			this.instanceBuffersDirty = false;
+			if (!anyFading)
+				this.instanceBuffersDirty = false;
 			java.nio.ByteBuffer opaqueOut = null, transpOut = null;
 			if (totalOpaque > 0)
 			{
 				opaqueOut = java.nio.ByteBuffer.allocateDirect(totalOpaque * 24).order(java.nio.ByteOrder.nativeOrder());
 				for (long[] c : cells)
 				{
-					BandData d = this.bandCaches.get(new BandCoord((int) c[0] * cell, (int) c[1] * cell, baseU));
-					if (d != null && d.opaqueCount > 0)
+					BandData d = this.bandCaches.get(new BandCoord((int) c[0] * cell, (int) c[1] * cell));
+					if (d != null && d.opaqueCount > 0 && !fadingBands.contains(d))
 					{
 						d.opaque.rewind();
 						opaqueOut.put(d.opaque);
@@ -621,8 +656,8 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 				transpOut = java.nio.ByteBuffer.allocateDirect(totalTransp * 28).order(java.nio.ByteOrder.nativeOrder());
 				for (long[] c : cells)
 				{
-					BandData d = this.bandCaches.get(new BandCoord((int) c[0] * cell, (int) c[1] * cell, baseU));
-					if (d != null && d.transparentCount > 0)
+					BandData d = this.bandCaches.get(new BandCoord((int) c[0] * cell, (int) c[1] * cell));
+					if (d != null && d.transparentCount > 0 && !fadingBands.contains(d))
 					{
 						d.transparent.rewind();
 						transpOut.put(d.transparent);
@@ -632,9 +667,10 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 			}
 			this.drawPipeline.setInstances(opaqueOut, totalOpaque);
 			this.drawPipeline.setTransparencyInstances(transpOut, transpOut == null ? 0 : totalTransp);
-			LOGGER.info("Simple Clouds clouds: {} bands -> {} opaque / {} transparent instances (cam {}x{}x{}, cell {}x{}, grid {}x{})",
-					this.bandCaches.size(), totalOpaque, transpOut == null ? 0 : totalTransp,
-					camX, camY, camZ, cx, cz, bands, bands);
+			if (!anyFading)
+				LOGGER.info("Simple Clouds clouds: {} bands -> {} opaque / {} transparent instances (cam {}x{}x{}, cell {}x{}, grid {}x{})",
+						this.bandCaches.size(), totalOpaque, transpOut == null ? 0 : totalTransp,
+						camX, camY, camZ, cx, cz, bands, bands);
 		}
 
 		// SPIKE (SPIKE-GPU.md): original cube_mesh.comp via raw OpenGL (OFF — see
@@ -666,7 +702,7 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 			if (this.spikeReady && !groups.isEmpty())
 			{
 				int bandCenterX = x0 + cell / 2, bandCenterZ = z0 + cell / 2;
-				int gpuCount = this.spike.generate(x0, baseU, z0, x0 + cell, baseU + BAND_Y1, z0 + cell,
+				int gpuCount = this.spike.generate(x0, BAND_Y0, z0, x0 + cell, BAND_Y1, z0 + cell,
 						bandCenterX, 32.0F, bandCenterZ, 8.0F, 16.0F,
 						groups.get(0).layers(), groups.get(0).transparencyFade());
 				// Only trust the GPU result when it actually produced instances; an
@@ -683,6 +719,18 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 
 		this.drawPipeline.draw(view);
 		this.drawPipeline.drawTransparency(view);
+		// Fade-in passes (step 3): each fresh band in its own pass, alpha ramped
+		// through ColorModulator.a (the original per-chunk fade-in).
+		boolean transpPassEnabled = SimpleCloudsConfig.CLIENT.transparency.get();
+		for (BandData d : fadingBands)
+		{
+			float alpha = bandAlpha(d, nowTick, partialTick);
+			if (alpha <= 0.0F)
+				continue; // not visible yet this frame
+			this.drawPipeline.drawCloudsCpu(view, d.opaque, d.opaqueCount, alpha);
+			if (transpPassEnabled && d.transparentCount > 0)
+				this.drawPipeline.drawTransparencyCpu(view, d.transparent, d.transparentCount, alpha);
+		}
 
 		// World effects: custom rain (1.20.1 PrecipitationQuads; slice without
 		// wind tilt / snow) into the scene, before the overlays.
@@ -704,8 +752,8 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		// Cloud shadows (26.2 slice): top-down ortho depth pass over the cloud
 		// instances, then a fullscreen terrain-shadow pass (see CloudShadowPass
 		// section of CloudsDrawPipeline and PORTING.md).
-		this.drawPipeline.renderCloudShadowMap(camX, camY, camZ);
-		this.drawPipeline.drawTerrainShadows(view, camX, camY, camZ);
+		this.drawPipeline.renderCloudShadowMap(camX, camY, camZ, (float) cloudHeight);
+		this.drawPipeline.drawTerrainShadows(view, camX, camY, camZ, (float) cloudHeight);
 
 		// Atmospheric (high cirrus-type) clouds: biome-driven 2D layer over the
 		// whole view (original: end of the DefaultPipeline render).

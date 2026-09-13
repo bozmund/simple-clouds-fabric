@@ -7,6 +7,9 @@ import java.util.List;
 
 import dev.nonamecrackers2.simpleclouds.client.noise.PsrdNoise;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
 /**
  * Vertical-slice (26.2) CPU cloud generator.
  *
@@ -39,6 +42,9 @@ import dev.nonamecrackers2.simpleclouds.client.noise.PsrdNoise;
  */
 public final class CpuCloudGenerator
 {
+	private static final Logger LOGGER = LogManager.getLogger("simpleclouds/CpuGenerator");
+	private static boolean loggedYRange = false;
+
 	/** A single noise layer (mirrors the GLSL NoiseLayer struct / AbstractNoiseSettings.Param). */
 	public record NoiseLayer(float height, float valueOffset, float scaleX, float scaleY, float scaleZ,
 			float fadeDistance, float heightOffset, float valueScale)
@@ -98,13 +104,16 @@ public final class CpuCloudGenerator
 	 * @return a two-element array: [opaque data or null, transparent data or null]
 	 *         (native-endian floats, position 0, limit = bytes written).
 	 */
-	public ByteBuffer[] generate(int x0, int y0, int z0, int x1, int y1, int z1, float scale, float scrollX, float scrollY, float scrollZ, float wiggle, float[] outOpaqueCount, float[] outTransparentCount, int cameraGridY, float[] outStormCoverage)
+	public ByteBuffer[] generate(int x0, int y0, int z0, int x1, int y1, int z1, float scale, float scrollX, float scrollY, float scrollZ, float wiggle, float worldBaseY, float[] outOpaqueCount, float[] outTransparentCount, int cameraGridY, float[] outStormCoverage)
 	{
-		// Parity with 1.20.1: the noise volume is anchored 128 blocks (the cloudHeight
-		// config) BELOW the camera and spans 256 units (VERTICAL_CHUNK_SPAN * CHUNK_SIZE).
-		// Layer heights/offsets and the noise Y coordinate are RELATIVE to the volume
-		// base (y0), so clouds follow the player's altitude. x/z stay world-fixed.
+		// Parity with 1.20.1 (VISUAL-PARITY-PLAN step 1): the cloud volume is anchored
+		// at WORLD Y = cloudHeight (passed in as worldBaseY), NEVER relative to the
+		// camera. The grid spans y0..y1 cloud units above that base; layer heights
+		// and the noise Y are relative to the volume base (y0). x/z stay world-fixed.
+		// (The old camY-anchored volume put the stratus at sea level and made the
+		// clouds track the player's altitude -- the two headline parity bugs.)
 		this.yBase = y0;
+		this.worldBaseY = worldBaseY;
 		int xSpan = x1 - x0, ySpan = y1 - y0, zSpan = z1 - z0;
 		int cells = xSpan * ySpan * zSpan;
 		// Growable scratch buffers: only a small fraction of cells is filled, so start
@@ -116,6 +125,9 @@ public final class CpuCloudGenerator
 		int opaqueWritten = 0;
 		int transparentWritten = 0;
 		float[] gradient = new float[3];
+		// Step 1 proof: track the min/max WORLD Y of emitted opaque cubes so the
+		// anchoring (world Y = cloudHeight + 8*y) can be verified in the log.
+		float minY = Float.MAX_VALUE, maxY = -Float.MAX_VALUE;
 		int groupCount = this.groups.size();
 		float[] groupNoises = new float[groupCount];
 		boolean[] columnStorm = new boolean[xSpan * zSpan];
@@ -198,6 +210,9 @@ public final class CpuCloudGenerator
 					float brightness = 1.0F; // vertical slice: no storm darkening yet
 					if (anyOpaque)
 					{
+						float cubeY = (y + 0.5F) * scale + worldBaseY;
+						if (cubeY < minY) minY = cubeY;
+						if (cubeY > maxY) maxY = cubeY;
 						int needed = 6 * CloudVertexFormat.BYTES_PER_INSTANCE;
 						if (opaqueWritten + needed > opaqueBuffer.capacity())
 							opaqueBuffer = grow(opaqueBuffer, opaqueWritten, opaqueBuffer.capacity() * 2);
@@ -265,6 +280,15 @@ public final class CpuCloudGenerator
 
 		outOpaqueCount[0] = opaqueWritten / CloudVertexFormat.BYTES_PER_INSTANCE;
 		outTransparentCount[0] = transparentWritten / CloudVertexFormat.BYTES_PER_INSTANCE_ALPHA;
+		// Step 1 proof log (throttled to ~every 4 s): the generated cloud volume must
+		// sit at world Y = cloudHeight + 8*y (>= ~128 by default), never at sea level.
+		if (opaqueWritten > 0 && !loggedYRange)
+		{
+			loggedYRange = true;
+			LOGGER.info("Simple Clouds clouds: generated Y range {}..{} (worldBaseY={}, {} opaque instances)",
+					String.format(java.util.Locale.ROOT, "%.1f", minY), String.format(java.util.Locale.ROOT, "%.1f", maxY),
+					String.format(java.util.Locale.ROOT, "%.1f", worldBaseY), (int) outOpaqueCount[0]);
+		}
 		return new ByteBuffer[] { bound(opaqueBuffer, opaqueWritten), bound(transparentBuffer, transparentWritten) };
 	}
 
@@ -293,6 +317,9 @@ public final class CpuCloudGenerator
 
 	/** Absolute grid Y of the current volume base; noise Y is sampled relative to it. */
 	private int yBase;
+	/** World Y (blocks) of cloud-unit 0: the cloudHeight anchor (step 1). Added to
+	 *  every emitted vertex Y. 0 in the preview screen's own coordinate space. */
+	private float worldBaseY;
 
 	/** Combined layered noise for one group at a voxel position (port of getNoiseForLayerGroup). */
 	private float sampleGroup(CloudLayerGroup group, int x, int y, int z, float scale, float scrollX, float scrollY, float scrollZ, float wiggle, float[] gradient)
@@ -349,9 +376,10 @@ public final class CpuCloudGenerator
 	{
 		float radius = scale / 2.0F;
 		// SidePos must be in WORLD coordinates (the shader adds it to the view-space
-		// position untransformed). Grid cell (x, y, z) spans world [x*scale, (x+1)*scale);
-		// its center is (x + 0.5) * scale.
-		float cx = (x + 0.5F) * scale, cy = (y + 0.5F) * scale, cz = (z + 0.5F) * scale;
+		// position untransformed). Grid cell (x, y, z) spans cloud-unit
+		// [x*scale, (x+1)*scale); its center is (x + 0.5) * scale, and the cloud-unit
+		// Y 0 is world Y = worldBaseY (the cloudHeight anchor, step 1).
+		float cx = (x + 0.5F) * scale, cy = (y + 0.5F) * scale + this.worldBaseY, cz = (z + 0.5F) * scale;
 		int written = 0;
 
 		// Face order matches the shader: -X=0, +X=1, -Y=2, +Y=3, -Z=4, +Z=5.
@@ -385,7 +413,7 @@ public final class CpuCloudGenerator
 			float s, float scrollX, float scrollY, float scrollZ, float wiggle, float[] gradient)
 	{
 		float radius = scale / 2.0F;
-		float cx = (x + 0.5F) * scale, cy = (y + 0.5F) * scale, cz = (z + 0.5F) * scale;
+		float cx = (x + 0.5F) * scale, cy = (y + 0.5F) * scale + this.worldBaseY, cz = (z + 0.5F) * scale;
 		int gi = columnGroup[(x - x0) * (z1 - z0) + (z - z0)];
 		int written = 0;
 		written += this.emitRegionFace(buffer, offset + written, 0, cx, cy, cz, radius, brightness, x - 1, y, z, gi, x0, y0, z0, x1, y1, z1, columnGroup, columnFade, s, scrollX, scrollY, scrollZ, wiggle, gradient);
@@ -432,7 +460,7 @@ public final class CpuCloudGenerator
 	private int emitTransparentCube(ByteBuffer buffer, int offset, int x, int y, int z, float scale, float brightness, float alpha)
 	{
 		float radius = scale / 2.0F;
-		float cx = (x + 0.5F) * scale, cy = (y + 0.5F) * scale, cz = (z + 0.5F) * scale;
+		float cx = (x + 0.5F) * scale, cy = (y + 0.5F) * scale + this.worldBaseY, cz = (z + 0.5F) * scale;
 		int written = 0;
 		for (int side = 0; side < 6; side++)
 		{

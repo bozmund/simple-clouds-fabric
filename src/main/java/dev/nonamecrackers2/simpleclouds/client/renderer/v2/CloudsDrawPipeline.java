@@ -108,12 +108,14 @@ public class CloudsDrawPipeline implements AutoCloseable
 	// instances + a fullscreen terrain-shadow pass. See core/clouds_shadow.* and
 	// core/terrain_shadows.* for the shaders and PORTING.md for the slice scope.
 	private static final int SHADOW_SIZE = 512; // 1 block/texel over the 512x512 block field
-	private static final float SHADOW_RADIUS = 256.0F; // world blocks XZ around the camera (512x512 field on a 256x256 map: 2 blocks/texel)
-	private static final float SHADOW_FAR = 600.0F;
-	// The volume extends this far BELOW the camera: with camera-anchored clouds the
-	// terrain the player stands on sits a few blocks under camY, and the original
-	// raymarch shadowed everything below the clouds (including below-camY terrain).
-	private static final float SHADOW_FAR_BELOW = 128.0F;
+	// Step 1 (VISUAL-PARITY-PLAN): the light volume is anchored at WORLD cloudHeight
+	// (like the original's shadow stack: translate(-camOffsetX, -cloudHeight,
+	// -camOffsetZ)), NOT at the camera. The light plane sits at the top of the cloud
+	// volume; the depth range covers the whole volume plus margin down to terrain.
+	// (XZ radius 256 blocks is a known slice simplification -- revisit in step 6.)
+	private static final float SHADOW_RADIUS = 256.0F; // world blocks XZ around the camera
+	private static final float SHADOW_VOLUME_TOP = 2048.0F; // cloud volume height above cloudHeight (256 units)
+	private static final float SHADOW_VOLUME_BELOW = 512.0F; // extra depth below cloudHeight (terrain)
 	private static final float SHADOW_BIAS = 0.005F;
 	private static final float SHADOW_INTENSITY = 0.7F;
 	/** A/B test switch: false = skip the terrain-shadow pass entirely. */
@@ -509,15 +511,19 @@ public class CloudsDrawPipeline implements AutoCloseable
 	 */
 	public void draw(Matrix4f viewMatrix)
 	{
-		GpuBuffer activeInstances = (this.useSpikeInstances && this.spikeInstanceBuffer != null)
-				? this.spikeInstanceBuffer
-				: this.instanceBuffer;
-		if (activeInstances == null || this.instanceCount == 0)
+		drawClouds(viewMatrix, this.instanceBuffer, this.instanceCount, 1.0F);
+	}
+
+	/** Draws an explicit instance buffer with a global fade alpha
+	 *  (ColorModulator.a; the original per-chunk fade-in, step 3). */
+	public void drawClouds(Matrix4f viewMatrix, GpuBuffer instances, int count, float alpha)
+	{
+		if (instances == null || count == 0)
 			return;
 		if (!this.loggedFirstDraw)
 		{
 			this.loggedFirstDraw = true;
-			LOGGER.info("Simple Clouds clouds: first draw, {} instances", this.instanceCount);
+			LOGGER.info("Simple Clouds clouds: first draw, {} instances", count);
 		}
 
 		RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
@@ -528,7 +534,10 @@ public class CloudsDrawPipeline implements AutoCloseable
 		// vanilla CloudRenderer does. Written into vanilla's shared per-frame ring buffer (reset
 		// every frame) -- allocating a fresh DynamicUniforms per draw created and freed GPU
 		// buffers every frame.
-		GpuBufferSlice transforms = this.ownTransforms.writeTransform(viewMatrix);
+// ColorModulator.a carries the fade alpha (the 1.20.1 chunk fade-in, step 3):
+		GpuBufferSlice transforms = alpha >= 1.0F
+				? this.ownTransforms.writeTransform(viewMatrix)
+				: this.ownTransforms.writeTransform(viewMatrix, new org.joml.Vector4f(1.0F, 1.0F, 1.0F, alpha));
 
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
 		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds", colorView, Optional.empty(), depthView, OptionalDouble.empty());
@@ -554,9 +563,9 @@ public class CloudsDrawPipeline implements AutoCloseable
 		pass.setUniform("CloudShading", this.useNormalsRing[this.useNormalsRingSlot]);
 		pass.setUniform("CloudFog", this.fogUbo);
 		pass.setVertexBuffer(0, this.quadVertexBuffer.slice());
-		pass.setVertexBuffer(1, activeInstances.slice());
+		pass.setVertexBuffer(1, instances.slice());
 		pass.setIndexBuffer(this.quadIndexBuffer, IndexType.SHORT);
-		pass.drawIndexed(QUAD_INDICES.length, this.instanceCount, 0, 0, 0);
+		pass.drawIndexed(QUAD_INDICES.length, count, 0, 0, 0);
 		pass.close();
 		this.useNormalsRingSlot = (this.useNormalsRingSlot + 1) % 3;
 	}
@@ -597,21 +606,62 @@ public class CloudsDrawPipeline implements AutoCloseable
 	/** Draws the transparent cloud edges after the opaque pass (no depth write, blended). */
 	private boolean loggedFirstTransparencyDraw = false;
 
+	/** One fade pass from CPU instance data (the band's own buffer; a transient GPU
+	 *  upload, closed after the draw). */
+	public void drawCloudsCpu(Matrix4f viewMatrix, java.nio.ByteBuffer instanceData, int count, float alpha)
+	{
+		if (instanceData == null || count == 0)
+			return;
+		GpuBuffer buf = RenderSystem.getDevice().createBuffer(() -> "simpleclouds.fadeOpaque", GpuBuffer.USAGE_VERTEX, instanceData);
+		try
+		{
+			drawClouds(viewMatrix, buf, count, alpha);
+		}
+		finally
+		{
+			buf.close();
+		}
+	}
+
+	/** Transparency variant of {@link #drawCloudsCpu}. */
+	public void drawTransparencyCpu(Matrix4f viewMatrix, java.nio.ByteBuffer instanceData, int count, float alpha)
+	{
+		if (instanceData == null || count == 0)
+			return;
+		GpuBuffer buf = RenderSystem.getDevice().createBuffer(() -> "simpleclouds.fadeTransp", GpuBuffer.USAGE_VERTEX, instanceData);
+		try
+		{
+			drawTransparencyClouds(viewMatrix, buf, count, alpha);
+		}
+		finally
+		{
+			buf.close();
+		}
+	}
 	public void drawTransparency(Matrix4f viewMatrix)
 	{
-		if (this.transparencyInstanceBuffer == null || this.transparencyInstanceCount == 0)
+		drawTransparencyClouds(viewMatrix, this.transparencyInstanceBuffer, this.transparencyInstanceCount, 1.0F);
+	}
+
+	/** Transparency variant of {@link #drawClouds} for one fade band. */
+	public void drawTransparencyClouds(Matrix4f viewMatrix, GpuBuffer instances, int count, float alpha)
+	{
+		if (instances == null || count == 0)
 			return;
 		if (!this.loggedFirstTransparencyDraw)
 		{
 			this.loggedFirstTransparencyDraw = true;
-			LOGGER.info("Simple Clouds clouds: first transparent draw, {} instances", this.transparencyInstanceCount);
+			LOGGER.info("Simple Clouds clouds: first transparent draw, {} instances", count);
 		}
 
 		RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
 		GpuTextureView colorView = main.getColorTextureView();
 		GpuTextureView depthView = main.getDepthTextureView();
 
-		GpuBufferSlice transforms = this.ownTransforms.writeTransform(viewMatrix);
+// ColorModulator.a carries the fade alpha (the 1.20.1 chunk fade-in, step 3):
+		GpuBufferSlice transforms = alpha >= 1.0F
+				? this.ownTransforms.writeTransform(viewMatrix)
+				: this.ownTransforms.writeTransform(viewMatrix, new org.joml.Vector4f(1.0F, 1.0F, 1.0F, alpha));
 
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
 		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.transparency", colorView, Optional.empty(), depthView, OptionalDouble.empty());
@@ -623,9 +673,9 @@ public class CloudsDrawPipeline implements AutoCloseable
 		pass.setUniform("CloudShading", this.shadingUbo);
 		pass.setUniform("CloudFog", this.fogUbo);
 		pass.setVertexBuffer(0, this.quadVertexBuffer.slice());
-		pass.setVertexBuffer(1, this.transparencyInstanceBuffer.slice());
+		pass.setVertexBuffer(1, instances.slice());
 		pass.setIndexBuffer(this.quadIndexBuffer, IndexType.SHORT);
-		pass.drawIndexed(QUAD_INDICES.length, this.transparencyInstanceCount, 0, 0, 0);
+		pass.drawIndexed(QUAD_INDICES.length, count, 0, 0, 0);
 		pass.close();
 	}
 
@@ -664,7 +714,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 	 * Renders the cloud instances into the top-down ortho shadow depth target
 	 * (cleared to 1.0; a cloud writes its window-space depth per XZ texel).
 	 */
-	public void renderCloudShadowMap(double camX, double camY, double camZ)
+	public void renderCloudShadowMap(double camX, double camY, double camZ, float cloudHeight)
 	{
 		if (this.instanceBuffer == null || this.instanceCount == 0)
 		{
@@ -672,20 +722,20 @@ public class CloudsDrawPipeline implements AutoCloseable
 			return;
 		}
 
-		// Top-down ortho view: world (camX, 0, camZ) origin, looking straight down,
-		// view x = world X, view y = world Z (north), view z = -world Y.
-		// Light volume: light at the TOP (SHADOW_FAR above the camera). joml's setOrtho
-		// looks down -Z, so viewZ = -(distance from light) = worldY - (camY+SHADOW_FAR) ∈
-		// [-SHADOW_FAR, 0]: light at viewZ=0 (window depth ~0.0), camera plane at
-		// viewZ=-SHADOW_FAR (~1.0). Map clears to 1.0; LESS_THAN keeps the cloud
-		// CLOSEST to the light (see shadow pipeline depth state).
+		// Step 1: world-anchored light volume (never camera-relative). Top-down ortho
+		// centered on the camera in XZ; joml's setOrtho looks down -Z, so
+		// viewZ = worldY - lightPlane in [-depthFar, 0]: light plane (top of the
+		// cloud volume) at viewZ=0 (window depth ~0.0), deepest point at -depthFar
+		// (~1.0). Map clears to 1.0; LESS_THAN keeps the cloud CLOSEST to the light.
+		float lightPlane = cloudHeight + SHADOW_VOLUME_TOP;
+		float depthFar = SHADOW_VOLUME_TOP + SHADOW_VOLUME_BELOW;
 		org.joml.Matrix4f shadowView = new org.joml.Matrix4f().set(
 				1.0F, 0.0F, 0.0F, (float) -camX,
 				0.0F, 0.0F, 1.0F, (float) -camZ,
-				0.0F, 1.0F, 0.0F, (float) -(camY + SHADOW_FAR),
+				0.0F, 1.0F, 0.0F, -lightPlane,
 				0.0F, 0.0F, 0.0F, 1.0F);
 		org.joml.Matrix4f shadowProj = new org.joml.Matrix4f().setOrtho(
-				-SHADOW_RADIUS, SHADOW_RADIUS, -SHADOW_RADIUS, SHADOW_RADIUS, 0.0F, SHADOW_FAR + SHADOW_FAR_BELOW);
+				-SHADOW_RADIUS, SHADOW_RADIUS, -SHADOW_RADIUS, SHADOW_RADIUS, 0.0F, depthFar);
 
 		this.shadowMatricesIdx = (this.shadowMatricesIdx + 1) % 3;
 		GpuBuffer matricesBuf = this.shadowMatricesRing[this.shadowMatricesIdx];
@@ -714,25 +764,27 @@ public class CloudsDrawPipeline implements AutoCloseable
 	 * Fullscreen terrain cloud-shadow pass: reconstructs world positions from the
 	 * scene depth and darkens fragments under the cloud shadow map.
 	 */
-	public void drawTerrainShadows(Matrix4f viewMatrix, double camX, double camY, double camZ)
+	public void drawTerrainShadows(Matrix4f viewMatrix, double camX, double camY, double camZ, float cloudHeight)
 	{
 		if (!TERRAIN_SHADOWS_ENABLED)
 			return;
 		if (!this.shadowRenderedThisFrame)
 			return;
 
-		// Light volume: light at the TOP (SHADOW_FAR above the camera). joml's setOrtho
-		// looks down -Z, so viewZ = -(distance from light) = worldY - (camY+SHADOW_FAR)
-		// in [-SHADOW_FAR, 0]: light at viewZ=0 (window depth ~0.0), camera plane at
-		// viewZ=-SHADOW_FAR (~1.0). Map clears to 1.0; LESS_THAN keeps the cloud
-		// CLOSEST to the light (see shadow pipeline depth state).
+		// Same world-anchored light volume as renderCloudShadowMap (step 1):
+		// light plane at cloudHeight + SHADOW_VOLUME_TOP, depth down to
+		// cloudHeight - SHADOW_VOLUME_BELOW (terrain). joml's setOrtho looks down
+		float lightPlane = cloudHeight + SHADOW_VOLUME_TOP;
+		float depthFar = SHADOW_VOLUME_TOP + SHADOW_VOLUME_BELOW;
+		// -Z; LESS_THAN keeps the cloud CLOSEST to the light (map clears to 1.0).
+		//
 		org.joml.Matrix4f shadowView = new org.joml.Matrix4f().set(
 				1.0F, 0.0F, 0.0F, (float) -camX,
 				0.0F, 0.0F, 1.0F, (float) -camZ,
-				0.0F, 1.0F, 0.0F, (float) -(camY + SHADOW_FAR),
+				0.0F, 1.0F, 0.0F, -lightPlane,
 				0.0F, 0.0F, 0.0F, 1.0F);
 		org.joml.Matrix4f shadowProj = new org.joml.Matrix4f().setOrtho(
-				-SHADOW_RADIUS, SHADOW_RADIUS, -SHADOW_RADIUS, SHADOW_RADIUS, 0.0F, SHADOW_FAR + SHADOW_FAR_BELOW);
+				-SHADOW_RADIUS, SHADOW_RADIUS, -SHADOW_RADIUS, SHADOW_RADIUS, 0.0F, depthFar);
 		org.joml.Matrix4f shadowViewProj = (org.joml.Matrix4f) shadowProj.mul(shadowView);
 
 		this.terrainPassIdx = (this.terrainPassIdx + 1) % 3;

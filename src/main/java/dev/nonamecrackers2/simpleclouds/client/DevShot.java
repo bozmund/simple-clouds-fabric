@@ -358,7 +358,8 @@ public final class DevShot
 			float[] sc = new float[1];
 			int x0 = Mth.floor(cx) - 8;
 			int z0 = Mth.floor(cz) - 8;
-			gen.generate(x0, 0, z0, x0 + 16, 64, z0 + 16, 8.0F, 0.0F, 0.0F, 0.0F, 0.0F, oc, tc, 0, sc);
+			// worldBaseY = 0: density probe only counts instances (box-local space).
+			gen.generate(x0, 0, z0, x0 + 16, 64, z0 + 16, 8.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, oc, tc, 0, sc);
 			return (int) oc[0];
 		}
 		catch (Throwable t)

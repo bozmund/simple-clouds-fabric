@@ -76,8 +76,8 @@ Statuses: **VERIFIED** = ported + confirmed on screen (devshot/play-test);
 | GPU compute generation (cube_mesh.comp) | MISSING (shelved) | CPU path ships; spike evidence in SPIKE-GPU-RESULT.md |
 | Vanilla cloud layer removal | VERIFIED (dev client) | 26.2 addCloudsPass cancelled; flat+full variants both covered |
 | DH (Distant Horizons) support | VERIFIED | DH 3.2.0 detected, its clouds disabled, handlers registered |
-| Camera-anchored cloud volume (`clientSideCloudHeight`, 2048-block span) | VERIFIED | 1.20.1 semantics: volume base = camY − cloudHeight (default 128 blocks), 256 units tall (VERTICAL_CHUNK_SPAN×CHUNK_SIZE); layer offsets/noise Y are volume-relative so clouds follow the player's altitude. Port quantizes the base to 16-unit (128-block) steps for the band cache; X/Z noise stays world-fixed (no 256-block origin snapping, better CPU cache affinity) |
-| Ground-level bank layers (stratus/nimbostratus height_offset=0) | BY DESIGN | height_offset=0 = volume base = 128 blocks BELOW THE CAMERA, not ground level (Jan's question 2026-09-12, verified in 1.20.1 source); below-terrain parts hidden by depth test (fixed 2026-09-12) |
+| **World-anchored** cloud volume at Y = cloudHeight (default 128, 2048-block span) | VERIFIED (Step 1, 2026-09-13) | 1.20.1 semantics: volume base = world Y = cloudHeight (NOT camera-relative); 256 units tall (VERTICAL_CHUNK_SPAN×CHUNK_SIZE); layer offsets/noise Y are volume-relative, so a stratus layer (offset 0) sits at world Y ≈ 128. Clouds do NOT follow the player's altitude. See the corrected CLOUD VOLUME ANCHORING section (the 2026-09-12 "camera-anchored" reading was wrong; proven by the shadow-map stack's `−cloudHeight`, no camY). Port now world-anchors the band grid + shadow light volume; verified Y range 132..380 |
+| Ground-level bank layers (stratus/nimbostratus height_offset=0) | BY DESIGN | height_offset=0 = volume base = world Y = cloudHeight (128 by default), i.e. just above the waterline at sea level — NOT camera-relative and not ground level; below-terrain parts hidden by depth test (fixed 2026-09-12) |
 
 ### UI / screens
 | Feature | Status | Notes |
@@ -133,30 +133,48 @@ Statuses: **VERIFIED** = ported + confirmed on screen (devshot/play-test);
    (offscreen capture), debug overlay (debug-only), LOD/culling perf options, server
    command tree (26.2 typed-arg bootstrap limitation).
 
-## CLOUD VOLUME ANCHORING (2026-09-12, from Jan's "are you sure about the layers" question)
+## CLOUD VOLUME ANCHORING — **CORRECTED (2026-09-13, Step 1 of VISUAL-PARITY-PLAN)**
 
-The 1.20.1 cloud volume is **camera-anchored**, not world-anchored:
+The 2026-09-12 entry below this one (and the table row it came from) concluded the 1.20.1
+cloud volume is **camera-anchored** ("follows the player's altitude", base = camY − cloudHeight).
+**That was wrong.** Jan's plan (from watching the real 1.20.1 mod) and the original source both
+show the volume is **world-anchored at Y = cloudHeight** (default 128), and the port had wrongly
+made it camera-anchored — the cause of the "clouds sit at sea level" bug (the player is near sea
+level, so `camY − cloudHeight` put the stratus bank at the waterline).
 
-- `SimpleCloudsRenderer.render()`: `originY = (camY − cloudManager.getCloudHeight()) / 8`;
-  `cloudHeight` is the `clientSideCloudHeight` config (default **128 blocks**, synced from
-  the server). The compute shader samples the noise at coordinates RELATIVE to that origin
-  (chunk-local y 0..255 vs `VERTICAL_CHUNK_SPAN * CHUNK_SIZE` = 256 units = 2048 blocks),
-  so layer `height_offset: 0` = 128 blocks below the camera, and the whole volume follows
-  the player's altitude (no vertical snapping; X/Z origin snaps to a 256-block grid).
-- Per-type noise ranges (volume-relative blocks): cumulus 128..384 above base;
-  stratocumulus 512..1024; stratus/itty_bitty/small_cumulus 0..256; nimbostratus 0..1024;
-  cumulonimbus 0..2048. So "the big white block at water level" (play-test 12:04) was a
-  low-type bank around the player's altitude — expected in the original too, and the
-  depth-test fix (same day) hides its below-terrain parts.
+**Decisive evidence (original source):** the cloud shadow map is a fresh stack with a top-down
+ortho light volume translated by `(-camOffsetX, −cloudHeight, −camOffsetZ)` — **no camY**
+(`SimpleCloudsRenderer.createShadowMapStack`, 1.20.1). It therefore places the cloud volume at
+world Y = `cloudHeight + y`. For the shadows to line up with the clouds, the main render must do
+the same. If the original were camera-anchored (base at `camY − cloudHeight`), the shadow map would
+be displaced for every camera height except `camY = 2·cloudHeight` — i.e. it would be visibly wrong.
+It is not. **The original is world-anchored.**
 
-**Port fix (this entry):** `CpuCloudGenerator` now takes the band base `y0` as the volume
-base — layer checks, noise Y and `heightDelta` use `y − yBase`; vertex output stays
-world-absolute. `SimpleCloudsRenderer` computes `baseU = floor((camY − cloudHeight)/8/16) * 16`
-and generates 256-unit-tall bands keyed by (x0, z0, baseU). Before this fix the port was
-world-fixed at Y 0..512: stratocumulus was INVISIBLE (its 512..1024 range sat above the
-band), cumulonimbus/nimbostratus tops were clipped, and clouds did not follow the player.
-Verified: band baseY −16 at camY 71 (=(71−128)/8 quantized), clouds at player altitude,
-terrain occlusion clean.
+(`originY = (camY − cloudHeight)/8` in the original is only the CAMERA's position expressed in
+cloud space, used for frustum culling / the "storm above the camera" metric — it is never the
+volume base. The previous session mistook it for the base.)
+
+**Per-type noise ranges (volume-relative blocks, still correct):** cumulus 128..384 above base;
+stratocumulus 512..1024; stratus/itty_bitty/small_cumulus 0..256; nimbostratus 0..1024;
+cumulonimbus 0..2048. So by default the stratus base sits at world Y = 128 (8 blocks above
+sea level, i.e. just above the waterline at sea level) and the cumulus bank at ~144-176.
+
+**Port fix (Step 1):** `CpuCloudGenerator` is now world-anchored — it takes `worldBaseY` (the
+cloudHeight, in blocks) and every emitted vertex Y is `cloud-unit-Y * 8 + worldBaseY`; the band
+grid spans fixed cloud-space Y 0..256 (`BAND_Y0..BAND_Y1`) and the band cache key is XZ-only
+(`baseU` / camera-anchored volume is gone). The shadow-map light volume is likewise anchored at
+world cloudHeight (`lightPlane = cloudHeight + SHADOW_VOLUME_TOP`). The other altitude-dependent
+sites were already world-anchored in the port and verified as such: rain vertical-fade
+(`CloudManager`, `stormStart*8 + getCloudHeight()`), lightning spawn Y
+(`ClientCloudManager`/`ServerCloudManager`), and the server-side cloud lookup. Storm fog uses the
+camera's cloud-space Y (world-anchored metric). The atmospheric layer is a separate screen-space
+raymarch (no old camera-relative base).
+
+**Verified (2026-09-13, dev client, standard views A–E, `NOSPAWN`):** one-shot log
+"generated Y range 132.0..380.0 (worldBaseY=128.0)" — min world Y 132 = stratus layer y=0
+(128 + 0.5·8), never at sea level. View A/B: cloud bases float well above the sea. View D
+(y=200, inside the upper layers): cloud tops with sky gaps, world-anchored (constant
+worldBaseY in the log). Baseline (pre-fix) screenshots in `docs/reference/before/step0-baseline-*`.
 
 ## FULL-REGION RENDERING + SERVER PERSISTENCE (2026-09-12)
 Verified on screen (dev client, devshot screenshot): discrete white voxel cloud
