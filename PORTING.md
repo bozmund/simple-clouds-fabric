@@ -134,8 +134,11 @@ through the plan's steps 0–8:
   base was wrong) — done.
 - **Step 2** (LOD chunk layout + per-lodScale generation + worker pool, render
   distance ~10,500 blocks) — done.
-- Steps 3–8 (fog range, transparent-cube size/range, shading/lighting, color/
-  night/dusk/storm-fog, motion/fade-in parity, DH/depth-sorting) — pending.
+- **Step 3** (cloud fog range relative to vanilla render distance in blocks +
+  vanilla sky-color fog + per-chunk fade-in so fresh LOD chunks fade 0→1
+  instead of popping) — done. Evidence `docs/reference/step3-fog-*.png`.
+- Steps 4–8 (transparent-cube size/range, shading/lighting, color/night/dusk/
+  storm-fog, motion/fade-in parity, DH/depth-sorting) — pending.
 
 Remaining (low-priority / niche, see table above): custom rain sound-replacement,
 fogMode screen-space world fog, previewer image export, debug overlay, frustum/
@@ -166,6 +169,31 @@ the original's LOD system:
 Gotcha fixed: the region-mask `columnGroup` index must use the spaced CELL index
 `((x-x0)/lodScale)*zCells + ((z-z0)/lodScale)`, not the span index `(x-x0)*(z1-z0)`
 (the latter only holds for lodScale==1 and overflowed for the coarse LODs).
+
+## STEP 3 — fog range + fade-in (2026-09-13)
+
+The cloud fog was a **fixed** 100..400-block range with a fixed bright color,
+irrespective of the render distance. Step 3 makes it:
+
+- **Range relative to the vanilla render distance in blocks**: `fogStart =
+  renderDistance*16` (clouds are clear up to the render distance), `fogEnd =
+  renderDistance*16*3` (fully faded 3× out). For the 32-chunk dev world that is
+  512..1536 blocks. `fogDistance` is XZ-based (same as the original's
+  `length((ModelViewMat*finalPos).xz)`), so overhead clouds are not fogged.
+- **Color = the vanilla sky color**: `MixinFogRenderer` captures
+  `FogData.color` each frame into `FogColorCapturer`. In the dev client the 26.2
+  FogRenderer's FogData.color is (0,0,0) (its FogEnvironment lookup finds no
+  color source), so a sun-angle sky-blue approximation is used as a fallback.
+  Distant clouds now fade to the sky at the horizon (atmospheric haze) instead
+  of ending in a hard edge.
+- **Fade-in** (implemented in step 1, formally step 3): fresh chunks fade 0→1
+  over 5 ticks (`CHUNK_FADE_IN_ALPHA_PER_TICK`, through `ColorModulator.a`), so
+  new LOD content does not pop in.
+
+Note (step 4): the 26.2 far plane is set via `Projection.setupPerspective`, and
+the original's `MixinGameRenderer` far-plane extension (`getDepthFar`) does not
+exist in 26.2, so it is intentionally NOT registered (it would crash). The fog
+(mostly) masks any far-plane clipping of the distant LOD.
 
 ## CLOUD VOLUME ANCHORING — **CORRECTED (2026-09-13, Step 1 of VISUAL-PARITY-PLAN)**
 

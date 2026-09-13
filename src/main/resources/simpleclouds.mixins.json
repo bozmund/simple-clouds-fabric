@@ -13,7 +13,8 @@
     "MixinLevelRenderer",
     "MixinMinecraft",
     "MixinOptionsScreen",
-    "MixinScreenRenderablesAccessor"
+    "MixinScreenRenderablesAccessor",
+    "MixinFogRenderer"
   ],
   "minVersion": "0.8"
 }

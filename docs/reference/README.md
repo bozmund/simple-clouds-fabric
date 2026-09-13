@@ -71,6 +71,22 @@ Field extent (dev log): chunks at X = ±1312 cloud units (±10,500 blocks) acros
 lod 1 (near, ~13k cubes), lod 2 (~20k), lod 4 (~12k), lod 8 (~5k, far). No
 off-thread generation failures.
 
+## Step 3 evidence (fog + fade-in, 2026-09-13)
+
+The cloud fog range is now relative to the vanilla render distance in blocks
+(512..1536 for the 32-chunk dev world), and the fog color is the vanilla sky
+color (captured via `MixinFogRenderer`; a sun-angle sky-blue approximation is
+used when the 26.2 FogData color is (0,0,0) in the dev client). Clouds are
+clear within the render distance, then fade to the sky at the horizon.
+
+- `step3-fog-A.png` — distant clouds fade smoothly into the sky (atmospheric
+  haze) instead of ending in a hard edge.
+- `step3-fog-C.png` — straight up through the dense stratus deck (fogDistance
+  is XZ-based, so overhead clouds are not fogged).
+
+Also in step 3: the per-chunk fade-in (step 1 head-start) — fresh chunks fade
+0→1 over 5 ticks so new LOD content does not pop in.
+
 ## Key observable properties (what the port must reproduce)
 
 1. **Altitude:** cloud bases float above sea level — the lowest layer (stratus,

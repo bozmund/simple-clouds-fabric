@@ -450,6 +450,17 @@ public class CloudsDrawPipeline implements AutoCloseable
 		}
 	}
 
+	/**
+	 * Updates the cloud fog (color + range) for the current frame (VISUAL-PARITY-PLAN
+	 * step 3). The range is in world-block units (matching the shader's
+	 * fogDistance = view-space length), and the color should be the vanilla sky/fog
+	 * color so distant clouds blend into the sky.
+	 */
+	public void setFog(float r, float g, float b, float fogStart, float fogEnd)
+	{
+		this.writeFog(r, g, b, 1.0F, fogStart, fogEnd, 0.05F);
+	}
+
 	/** Uploads new per-instance data (replacing the previous). A null buffer means "no
 	 * instances" (the generation can be empty for a frame) -- keep an empty valid buffer
 	 * so the draw's buffer bind stays legal. */

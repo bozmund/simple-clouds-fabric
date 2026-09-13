@@ -37,6 +37,7 @@ import dev.nonamecrackers2.simpleclouds.client.renderer.pipeline.CloudsRenderPip
 import dev.nonamecrackers2.simpleclouds.client.renderer.settings.CloudsRendererSettings;
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudsDrawPipeline;
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.CpuCloudGenerator;
+import dev.nonamecrackers2.simpleclouds.client.FogColorCapturer;
 import dev.nonamecrackers2.simpleclouds.common.world.CloudManager;
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.GpuCloudGeneration;
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.PreviewDrawPipeline;
@@ -337,6 +338,7 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	}
 	private String lastChunkGridKey;
 	private boolean instanceBuffersDirty = true;
+	private boolean loggedFog = false; // one-shot fog diagnostic (step 3)
 	@Nullable
 	private LevelOfDetailConfig lodConfig;
 	private List<PreparedChunk> lodChunks = java.util.List.of();
@@ -712,6 +714,34 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 						this.chunkCaches.size(), totalOpaque, transpOut == null ? 0 : totalTransp,
 						camX, camY, camZ, snapX, snapZ);
 		}
+
+		// Step 3 (VISUAL-PARITY-PLAN): the cloud fog range is relative to the vanilla
+		// render distance in blocks -- clear up to the render distance, fully faded to
+		// the sky 3x out (distant LOD chunks dissolve into the horizon). The color is
+		// the vanilla sky/fog color (MixinFogRenderer captures it each frame).
+		int renderDistChunks = mc.options.getEffectiveRenderDistance();
+		float fogStart = renderDistChunks * 16.0F;
+		float fogEnd = fogStart * 3.0F;
+		// Sky/fog color: use the captured vanilla color when it is valid, else
+		// approximate the overworld sky color from the sun angle (the 26.2 FogRenderer's
+		// FogData.color is (0,0,0) in the dev client -- its FogEnvironment lookup finds
+		// no color source -- so the approximation keeps the fog a sensible sky blue).
+		float[] fogColor = FogColorCapturer.get();
+		float fr = fogColor[0], fg = fogColor[1], fb = fogColor[2];
+		if (fr < 0.01F && fg < 0.01F && fb < 0.01F)
+		{
+			float sunY = (float) Math.sin((float) ((mc.level.getOverworldClockTime() % 24000L) / 24000.0 * 2.0 * Math.PI));
+			float day = Mth.clamp(sunY * 4.0F + 0.5F, 0.0F, 1.0F);
+			fr = Mth.lerp(day, 0.02F, 0.63F);
+			fg = Mth.lerp(day, 0.02F, 0.81F);
+			fb = Mth.lerp(day, 0.05F, 0.92F);
+		}
+		if (!this.loggedFog)
+		{
+			this.loggedFog = true;
+			LOGGER.info("Simple Clouds clouds: fog range {}..{} blocks, sky color ({}, {}, {})", (int) fogStart, (int) fogEnd, fr, fg, fb);
+		}
+		this.drawPipeline.setFog(fr, fg, fb, fogStart, fogEnd);
 
 		this.drawPipeline.draw(view);
 		this.drawPipeline.drawTransparency(view);
