@@ -64,6 +64,8 @@ import net.minecraft.world.phys.Vec2;
  * persisted formations only).</li>
  * <li>{@code LOOP} (A1 memory proof) repeat the standard view sequence until
  * {@code devshot.request} is deleted.</li>
+ * <li>{@code FPSLOG} (step 7 real-profile performance) log the game's own FPS /
+ * frame time every 60 s of game time while the run is active.</li>
  * </ul>
  * Held (pinned) views teleport the player to the view position every frame and switch
  * it to creative flying, so the camera stays exactly where the view says.
@@ -83,6 +85,10 @@ public final class DevShot
 	private static float shotYaw = Float.NaN; // NaN = keep current yaw
 	private static boolean shadowTest; // SHADOWTEST token: deterministic cloud-over-terrain scene
 	private static boolean boltTest; // BOLT token: deterministic lightning bolt for the screenshot
+	// FPSLOG token (step 7 real-profile performance check): while a run is
+	// active, log the game's own FPS / frame time every 60 s of game time.
+	private static boolean fpsLog;
+	private static long fpsLogNextTick = -1;
 
 	// ---- standard views (A-E) ----
 
@@ -833,6 +839,13 @@ public final class DevShot
 							shotAngle = -20.0F;
 						continue;
 					}
+					if (part.equalsIgnoreCase("FPSLOG"))
+					{
+						// Step 7 (real profile): periodic self-measured FPS so the
+						// performance check does not need keyboard input or the HUD.
+						fpsLog = true;
+						continue;
+					}
 					if (part.length() == 1)
 					{
 						char c = Character.toUpperCase(part.charAt(0));
@@ -887,6 +900,19 @@ public final class DevShot
 		if (!views.isEmpty() && !viewSetupDone && mc.level.getGameTime() - firstTick >= 60)
 			setupViews(mc);
 
+		// FPSLOG: one line per 1200 ticks (60 s of game time). getFps()/
+		// getFrameTimeNs() are Minecraft's own counters, independent of the
+		// devshot camera pinning.
+		if (fpsLog && fpsLogNextTick < 0)
+			fpsLogNextTick = mc.level.getGameTime() + 1200;
+		if (fpsLog && mc.level.getGameTime() >= fpsLogNextTick)
+		{
+			long frameNs = mc.getFrameTimeNs();
+			LOGGER.info("[DEVSHOT-FPS] fps={} frameNs={} ({} ms) tick {}", mc.getFps(), frameNs, frameNs / 1_000_000L,
+					mc.level.getGameTime());
+			fpsLogNextTick = mc.level.getGameTime() + 1200;
+		}
+
 		// Verification helper (automated loop only, i.e. devshot.request existed): the
 		// world's formations may have drifted far outside the render band, so make sure
 		// one exists above the player for the screenshot to verify cloud rendering.
@@ -911,9 +937,30 @@ public final class DevShot
 			View v = currentView();
 			shotAngle = v.pitch;
 			shotYaw = v.yaw;
-			// Teleport ONCE per view switch (in switchToView), not every frame:
-			// a per-frame teleportSetPosition left the player's xRotO stuck at its
-			// pre-setup value and the camera rotation would not converge.
+			if (v.pin)
+			{
+				// Re-pin EVERY frame (step 7, real profile): a one-shot teleport per
+				// view switch left the client/server position desynced in the
+				// 329-mod profile, so the player drifted or fell between the switch
+				// and the shot (view B rendered at ground level, F mid-fall).
+				// The old per-frame bug (xRotO stuck -> the camera rotation never
+				// converged) is fixed by pinning the *O fields explicitly.
+				double dx = mc.player.getX() - v.x;
+				double dy = mc.player.getY() - v.y;
+				double dz = mc.player.getZ() - v.z;
+				if (dx * dx + dy * dy + dz * dz > 1.0E-4
+						|| mc.player.getXRot() != v.pitch
+						|| mc.player.getYRot() != v.yaw)
+				{
+					mc.player.teleportSetPosition(new net.minecraft.world.entity.PositionMoveRotation(
+							new net.minecraft.world.phys.Vec3(v.x, v.y, v.z), net.minecraft.world.phys.Vec3.ZERO,
+							v.yaw, v.pitch), java.util.EnumSet.noneOf(net.minecraft.world.entity.Relative.class));
+					mc.player.xRotO = v.pitch;
+					mc.player.yRotO = v.yaw;
+					if (dy < -0.5F) // a fall means creative flight was lost — restore it
+						holdInAir(mc);
+				}
+			}
 		}
 		mc.player.setXRot(shotAngle);
 		if (!Float.isNaN(shotYaw))
@@ -1037,6 +1084,18 @@ public final class DevShot
 		// cloud drift, not by the advancing sun (forceNoon is applied once at setup).
 		forceNoon(mc);
 		var cam = mc.gameRenderer.mainCamera();
+		// Step 7 (real profile): the per-frame pin must have held the camera; a
+		// drift > 2 blocks from the pinned eye position means the shot is suspect.
+		if (viewIdx >= 0)
+		{
+			View v = currentView();
+			double dxc = cam.position().x - v.x;
+			double dyc = cam.position().y - (v.y + 1.62);
+			double dzc = cam.position().z - v.z;
+			if (dxc * dxc + dyc * dyc + dzc * dzc > 4.0)
+				LOGGER.warn("[DEVSHOT] {} camera drifted from the pinned view ({}x{}x{}): cam at {}x{}x{} — shot suspect",
+						name, v.x, v.y, v.z, cam.position().x, cam.position().y, cam.position().z);
+		}
 		CloudManager cm = CloudManager.get(mc.level);
 		float sx = cm != null ? cm.getScrollX() : 0.0F;
 		float sy = cm != null ? cm.getScrollY() : 0.0F;
