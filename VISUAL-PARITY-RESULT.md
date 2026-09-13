@@ -435,3 +435,77 @@ undersides, per-type storm shading — rather than being uniformly grey).
 - The lighting UBO (`Light0_Direction` etc.) is still written with static
   values (matching the original's static `clouds.json`). No change needed for
   parity.
+
+## Real profile (step 7) — 2026-09-13, session 2
+
+Tested in Jan's real "Fabric 26.2" profile (329 mods incl. Distant Horizons)
+outside ModrinthApp via `real-launch.sh` (own user unit, cgroup ceiling),
+world "New World", jar 18:45 build. Jan played in the window during parts of
+the day; the numbers below are from the controlled runs.
+
+### Views A-F + rain (verified on screen, all 9 images read)
+- All 8 standard shots at exact pin positions (zero camera drift after the
+  per-frame re-pin fix), LOD 100% filled, scroll drift active.
+- 3D white clouds, dithered edges, per-cube storm shading; **no vanilla cloud
+  layer**; clouds above the DH far-view terrain at the horizon (no draw-over /
+  draw-through / missing-behind); E1→E2→E3 prove drift (identical terrain,
+  moving clouds); F = cloud tops from y=400 fading into the horizon.
+- Rain under clouds: `--command "weather rain"` run — rain streaks under the
+  cloud layer, no sorting artifacts.
+- Images: `Fabric 26.2/screenshots/devshot-{A,B,C,D,E1,E2,E3,F}.png` (19:02 run).
+
+### Memory (A1 real-profile proof)
+- Clouds ON (clean 32-min view-cycling run, nobody in the game): RSS ramped
+  1.0→8.0 GB over ~17 min (world + DH + field load), then **leveled off**:
+  plateau 7889-8046 MB, minutes 17-31 (GC wiggle ±60 MB). No growth trend.
+- Clouds OFF (jar removed, same scene, 328 mods + vanilla clouds): flat
+  5562-5807 MB over 20 min (before Jan flew into the window).
+- **Simple Clouds steady-state delta: ~2.1-2.2 GB RSS** (heap + 12 worker
+  threads + per-chunk GPU buffers + metaspace). Levels off — no leak in the
+  30-min window.
+- Runs at 6 GB heap (`-Xmx6144m`, Modrinth global setting of the time).
+  Jan then raised it to **16 GB** (`mc_memory_max=16384`); at 16 GB the game
+  RSS reached ~14 GB (mony: 46 GB total, ~8-9 GB available during runs).
+- Jan's earlier "8 GB and rising" observation was his own heavy exploring
+  (new terrain) in the test window — confirmed by him; repeated clean.
+
+### FPS (real profile, 16 GB heap, view B pinned, game's own counters)
+- Clouds ON, steady state after worldgen settled: **30-45 FPS**, render frame
+  time 2-10 ms; two early 7 FPS samples = worldgen tail (see lag note).
+- Clouds OFF (mod loaded, `debug.generateMesh=false` + `renderClouds=false`,
+  same scene): only pre-pin samples captured (30-36 FPS) before the run was
+  stopped at Jan's request — **not a clean A/B**: in this 329-mod pack the
+  game loop is tick-thread/worldgen-bound, and the cloud render cost sits in
+  the noise of the pack's 2-10 ms frame times. Re-measure with the S-views if
+  Jan wants a firm number.
+- The old world OOM-looped on rejoin at Jan's far-south saved position with
+  the 6 GB heap: `java.lang.OutOfMemoryError: Java heap space` in
+  **streamsreflowing** (`NearestRiverIndex.nearest`) river worldgen — a
+  modpack issue, not Simple Clouds. At 16 GB it joins, but worldgen there
+  still pins the server thread (`Can't keep up: 112700ms behind`), which is
+  the cause of the lag spikes Jan saw (also answered live).
+
+### Tooling fixed this session (commit 8ea0554)
+- DevShot: per-frame re-pin (one-shot teleports desynced in the 329-mod
+  profile: view B first shot the ground), explicit xRotO/yRotO, FPSLOG token.
+- `real-launch.sh`: systemd-run mangles double-digit positional params
+  (`$10` → `$1`+"0"), which silently broke `--quickPlaySingleplayer`; now 8
+  params, verified via `/proc/<pid>/cmdline`. `SC_RAIN=1`, `SC_XMX`.
+- `rss-sample.sh`: per-minute RSS sampler.
+
+### Storm plan (STORM-PLAN.md) — NOT STARTED (stopped at Jan's request)
+Jan's four storm screenshots read; recon done (no code changed):
+- Whole-screen far-storm flash: port sets `flashTicks` for EVERY strike (any
+  distance, even sound-only) and the flash drives a global screen brightening
+  (`getDarkenFactor` + `drawStormFog` `lightningMul`). Original: 2-tick
+  `setSkyFlashTime(2)` only for a bolt within 2000 blocks with fade > 0.5,
+  plus per-bolt LOCAL lighting inside the raymarched storm fog.
+- Flat grey wall / smeared blobs: port's storm fog is a **screen-wide flat
+  overlay** (screen-space vertical gradient, CPU intensity) — a documented
+  deviation; cumulonimbus has `transparency_fade: 0` so its smear is NOT the
+  transparency pass. `OVL0`/`NOFOG` devshot tokens exist to separate fog from
+  geometry. Straight vertical cut = chunk-border hypothesis (step 4/5 of the
+  plan); port data for cumulonimbus is byte-identical to the original.
+- 26.2 API names verified: `Level.setSkyFlashTime(2)`,
+  `Options.hideLightningFlash` (OptionInstance `.get()`), vanilla
+  `LightmapRenderStateExtractor` already honors the option.
