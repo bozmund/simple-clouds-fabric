@@ -575,6 +575,25 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		overlaysEnabled = enabled;
 	}
 
+	/** Step 6 diagnostic (DevShot SHADNEAR): force the shadow start radius (the
+	 *  original's MinimumRadius) so near-terrain shadows can be isolated from the
+	 *  distance-fade model. -1 = use the real render-distance value. */
+	private static volatile float devMinRadius = -1.0F;
+
+	public static void setDevMinRadius(float v)
+	{
+		devMinRadius = v;
+	}
+
+	/** Step 6 diagnostic (DevShot NOFOG): disable the storm-fog fullscreen overlay
+	 *  so the terrain cloud-shadow can be isolated from it. */
+	private static volatile boolean stormFogEnabled = true;
+
+	public static void setStormFogEnabled(boolean enabled)
+	{
+		stormFogEnabled = enabled;
+	}
+
 	/** Fade-in alpha for one band (step 3): 0 -> 1 at CHUNK_FADE_IN_ALPHA_PER_TICK
 	 *  per tick after its data was published; 1.0 once settled. */
 	private float chunkAlpha(ChunkData d, long nowTick, float partialTick)
@@ -916,7 +935,7 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		// Storm fog (26.2 slice): darkened overlay while under storm clouds. The
 		// lightning flash (WorldEffects.flashStrength) reduces the darkening via the
 		// LightningMul uniform, brightening the scene on a strike.
-		if (overlaysEnabled && SimpleCloudsConfig.CLIENT.renderStormFog.get())
+		if (stormFogEnabled && overlaysEnabled && SimpleCloudsConfig.CLIENT.renderStormFog.get())
 		{
 			float lightningMul = 1.0F - this.getWorldEffectsManager().flashStrength(partialTick) * 0.9F;
 			this.drawPipeline.drawStormFog(this.cacheStormCoverage * 2.5F, lightningMul);
@@ -936,7 +955,14 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		}
 		this.drawPipeline.renderCloudShadowMap(camX, camY, camZ, (float) cloudHeight, this.shadowSources);
 		if (overlaysEnabled)
-			this.drawPipeline.drawTerrainShadows(terrainView, camX, camY, camZ, (float) cloudHeight);
+		{
+			// Step 6: the original's MinimumRadius — the render distance in blocks
+			// (cloud_shadows shadows start at render distance + 32).
+			float minimumRadius = mc.options.getEffectiveRenderDistance() * 16.0F;
+			if (devMinRadius >= 0.0F) // SHADNEAR diagnostic
+				minimumRadius = devMinRadius;
+			this.drawPipeline.drawTerrainShadows(terrainView, camX, camY, camZ, (float) cloudHeight, minimumRadius);
+		}
 
 		// Atmospheric (high cirrus-type) clouds: biome-driven 2D layer over the
 		// whole view (original: end of the DefaultPipeline render).

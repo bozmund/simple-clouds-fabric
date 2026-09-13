@@ -640,6 +640,17 @@ public final class DevShot
 				v.z = beach[2];
 				v.yaw = (float) beach[3];
 			}
+			else if (v.file1.endsWith("H.png"))
+			{
+				// Step 6: slightly above ground, looking ~12° down — the terrain
+				// fills the lower frame while the deterministic SHADOWTEST formation
+				// (spawned above this position) and its shadow are both visible:
+				// coverage + soft edges in one shot.
+				v.x = beach[0];
+				v.y = beach[1] + 30.0;
+				v.z = beach[2];
+				v.yaw = (float) beach[3];
+			}
 		}
 		holdInAir(mc);
 		switchToView(mc, 0);
@@ -768,6 +779,43 @@ public final class DevShot
 						dev.nonamecrackers2.simpleclouds.client.renderer.SimpleCloudsRenderer.setOverlaysEnabled(false);
 						continue;
 					}
+					if (part.equalsIgnoreCase("NOFOG"))
+					{
+						// Step 6 diagnosis: disable ONLY the storm-fog fullscreen
+						// overlay (which darkens the whole screen when the camera is
+						// under storm clouds) so the terrain cloud-shadow can be seen
+						// on its own.
+						dev.nonamecrackers2.simpleclouds.client.renderer.SimpleCloudsRenderer.setStormFogEnabled(false);
+						continue;
+					}
+					if (part.equalsIgnoreCase("SHADNEAR"))
+					{
+						// Step 6 diagnostic: force the terrain-shadow start radius to
+						// 0 (shadows from 32 blocks out) to isolate the shadow
+						// pipeline from the original's distance-fade model.
+						dev.nonamecrackers2.simpleclouds.client.renderer.SimpleCloudsRenderer.setDevMinRadius(0.0F);
+						continue;
+					}
+					if (part.equalsIgnoreCase("SHADOWDBG"))
+					{
+						// Step 6 diagnostic: the terrain pass outputs the stored
+						// shadow-map depth as red (1 = empty, ~0.75 = cloud,
+						// green = outside the shadow volume).
+						dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudsDrawPipeline.DEBUG_SHOW_DEPTH = 1.0F;
+						continue;
+					}
+					if (part.equalsIgnoreCase("SHADOWDUMP"))
+					{
+						// Step 6 diagnostic: raw shadow-map dump by screen UV.
+						dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudsDrawPipeline.DEBUG_SHOW_DEPTH = 2.0F;
+						continue;
+					}
+					if (part.equalsIgnoreCase("SHADOWWORLD"))
+					{
+						// Step 6 diagnostic: reconstructed worldPos (camera-relative) as color.
+						dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudsDrawPipeline.DEBUG_SHOW_DEPTH = 3.0F;
+						continue;
+					}
 					if (part.equalsIgnoreCase("BOLT"))
 					{
 						boltTest = true;
@@ -778,7 +826,7 @@ public final class DevShot
 					if (part.length() == 1)
 					{
 						char c = Character.toUpperCase(part.charAt(0));
-						if (c >= 'A' && c <= 'G')
+						if (c >= 'A' && c <= 'H')
 						{
 							View v = new View("devshot-" + c + ".png", 0.0F, 0.0F, 0, 0, 0);
 							switch (c)
@@ -789,6 +837,7 @@ public final class DevShot
 							case 'D': v.pitch = -20.0F; break;        // inside the layer (y=260)
 							case 'F': v.pitch = -20.0F; break;        // above the layer (y=400, A3)
 								case 'G': v.pitch = -45.0F; break;        // look UP at the cloud base from below (step 5: soft edges)
+								case 'H': v.pitch = -12.0F; break;        // SHADOWTEST: terrain + cloud (step 6: shadow coverage/soft edges)
 							case 'E':
 								v.pitch = 0.0F;
 								v.file1 = "devshot-E1.png";

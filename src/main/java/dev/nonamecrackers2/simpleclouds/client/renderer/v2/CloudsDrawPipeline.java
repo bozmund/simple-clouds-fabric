@@ -110,11 +110,24 @@ public class CloudsDrawPipeline implements AutoCloseable
 	// -camOffsetZ)), NOT at the camera. The light plane sits at the top of the cloud
 	// volume; the depth range covers the whole volume plus margin down to terrain.
 	// (XZ radius 256 blocks is a known slice simplification -- revisit in step 6.)
-	private static final float SHADOW_RADIUS = 256.0F; // world blocks XZ around the camera
-	private static final float SHADOW_VOLUME_TOP = 2048.0F; // cloud volume height above cloudHeight (256 units)
-	private static final float SHADOW_VOLUME_BELOW = 512.0F; // extra depth below cloudHeight (terrain)
+	/** Step 6: the original's shadow span (cloud_shadows: shadowDistance*2, config
+	 *  default 2500, clamped to the field span) — HALF the span, since the ortho
+	 *  is ±R around the camera. 512 map / 5000 span ≈ 9.8 blocks/texel, the
+	 *  original's resolution. */
+	private static final float SHADOW_RADIUS = 2500.0F; // world blocks XZ around the camera
+	// Step 6: the light plane sits just above the TOP of the cloud volume (the
+	// volume base is cloudHeight; the layer heights reach ~196 blocks above it,
+	// see the "generated Y range 156..324" proof log) — not 2048 above it. The
+	// old 2048-block placement put the clouds (viewZ ≈ -2924) and the terrain
+	// (viewZ ≈ -3188) OUTSIDE the 0..-2560 depth frustum, so every fragment was
+	// clipped and the shadow map was 100% empty (no terrain shadow at all).
+	private static final float SHADOW_VOLUME_TOP = 248.0F; // light plane above cloudHeight
+	private static final float SHADOW_VOLUME_BELOW = 512.0F; // depth below cloudHeight (terrain)
 	private static final float SHADOW_BIAS = 0.005F;
-	private static final float SHADOW_INTENSITY = 0.7F;
+	/** Step 6: the original's FadeDistance (cloud_shadows.json default 1028). */
+	private static final float SHADOW_FADE_DISTANCE = 1028.0F;
+	/** Step 6 diagnostic (DevShot SHADOWDBG): output the stored shadow depth as red. */
+	public static volatile float DEBUG_SHOW_DEPTH = 0.0F;
 	/** A/B test switch: false = skip the terrain-shadow pass entirely. */
 	public static boolean TERRAIN_SHADOWS_ENABLED = true;
 	private static final Identifier CLOUDS_SHADOW_LOCATION = SimpleCloudsMod.id("core/clouds_shadow");
@@ -292,6 +305,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 		BindGroupLayout terrainBgl = BindGroupLayout.builder()
 				.withUniform("ShadowPass", UniformType.UNIFORM_BUFFER)
 				.withSampler("DepthSampler")
+				.withSampler("DiffuseSampler")
 				.withSampler("ShadowMap")
 				.build();
 		this.terrainPipeline = RenderPipeline.builder(RenderPipelines.MATRICES_FOG_SNIPPET)
@@ -390,7 +404,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 			// MAP_WRITE set, the immediate glMapBuffer in GlBuffer$Direct fails on
 			// this Mesa/Intel ARL machine ("Failed to map buffer").
 			this.shadowMatricesRing[slot] = device.createBuffer(() -> "simpleclouds.shadowMatrices" + slot, GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(128));
-			this.terrainPassRing[slot] = device.createBuffer(() -> "simpleclouds.terrainShadowPass" + slot, GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(80));
+			this.terrainPassRing[slot] = device.createBuffer(() -> "simpleclouds.terrainShadowPass" + slot, GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(112));
 			// std140 AtmosphericPass: mat4(64) + mat2(16) + 9 floats(36) + vec4(16,
 			// padded to offset 120) = 136 bytes -> 144 to be safe.
 			this.atmosphericRing[slot] = device.createBuffer(() -> "simpleclouds.atmospheric" + slot, GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(144));
@@ -650,13 +664,21 @@ public class CloudsDrawPipeline implements AutoCloseable
 		// viewZ = worldY - lightPlane in [-depthFar, 0]: light plane (top of the
 		// cloud volume) at viewZ=0 (window depth ~0.0), deepest point at -depthFar
 		// (~1.0). Map clears to 1.0; LESS_THAN keeps the cloud CLOSEST to the light.
+		// Step 6: joml 1.10's 16-float set() takes COLUMN-major arguments (verified
+		// by point transform): each 4-float group is one COLUMN, its 4th value the
+		// w-row element. The original code passed ROW-major groups, silently
+		// transposing the view (non-affine garbage w-row) and clipping every
+		// fragment — the shadow map was 100% empty, i.e. no terrain shadow at all.
+		// Columns: col0=(1,0,0,0); col1=(0,0,1,0) [viewY=worldZ]; col2=(0,1,0,0) [viewZ=worldY];
+		// col3=translation (-camX, -camZ, -lightPlane) — the translation is the FOURTH
+		// group in column-major order, not the 4th element of each group.
 		float lightPlane = cloudHeight + SHADOW_VOLUME_TOP;
 		float depthFar = SHADOW_VOLUME_TOP + SHADOW_VOLUME_BELOW;
 		org.joml.Matrix4f shadowView = new org.joml.Matrix4f().set(
-				1.0F, 0.0F, 0.0F, (float) -camX,
-				0.0F, 0.0F, 1.0F, (float) -camZ,
-				0.0F, 1.0F, 0.0F, -lightPlane,
-				0.0F, 0.0F, 0.0F, 1.0F);
+				1.0F, 0.0F, 0.0F, 0.0F,
+				0.0F, 0.0F, 1.0F, 0.0F,
+				0.0F, 1.0F, 0.0F, 0.0F,
+				(float) -camX, (float) -camZ, -lightPlane, 1.0F);
 		org.joml.Matrix4f shadowProj = new org.joml.Matrix4f().setOrtho(
 				-SHADOW_RADIUS, SHADOW_RADIUS, -SHADOW_RADIUS, SHADOW_RADIUS, 0.0F, depthFar);
 
@@ -690,28 +712,25 @@ public class CloudsDrawPipeline implements AutoCloseable
 	 * Fullscreen terrain cloud-shadow pass: reconstructs world positions from the
 	 * scene depth and darkens fragments under the cloud shadow map.
 	 */
-	public void drawTerrainShadows(Matrix4f viewMatrix, double camX, double camY, double camZ, float cloudHeight)
+	public void drawTerrainShadows(Matrix4f viewMatrix, double camX, double camY, double camZ, float cloudHeight, float minimumRadius)
 	{
 		if (!TERRAIN_SHADOWS_ENABLED)
 			return;
 		if (!this.shadowRenderedThisFrame)
 			return;
 
-		// Same world-anchored light volume as renderCloudShadowMap (step 1):
-		// light plane at cloudHeight + SHADOW_VOLUME_TOP, depth down to
-		// cloudHeight - SHADOW_VOLUME_BELOW (terrain). joml's setOrtho looks down
+		// Same world-anchored light volume as renderCloudShadowMap (step 1); same
+		// column-major set() construction (see the Step 6 note there).
 		float lightPlane = cloudHeight + SHADOW_VOLUME_TOP;
 		float depthFar = SHADOW_VOLUME_TOP + SHADOW_VOLUME_BELOW;
-		// -Z; LESS_THAN keeps the cloud CLOSEST to the light (map clears to 1.0).
-		//
 		org.joml.Matrix4f shadowView = new org.joml.Matrix4f().set(
-				1.0F, 0.0F, 0.0F, (float) -camX,
-				0.0F, 0.0F, 1.0F, (float) -camZ,
-				0.0F, 1.0F, 0.0F, -lightPlane,
-				0.0F, 0.0F, 0.0F, 1.0F);
+				1.0F, 0.0F, 0.0F, 0.0F,
+				0.0F, 0.0F, 1.0F, 0.0F,
+				0.0F, 1.0F, 0.0F, 0.0F,
+				(float) -camX, (float) -camZ, -lightPlane, 1.0F);
 		org.joml.Matrix4f shadowProj = new org.joml.Matrix4f().setOrtho(
 				-SHADOW_RADIUS, SHADOW_RADIUS, -SHADOW_RADIUS, SHADOW_RADIUS, 0.0F, depthFar);
-		org.joml.Matrix4f shadowViewProj = (org.joml.Matrix4f) shadowProj.mul(shadowView);
+		org.joml.Matrix4f shadowViewProj = new org.joml.Matrix4f(shadowProj).mul(shadowView); // mul() mutates
 
 		this.terrainPassIdx = (this.terrainPassIdx + 1) % 3;
 		GpuBuffer terrainBuf = this.terrainPassRing[this.terrainPassIdx];
@@ -720,7 +739,14 @@ public class CloudsDrawPipeline implements AutoCloseable
 			ByteBuffer data = view.data();
 			writeMatrix(data, 0, shadowViewProj);
 			data.putFloat(64, SHADOW_BIAS);
-			data.putFloat(68, SHADOW_INTENSITY);
+			// Step 6: the original cloud_shadows distance-model uniforms.
+			data.putFloat(68, minimumRadius);
+			data.putFloat(72, SHADOW_RADIUS * 2.0F);
+			data.putFloat(76, SHADOW_FADE_DISTANCE);
+			data.putFloat(80, DEBUG_SHOW_DEPTH);
+			data.putFloat(84, (float) camX);
+			data.putFloat(88, (float) camY);
+			data.putFloat(92, (float) camZ);
 		}
 
 		RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
@@ -728,12 +754,19 @@ public class CloudsDrawPipeline implements AutoCloseable
 		GpuTextureView depthView = main.getDepthTextureView();
 
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
-		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.terrainShadows", colorView, Optional.empty(), depthView, OptionalDouble.empty());
+		// COLOR-ONLY pass: attaching the main depth view as the pass's depth-stencil
+		// attachment AND sampling it as a texture in the same pass is undefined
+		// (reads back garbage) — the atmospheric pass (line below) uses this 2-arg
+		// overload for exactly this reason.
+		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.terrainShadows", colorView, Optional.empty());
 		pass.setPipeline(this.terrainPipeline);
 		RenderSystem.bindDefaultUniforms(pass);
 		pass.setUniform("DynamicTransforms", this.ownTransforms.writeTransform(viewMatrix));
 		pass.setUniform("ShadowPass", terrainBuf);
 		pass.bindTexture("DepthSampler", depthView, this.nearestSampler);
+		// Step 6: the original multiplies the shadowed scene color by
+		// ShadowColorMultiplier, so the pass samples the scene color itself.
+		pass.bindTexture("DiffuseSampler", colorView, this.nearestSampler);
 		pass.bindTexture("ShadowMap", this.shadowTarget.getDepthTextureView(), this.nearestSampler);
 		pass.setVertexBuffer(0, this.triangleBuffer.slice());
 		pass.draw(3, 1, 0, 0);

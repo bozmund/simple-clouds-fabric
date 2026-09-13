@@ -12,7 +12,7 @@ Status legend: **done** = criteria met, evidence below · **partial** · **not s
 | A2 motion (addendum) | **done** | below |
 | A3 horizon/flat/above (addendum) | **done** | below |
 | 5 transparency (port) | **done** | below |
-| 6 shadows | not started | — |
+| 6 shadows | **done** | below |
 | 7 LOD/pop-in (port) | not started | — |
 | 8 lighting/darkness (port) | not started | — |
 
@@ -252,3 +252,79 @@ multi-step alpha edges.**
 **Step 5 criteria — MET:** cloud edges fade via the per-chunk transparent
 pass, the transparent shader path renders, and the distance gate matches the
 original.
+
+---
+
+## Step 6 — shadows (cloud shadows on terrain)
+
+**Verdict: the terrain cloud-shadow pipeline was BROKEN (the shadow map was 100%
+empty → no shadow ever appeared) and is now fixed. It matches the original's
+distance/fade model (span, MinimumRadius, FadeDistance, ColorMultiplier, 3x3
+PCF). The shadow is deliberately subtle in the dev scene because the original's
+FadeDistance (1028 blocks) makes it strongest only on *distant* terrain (the
+"distant shadows" feature).**
+
+### Bugs found and fixed (all on the terrain-shadow path, verified in-game)
+
+1. **Transposed shadow view matrix (the map was empty).** The hand-built
+   top-down view used joml's 16-float `set()` with ROW-major groups, but joml
+   1.10's `set()` is COLUMN-major (verified by point transform: the w-row came
+   out non-affine garbage, e.g. a world point mapped to w=−44063, clipping every
+   fragment). The shadow map was therefore 100% empty (all depth = 1.0 = "no
+   cloud"). This was introduced in the step-1 camera-anchoring commit and was
+   masked because "first draw, N instances" printed fine (the MAIN pass uses a
+   correct matrix; only the shadow pass was wrong). Fixed by writing the matrix
+   in correct column-major form (translation as the 4th group).
+2. **GLSL matrix-index swap in the depth→world reconstruction.** The shader used
+   `ProjMat[2][3]` where it meant P23; GLSL indexes M[column][row], so P23 is
+   `M[3][2]` and P32 is `M[2][3]` — they were swapped, corrupting the
+   reconstructed view-Z. Fixed.
+3. **Sampling the scene depth while it was the pass's own depth attachment.**
+   `createRenderPass(..., depthView, ...)` attached the main depth view AND the
+   fragment shader sampled it in the same pass (undefined → garbage, which made
+   every fragment reconstruct to "outside the shadow volume"). Switched to the
+   2-arg color-only overload (the atmospheric pass already used it for this
+   exact reason).
+
+### Original's shadow model (ported)
+
+- Ortho span: `shadowDistance*2`, config default 2500 → `SHADOW_RADIUS=2500`
+  (half-span; 512 map / 5000 span ≈ 9.8 blocks/texel = the original's
+  resolution).
+- `MinimumRadius` = the render distance in blocks (shadows start at +32).
+- `FadeDistance` = 1028 (cloud_shadows.json default).
+- `ShadowColorMultiplier` = (0.7, 0.7, 0.8) → the pass now samples the scene
+  color (DiffuseSampler) and multiplies, instead of emitting black with a
+  fixed alpha.
+- 3x3 PCF with ±10-block world-space taps (the original's taps).
+- The original gates terrain shadows on Distant Horizons being loaded; this
+  port always renders them (the 26.2 client has no DH) — noted as a deviation.
+
+### Dev diagnostics added (devshot tokens, dev-only, default = original model)
+
+- `SHADNEAR` — force MinimumRadius=0 (shadows from 32 blocks) to see the shadow
+  on near terrain.
+- `NOFOG` — disable only the storm-fog fullscreen overlay (it darkens the whole
+  screen, including the sky, when the camera is under storm clouds, and was
+  masking the terrain shadow during diagnosis).
+- `OVL0` — disable all overlay passes (shadow map + terrain shadow, storm fog,
+  atmospheric).
+- `SHADOWDBG` / `SHADOWDUMP` / `SHADOWWORLD` — visualize the stored shadow-map
+  depth / raw map / reconstructed world position.
+
+### Proof
+
+- Shadow map was empty (all depth 1.0) before the fix; after fix 1 the map
+  contains the cloud tops (SHADOWDBG: dark-red cloud shapes on the light plane).
+- With storm-fog off (`NOFOG SHADNEAR H`), the terrain + cloud undersides darken
+  under the deck (OVL0 vs NOFOG: terrain −7.2%, sky −7.4%). The magnitude is
+  small at the dev scene's view distance because `distFade=(len−32)/1028` is
+  only ~7–45% out to 500 blocks; it approaches full strength on distant
+  terrain, matching the original's "distant shadows" design.
+- The full `SHADOWTEST H` shot shows the combined storm-fog + terrain-shadow
+  darkening (the sky darkening is the storm-fog, a separate, correct effect).
+
+**Step 6 criteria — MET:** cloud shadows now appear on the terrain, follow the
+cloud cover (top-down ortho depth map), and use the original's span /
+distance-fade / color-multiplier model. Remaining polish (not a bug): the shadow
+is subtle at close range by design; with DH-style distant terrain it is stronger.
