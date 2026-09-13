@@ -10,7 +10,7 @@ Status legend: **done** = criteria met, evidence below · **partial** · **not s
 |---|---|---|
 | A1 memory (addendum) | **done** | below |
 | A2 motion (addendum) | **done** | below |
-| A3 horizon/flat/above (addendum) | not started | — |
+| A3 horizon/flat/above (addendum) | **done** | below |
 | 5 transparency (port) | not started | — |
 | 6 shadows | not started | — |
 | 7 LOD/pop-in (port) | not started | — |
@@ -143,3 +143,65 @@ signs, consistent with A1.
 
 **A2 criterion ("the 26.2 shot shows swirl (a changed cloud pattern), not just a
 shifted copy") — MET.**
+
+---
+
+## A3 — horizon: flat grey layer, view from above (addendum, 2026-09-13)
+
+**Verdict: the flat grey horizon layer is gone (fog now follows the original's
+field-radius formula), and the true view from above (new view F, y=400) shows a
+3D white-topped volume. View D (y=260) is inside the cloud volume (156..324),
+which is why it sometimes looks like an interior — both states verified.**
+
+### Root cause
+
+The Step-3 cloud fog was render-distance-relative:
+`fogStart = renderDist*16` (192 blocks at RD 12), `fogEnd = 3x` (576). The cloud
+field is 1280 cloud units (10240 blocks) in radius (HIGH layout,
+`effectiveChunkSpan * PRIMARY_CHUNK / 2`), so two thirds of it — everything past
+576 blocks — was rendered at 100% fog color: a **flat grey horizon layer** (view A)
+and a **grey haze** from inside/above (view D). The original 1.20.1
+`SimpleCloudsRenderer` uses the FIELD radius, not render distance:
+
+```java
+// 1.20.1 original (SimpleCloudsRenderer.render):
+float renderDistance = max(meshGenerator.getCloudAreaMaxRadius() * CLOUD_SCALE * darkenFactor, 2867.0F);
+this.fogStart = renderDistance / 4.0F;   // 2560 blocks for HIGH
+this.fogEnd = renderDistance;            // 10240 blocks for HIGH
+```
+
+### Fix
+
+`SimpleCloudsRenderer.generateAndDrawClouds`: fog is now
+`fogStart = fieldRadiusBlocks / 4`, `fogEnd = fieldRadiusBlocks` (floor 2867),
+with `fieldRadiusBlocks = lodConfig.getEffectiveChunkSpan() * PRIMARY_CHUNK / 2 *
+8` (10240 for HIGH — matches the original exactly). Log line:
+`fog range 2560..10240 blocks`. The per-fragment fog itself
+(`smoothstep(FogStart, FogEnd, length(ModelViewMat*pos.xz))` in
+`clouds.fsh`/`clouds_transparency.fsh`) already matched the original's
+`clouds.vsh` (`.xz` horizontal distance) — only the range was wrong.
+
+### Proof
+
+- **View A (horizon, y=70):** `/tmp/sc-view-A.png` (12:44) — the distant cloud
+  band is a structured white layer with blue sky in the gaps; no flat grey sheet.
+  (Compare `/tmp/sc-a1-final/devshot-A.png` 12:07 and the 12:29 pre-fix shots:
+  uniform grey band.)
+- **View F (new, y=400 — above the 156..324 volume, pitch -20):**
+  `/tmp/sc-view-F.png` (12:44) — pixel-sampled: cloud tops are pure white
+  (255,255,255) with the fog color (192,216,255) only in far gaps; blue sky
+  (130,167,255) above. A 3D volume with white tops, not a grey haze.
+- **View D (y=260 — INSIDE the volume):** two states observed, both consistent
+  with being inside a stratus/cumulus deck: `/tmp/sc-view-D.png` (12:44) shows
+  white 3D voxel clouds against blue sky (camera in a gap); the 12:29 run
+  (`/tmp/sc-view-D.png` of that session, pixel grid in `/tmp/sc-a1-log.txt` era)
+  showed a flat grey interior — the camera was inside a dense cloud mass that
+  wind drift (A2) had moved over the pinned position. y=260 is between the
+  volume base (156) and top (324) — log: `generated Y range 156.0..324.0`.
+- The `F` view and an `OVL0` overlay-isolation token were added to `DevShot`
+  for this diagnosis (kept as dev tools).
+
+**A3 criteria — MET:** (A) horizon is a clear white cloud band, not a grey layer;
+(D/F) from above the clouds read as a 3D volume with white tops. Note for the
+final report: the "grey haze" Jan saw in the 00:11 devshot was this fog bug,
+not the in-volume interior.

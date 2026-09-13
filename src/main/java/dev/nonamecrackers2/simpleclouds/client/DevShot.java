@@ -54,6 +54,10 @@ import net.minecraft.world.phys.Vec2;
  * <li>{@code B} landscape: over land, held at y=100, pitch -15 &rarr; {@code devshot-B.png}</li>
  * <li>{@code C} up: straight up from the beach (same position as A) &rarr; {@code devshot-C.png}</li>
  * <li>{@code D} inside/above: the beach XZ held at y=260, pitch -20 &rarr; {@code devshot-D.png}</li>
+ * <li>{@code F} above: the beach XZ held at y=400 (above the 156..324 cloud
+ * volume), pitch -20 &rarr; {@code devshot-F.png} (A3: the true "view from above")</li>
+ * <li>{@code OVL0} disable the overlay passes (shadow map + terrain shadows,
+ * storm fog, atmospheric layer) for the whole run (A3 isolation tool).</li>
  * <li>{@code E} motion: view A three times, 200 game ticks (10 s) apart &rarr;
  * {@code devshot-E1.png} / {@code devshot-E2.png} / {@code devshot-E3.png}</li>
  * <li>{@code NOSPAWN} skip the automatic test-formation spawn (shows the world's own
@@ -111,6 +115,10 @@ public final class DevShot
 	private static boolean viewSetupDone;
 	private static boolean fillWaitDone; // standard views: wait for the LOD field to fill first
 	private static final int FILL_WAIT_TIMEOUT_TICKS = 3000; // ~150s before shooting anyway
+	// A3 diagnosis (temporary isolation tool, keep): OVL0 disables the overlay
+	// passes (shadow map + terrain shadows, storm fog, atmospheric layer) so the
+	// voxel field alone can be inspected; OVL1 enables them (default).
+	private static boolean overlaysOn = true;
 	private static boolean noSpawn; // NOSPAWN token: show the world's own formations only
 	private static boolean bigFormation; // BIG token: spawn a large stratus deck (LOD test, step 2)
 	private static boolean fastClouds; // FAST token: crank the cloud speed (wind-drift test, step 4)
@@ -613,6 +621,15 @@ public final class DevShot
 				v.z = beach[2];
 				v.yaw = (float) beach[3];
 			}
+			else if (v.file1.endsWith("F.png"))
+			{
+				// A3: the true "view from above" — the cloud volume spans y 156..324,
+				// so y=260 (view D) is INSIDE it; y=400 is above the top.
+				v.x = beach[0];
+				v.y = 400.0;
+				v.z = beach[2];
+				v.yaw = (float) beach[3];
+			}
 		}
 		holdInAir(mc);
 		switchToView(mc, 0);
@@ -732,6 +749,15 @@ public final class DevShot
 						mc.setScreenAndShow(new net.minecraft.client.gui.screens.options.OptionsScreen(null, mc.options, false));
 						continue;
 					}
+					if (part.equalsIgnoreCase("OVL0"))
+					{
+						// A3 diagnosis: disable the overlay passes (shadow map +
+						// terrain shadows, storm fog, atmospheric layer) — inspect the
+						// voxel field alone.
+						overlaysOn = false;
+						dev.nonamecrackers2.simpleclouds.client.renderer.SimpleCloudsRenderer.setOverlaysEnabled(false);
+						continue;
+					}
 					if (part.equalsIgnoreCase("BOLT"))
 					{
 						boltTest = true;
@@ -742,7 +768,7 @@ public final class DevShot
 					if (part.length() == 1)
 					{
 						char c = Character.toUpperCase(part.charAt(0));
-						if (c >= 'A' && c <= 'E')
+						if (c >= 'A' && c <= 'F')
 						{
 							View v = new View("devshot-" + c + ".png", 0.0F, 0.0F, 0, 0, 0);
 							switch (c)
@@ -750,7 +776,8 @@ public final class DevShot
 							case 'A': v.pitch = 0.0F; break;          // horizon over water
 							case 'B': v.pitch = -15.0F; break;        // landscape from y=100
 							case 'C': v.pitch = -90.0F; break;        // straight up
-							case 'D': v.pitch = -20.0F; break;        // inside/above the layer
+							case 'D': v.pitch = -20.0F; break;        // inside the layer (y=260)
+							case 'F': v.pitch = -20.0F; break;        // above the layer (y=400, A3)
 							case 'E':
 								v.pitch = 0.0F;
 								v.file1 = "devshot-E1.png";

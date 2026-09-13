@@ -563,6 +563,16 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	// per second instead of blacking out silently forever.
 	private long pipelineRetryFrame;
 
+	/** A3 isolation tool (DevShot OVL0): when false, the overlay passes (shadow
+	 *  map + terrain shadows, storm fog, atmospheric layer) are skipped entirely so
+	 *  the voxel field alone can be inspected. Dev-only; always true in game. */
+	private static volatile boolean overlaysEnabled = true;
+
+	public static void setOverlaysEnabled(boolean enabled)
+	{
+		overlaysEnabled = enabled;
+	}
+
 	/** Fade-in alpha for one band (step 3): 0 -> 1 at CHUNK_FADE_IN_ALPHA_PER_TICK
 	 *  per tick after its data was published; 1.0 once settled. */
 	private float chunkAlpha(ChunkData d, long nowTick, float partialTick)
@@ -823,13 +833,22 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 					this.chunkCaches.size(), totalOpaque, totalTransp, camX, camY, camZ, snapX, snapZ);
 		}
 
-		// Step 3 (VISUAL-PARITY-PLAN): the cloud fog range is relative to the vanilla
-		// render distance in blocks -- clear up to the render distance, fully faded to
-		// the sky 3x out (distant LOD chunks dissolve into the horizon). The color is
-		// the vanilla sky/fog color (MixinFogRenderer captures it each frame).
-		int renderDistChunks = mc.options.getEffectiveRenderDistance();
-		float fogStart = renderDistChunks * 16.0F;
-		float fogEnd = fogStart * 3.0F;
+		// A3 (VISUAL-PARITY-PLAN): the ORIGINAL's cloud fog is based on the FIELD
+		// radius, not the vanilla render distance: fogStart = fieldRadius*8 / 4,
+		// fogEnd = fieldRadius*8, floored at 2867 blocks (SimpleCloudsRenderer 1.20.1:
+		// "fogStart = renderDistance/4, fogEnd = renderDistance" with renderDistance =
+		// max(cloudAreaMaxRadius*CLOUD_SCALE, 2867); HIGH layout = 1280 cloud units =
+		// 10240 blocks). The clouds therefore stay white out to a quarter of the field
+		// and only fade at its edge. (Step 3's render-distance-relative fog — 192..576
+		// blocks at RD 12 — fogged two thirds of the field into the flat grey horizon
+		// layer and the "grey haze" overhead view: the A3 headline bugs.)
+		float fieldRadiusBlocks = (this.lodConfig != null
+				? this.lodConfig.getEffectiveChunkSpan() * PRIMARY_CHUNK / 2
+				: 1280) * CLOUD_SCALE_F;
+		if (fieldRadiusBlocks < 2867.0F)
+			fieldRadiusBlocks = 2867.0F;
+		float fogStart = fieldRadiusBlocks / 4.0F;
+		float fogEnd = fieldRadiusBlocks;
 		// Sky/fog color: use the captured vanilla color when it is valid, else
 		// approximate the overworld sky color from the sun angle (the 26.2 FogRenderer's
 		// FogData.color is (0,0,0) in the dev client -- its FogEnvironment lookup finds
@@ -893,7 +912,7 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		// Storm fog (26.2 slice): darkened overlay while under storm clouds. The
 		// lightning flash (WorldEffects.flashStrength) reduces the darkening via the
 		// LightningMul uniform, brightening the scene on a strike.
-		if (SimpleCloudsConfig.CLIENT.renderStormFog.get())
+		if (overlaysEnabled && SimpleCloudsConfig.CLIENT.renderStormFog.get())
 		{
 			float lightningMul = 1.0F - this.getWorldEffectsManager().flashStrength(partialTick) * 0.9F;
 			this.drawPipeline.drawStormFog(this.cacheStormCoverage * 2.5F, lightningMul);
@@ -912,11 +931,12 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 				this.shadowSources.add(new CloudsDrawPipeline.InstanceSource(d.opaque, d.opaqueCount));
 		}
 		this.drawPipeline.renderCloudShadowMap(camX, camY, camZ, (float) cloudHeight, this.shadowSources);
-		this.drawPipeline.drawTerrainShadows(terrainView, camX, camY, camZ, (float) cloudHeight);
+		if (overlaysEnabled)
+			this.drawPipeline.drawTerrainShadows(terrainView, camX, camY, camZ, (float) cloudHeight);
 
 		// Atmospheric (high cirrus-type) clouds: biome-driven 2D layer over the
 		// whole view (original: end of the DefaultPipeline render).
-		if (SimpleCloudsConfig.CLIENT.atmosphericClouds.get() && this.atmosphericClouds != null)
+		if (overlaysEnabled && SimpleCloudsConfig.CLIENT.atmosphericClouds.get() && this.atmosphericClouds != null)
 		{
 			// 26.2: the level projection's vertical FOV lives on the camera render
 			// state (no getFov method anymore).
