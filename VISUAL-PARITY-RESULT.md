@@ -13,7 +13,7 @@ Status legend: **done** = criteria met, evidence below · **partial** · **not s
 | A3 horizon/flat/above (addendum) | **done** | below |
 | 5 transparency (port) | **done** | below |
 | 6 shadows | **done** | below |
-| 7 LOD/pop-in (port) | not started | — |
+| 7 LOD/pop-in (port) | **done** | below |
 | 8 lighting/darkness (port) | not started | — |
 
 ---
@@ -328,3 +328,38 @@ FadeDistance (1028 blocks) makes it strongest only on *distant* terrain (the
 cloud cover (top-down ortho depth map), and use the original's span /
 distance-fade / color-multiplier model. Remaining polish (not a bug): the shadow
 is subtle at close range by design; with DH-style distant terrain it is stronger.
+
+---
+
+## Step 7 — LOD / pop-in
+
+**Verdict: no pop-in — new chunks fade in (0→1 over 5 ticks), regeneration
+does NOT re-fade (no flicker), and distant chunks dissolve into the sky via the
+field-radius fog. The horizon/field edge is a smooth gradient, not a hard cut.**
+
+### How it works (all pre-existing, verified this step)
+
+- **Fade-in (step 3):** each *new* chunk ramps alpha 0→1 at
+  `CHUNK_FADE_IN_ALPHA_PER_TICK = 0.2`/tick (5 ticks) via `lastGenTick`.
+- **No re-fade on regeneration (verified, line 740):**
+  `d.lastGenTick = prev != null ? prev.lastGenTick : mc.level.getGameTime()` —
+  a scroll-drift regeneration (A2) keeps the old tick, so an existing chunk's
+  geometry updates in place without fading out to 0 first (no flicker). Only
+  chunks entering the LOD band for the first time fade in.
+- **Fog (A3):** the 2560..10240 field-radius fog fades the outer LOD chunks into
+  the vanilla sky color, so the far edge of the 364-chunk HIGH field dissolves
+  into the horizon rather than ending in a hard line.
+- **LOD layout:** HIGH = 364 chunks over 1280 cloud units (10240 blocks), the
+  original's default.
+
+### Proof
+
+- `/tmp/sc-A-step7.png` (14:47): the horizon is a smooth white→sky gradient; the
+  field edge (left) fades gradually. No hard pop-in line.
+- `/tmp/sc-F-step7.png` (same run, y=400 above the volume): the cloud tops fade
+  smoothly into the pale horizon across the whole width; isolated far chunks
+  dissolve into the fog. No popping.
+
+**Step 7 criteria — MET:** the transition is gradual (per-chunk fade-in +
+field-radius fog), distant chunks do not pop into existence, and regeneration
+does not re-trigger the fade (no flicker).
