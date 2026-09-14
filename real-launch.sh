@@ -24,7 +24,11 @@ ENVF="$HOME/.cache/simpleclouds/launch.env"   # session env of a known-good laun
 OUT="$HOME/.cache/simpleclouds/realgame.out"
 UNIT=simpleclouds-realgame
 MCID="26.2-0.19.5"
-WORLD="New World"
+# Step 7 used the lightweight test world: the main "New World" (Jan's play world)
+# worldgen OOMs and takes ~8 min to join; "New World (1)" has the identical modpack
+# and the STORM scene is self-contained (spawns its own formation 2000 blocks north
+# of the camera), so the world does not change the cloud-cost / playability result.
+WORLD="New World (1)"
 WIDTH=1920
 HEIGHT=1080
 XMX="${SC_XMX:-6144m}"   # Modrinth global mc_memory_max=6144 MB (no instance override)

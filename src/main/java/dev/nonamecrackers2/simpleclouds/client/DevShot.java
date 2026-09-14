@@ -99,6 +99,7 @@ public final class DevShot
 	// STORM token (storm plan step 0): the chosen formation center (cloud units)
 	// and the S5 forced-strike schedule (storm plan step 1 proof needs strikes at
 	// known distances: 200/1500/3000/8000 blocks north of the camera).
+	private static boolean hold; // HOLD token (step 7): after the last view, keep the run active on that view so FPSLOG can sample one scene
 	private static boolean storm;
 	private static double stormCxCu = Double.NaN;
 	private static double stormCzCu = Double.NaN;
@@ -948,6 +949,12 @@ public final class DevShot
 						dev.nonamecrackers2.simpleclouds.client.renderer.SimpleCloudsRenderer.setOverlaysEnabled(false);
 						continue;
 					}
+					if (part.equalsIgnoreCase("HOLD"))
+					{
+						// Step 7: keep the last view pinned and the run active (no "done") so FPSLOG keeps sampling one scene.
+						hold = true;
+						continue;
+					}
 					if (part.equalsIgnoreCase("HIDEFLASH"))
 					{
 						// Storm plan step 6: enable the vanilla "Hide Sky Flashes"
@@ -1290,9 +1297,11 @@ public final class DevShot
 			}
 			finishOrAdvance(mc);
 		}
-		// In LOOP mode the request file is the external stop switch — keep it (the
-		// loop ends when the script deletes it); one-shot runs delete it as before.
-		if (!loop || done)
+		// In LOOP/HOLD mode the request file is the external stop switch — keep it
+		// (the loop/hold ends when the script deletes it); one-shot runs delete it
+		// as before. (Step 7: deleting it during HOLD made the HOLD branch fail on
+		// the next frame and ended the run immediately after the last view.)
+		if ((!loop && !hold) || done)
 		{
 			try { Files.deleteIfExists(request); }
 			catch (Exception ignored) {}
@@ -1306,6 +1315,13 @@ public final class DevShot
 		if (viewIdx + 1 < views.size())
 		{
 			switchToView(mc, viewIdx + 1);
+			framesLeft = POST_VIEW_FRAMES;
+			return;
+		}
+		// Step 7: HOLD re-pins the LAST view and stays active (FPS sampling).
+		if (hold && Files.exists(mc.gameDirectory.toPath().resolve("devshot.request")))
+		{
+			switchToView(mc, views.size() - 1);
 			framesLeft = POST_VIEW_FRAMES;
 			return;
 		}
