@@ -563,15 +563,24 @@ Ported verbatim from the original: close vs distant thunder at
   (`coverage*2.5` capped at 1.0, gradient floor 0.3) — a fully opaque flat
   grey wash under a storm that hid ALL the cube geometry = the "smeared grey
   blobs with streaks" in Jan's shots 3–4.
-- **Fix:** `storm_fog.fsh` density capped at **0.45** and the vertical gradient
-  now fades to **zero** at the screen top (was a 0.3 floor), so the cube
-  structure of the storm cloud stays visible through the fog (the original's
-  raymarch fog darkens/softens but never fully occludes).
+- **Fix:** `storm_fog.fsh` — the vertical gradient fades to **zero** at the
+  screen top (was a 0.3 floor), and the accumulated density is **hard-capped
+  at 0.5** so the fog can darken/soften but never fully occludes (the
+  original's raymarch fog behaves the same way).
+  - *Follow-up (`a433f9b`):* the first attempt only **multiplied** the density
+    by 0.45 and still clamped to **1.0**. Under a *dense* cumulonimbus
+    (coverage ≈ 1.0 → `Intensity = coverage*2.5 = 2.5`) that is
+    `2.5*0.45 = 1.125 → clamped to 1.0` = opaque again. The dev world's storm
+    sector was less dense (gaps), so it never saturated there — but the real
+    profile's S2 (straight up under the storm) exposed it as the flat grey
+    wash from Jan's shots 3–4. The hard cap at 0.5 fixes that.
 - **Proof:** S2 with fog on = clear 3D cloud masses, blue sky through gaps,
-  storm-shaded undersides, no flat wash. Isolation pair: `docs/storm-evidence/
-S2-final-fog-on.png` vs `S2-nofog.png`. (Residual fine vertical streaks in the
-  darkest undersides = transparent edge-dithering + columnar noise of
-  coexisting cloud types — a remaining fidelity gap, not OIT/fog.)
+  storm-shaded undersides, no flat wash — verified in BOTH the dev client
+  (`docs/storm-evidence/S2-final-fog-on.png` vs `S2-nofog.png`) and the real
+  profile (`docs/storm-evidence/real/devshot-S2.png`, after the hard-cap fix;
+  it was a flat wash before). (Residual fine vertical streaks in the darkest
+  undersides = transparent edge-dithering + columnar noise of coexisting cloud
+  types — a remaining fidelity gap, not OIT/fog.)
 
 ### Step 4 — the straight vertical cut / LOD
 Evidence (no code): the distant field is genuinely multi-scale (large soft
@@ -619,10 +628,16 @@ chunk-border seam, root-caused and fixed in step 5.
   self-contained, spawning its own formation, so the world does not change the
   cloud-cost / playability result), full 329-mod pack incl. Distant Horizons,
   16 GB heap (`SC_XMX=16384m`), cgroup ceiling 14 GB.
-- **S1–S5 re-run** (real profile, 09:4x): images in `docs/storm-evidence/real/
+- **S1–S5 re-run** (real profile): images in `docs/storm-evidence/real/
   devshot-S{1,2,3,4}.png` + S5 sequence frames. Read on screen: structured 3D
-  cloud masses, no flat wash, no seam, no vanilla cloud layer, clouds sorting
-  correctly against the DH far-view terrain.
+  cloud masses, no seam, no vanilla cloud layer, clouds sorting correctly
+  against the DH far-view terrain.
+  - The first real S2 (straight up under the storm) was still a **flat grey
+    wash** — the dense real-world storm sector saturated the fog to opaque
+    (the dev sector was less dense, so it had not shown there). Fixed by the
+    step-3 follow-up hard cap (`a433f9b`); the re-run S2 now shows cloud
+    structure + sky through the fog. The committed evidence images are from
+    the post-fix run.
 - **Flash log (real profile):** close strikes (≤2000 b) log `flash sky-flash
   (2t per frame while bolt bright, fade>0.5)` + `close_thunder delay=0`;
   every far strike (>2000 b) logs `flash none (beyond the 2000-block flash

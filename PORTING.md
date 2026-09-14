@@ -257,10 +257,13 @@ summary. Commits `b143a75`, `24c956a`, `99aa986`, `7a7e65a`, `3abc226`.
 - **Thunder** (`WorldEffects` + `AdjustableAttenuationSoundInstance`): close vs
   distant at 2000 blocks, pitch 0.5+fade*0.5 (3000→5000 fade), volume 1+rand*4,
   delay floor(dist/2000)*20 ticks, attenuation distance from config.
-- **Storm fog** (`storm_fog.fsh`): density capped at 0.45 and the vertical
-  gradient fades to zero at the screen top (was an opaque flat wash) — this was
-  the "smeared grey blobs" (NOT the transparency pass: cumulonimbus has
-  `transparency_fade:0`, so it emits no transparent cubes; OIT port skipped).
+- **Storm fog** (`storm_fog.fsh`): density is HARD-CAPPED at 0.5 (and the
+  vertical gradient fades to zero at the screen top) so the fog darkens/
+  softens but never fully occludes — this was the "smeared grey blobs" (NOT the
+  transparency pass: cumulonimbus has `transparency_fade:0`, so it emits no
+  transparent cubes; OIT port skipped). The first attempt only multiplied by
+  0.45 and still clamped to 1.0, which re-saturated under a DENSE cumulonimbus
+  and was exposed by the real profile's S2; the hard cap fixed it (`a433f9b`).
 - **Smooth motion + no seam** (`clouds*.vsh` `CloudOffset` UBO, `CloudsDrawPipeline`,
   `SimpleCloudsRenderer`): each chunk is drawn at grid position +
   `(scrollNow − genScroll)` — exact because the noise sample is rigid in world
