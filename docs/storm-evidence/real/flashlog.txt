@@ -1,0 +1,456 @@
+[DEVSHOT-LIGHTNING] strike at 918x256x3025: distToCam=1466 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=3.28, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 956x256x5024: distToCam=3053 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.99, volume=2.11, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at -665x256x4191: distToCam=3425 blocks, onlySound=true, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.89, volume=2.89, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 4665x256x3159: distToCam=2722 blocks, onlySound=true, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=1.76, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 4682x256x1066: distToCam=2810 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=2.79, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 1951x256x6211: distToCam=4010 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=40 ticks (2.00 s), pitch=0.75, volume=1.84, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at -1514x256x-101: distToCam=3941 blocks, onlySound=true, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.76, volume=2.14, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 5228x256x-1995: distToCam=2975 blocks, onlySound=true, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=2.31, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 4022x256x4363: distToCam=2879 blocks, onlySound=true, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=3.15, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 691x256x4476: distToCam=2688 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=1.62, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x2009: distToCam=223 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=2.55, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 200 blocks north (dist index 0)
+[DEVSHOT-LIGHTNING] strike at 1875x256x4342: distToCam=2156 blocks, onlySound=true, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=1.55, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 4801x256x2475: distToCam=2699 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=3.49, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x709: distToCam=1503 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=1.91, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 1500 blocks north (dist index 1)
+[DEVSHOT-LIGHTNING] strike at 2122x170x-791: distToCam=3001 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=3.12, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 3000 blocks north (dist index 2)
+[DEVSHOT-LIGHTNING] strike at 3394x256x4577: distToCam=2695 blocks, onlySound=true, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=2.92, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-5791: distToCam=8000 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=80 ticks (4.00 s), pitch=0.50, volume=2.30, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 8000 blocks north (dist index 3)
+[DEVSHOT-LIGHTNING] strike at 3904x256x3872: distToCam=2445 blocks, onlySound=true, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=2.00, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 3844x256x-1073: distToCam=3711 blocks, onlySound=true, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.82, volume=2.84, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x2009: distToCam=223 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=2.55, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 200 blocks north (dist index 0)
+[DEVSHOT-LIGHTNING] strike at 2764x256x1707: distToCam=836 blocks, onlySound=true, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=1.60, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x709: distToCam=1503 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=1.91, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 1500 blocks north (dist index 1)
+[DEVSHOT-LIGHTNING] strike at 3801x256x-1743: distToCam=4298 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=40 ticks (2.00 s), pitch=0.68, volume=3.98, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 3346x256x1223: distToCam=1583 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=4.87, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-791: distToCam=3001 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=3.12, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 3000 blocks north (dist index 2)
+[DEVSHOT-LIGHTNING] strike at 2122x170x-5791: distToCam=8000 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=80 ticks (4.00 s), pitch=0.50, volume=2.30, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 8000 blocks north (dist index 3)
+[DEVSHOT-LIGHTNING] strike at 3859x256x2537: distToCam=1778 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=4.04, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at -1116x256x1413: distToCam=3339 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.92, volume=1.60, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 1290x256x-996: distToCam=3316 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.92, volume=2.13, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x2009: distToCam=223 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=2.55, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 200 blocks north (dist index 0)
+[DEVSHOT-LIGHTNING] strike at 2122x170x709: distToCam=1503 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=1.91, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 1500 blocks north (dist index 1)
+[DEVSHOT-LIGHTNING] strike at -783x256x1183: distToCam=3086 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.98, volume=3.72, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-791: distToCam=3001 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=3.12, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 3000 blocks north (dist index 2)
+[DEVSHOT-LIGHTNING] strike at 4095x256x1207: distToCam=2221 blocks, onlySound=true, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=1.82, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-5791: distToCam=8000 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=80 ticks (4.00 s), pitch=0.50, volume=2.30, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 8000 blocks north (dist index 3)
+[DEVSHOT-LIGHTNING] strike at 1506x256x4630: distToCam=2505 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=1.02, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 1588x256x1574: distToCam=850 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=3.35, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 383x256x2649: distToCam=1803 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=3.23, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 1727x256x2900: distToCam=818 blocks, onlySound=true, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=4.07, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x2009: distToCam=223 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=2.55, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 200 blocks north (dist index 0)
+[DEVSHOT-LIGHTNING] strike at 2548x256x1654: distToCam=724 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=2.22, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x709: distToCam=1503 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=1.91, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 1500 blocks north (dist index 1)
+[DEVSHOT-LIGHTNING] strike at 4470x256x3782: distToCam=2833 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=3.71, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 366x256x1101: distToCam=2084 blocks, onlySound=true, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=3.29, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-791: distToCam=3001 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=3.12, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 3000 blocks north (dist index 2)
+[DEVSHOT-LIGHTNING] strike at 1858x256x-709: distToCam=2935 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=3.50, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-5791: distToCam=8000 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=80 ticks (4.00 s), pitch=0.50, volume=2.30, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 8000 blocks north (dist index 3)
+[DEVSHOT-LIGHTNING] strike at 5598x256x669: distToCam=3807 blocks, onlySound=true, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.80, volume=2.57, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 5530x256x2284: distToCam=3414 blocks, onlySound=true, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.90, volume=2.43, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x2009: distToCam=223 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=2.55, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 200 blocks north (dist index 0)
+[DEVSHOT-LIGHTNING] strike at 3064x256x4825: distToCam=2787 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=3.82, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x709: distToCam=1503 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=1.91, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 1500 blocks north (dist index 1)
+[DEVSHOT-LIGHTNING] strike at 4945x256x2208: distToCam=2830 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=1.52, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at -1109x256x5588: distToCam=4679 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=40 ticks (2.00 s), pitch=0.58, volume=3.83, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-791: distToCam=3001 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=3.12, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 3000 blocks north (dist index 2)
+[DEVSHOT-LIGHTNING] strike at 5552x256x3416: distToCam=3642 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.84, volume=1.58, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 3707x256x6198: distToCam=4297 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=40 ticks (2.00 s), pitch=0.68, volume=1.88, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-5791: distToCam=8000 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=80 ticks (4.00 s), pitch=0.50, volume=2.30, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 8000 blocks north (dist index 3)
+[DEVSHOT-LIGHTNING] strike at 4379x256x1568: distToCam=2354 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=2.55, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 781x256x4051: distToCam=2286 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=3.21, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x2009: distToCam=223 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=2.55, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 200 blocks north (dist index 0)
+[DEVSHOT-LIGHTNING] strike at 5050x256x5093: distToCam=4115 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=40 ticks (2.00 s), pitch=0.72, volume=1.03, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x709: distToCam=1503 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=1.91, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 1500 blocks north (dist index 1)
+[DEVSHOT-LIGHTNING] strike at 2122x170x-791: distToCam=3001 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=3.12, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 3000 blocks north (dist index 2)
+[DEVSHOT-LIGHTNING] strike at 1636x256x-1135: distToCam=3384 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.90, volume=2.00, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 3670x256x3448: distToCam=1992 blocks, onlySound=true, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=4.34, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-5791: distToCam=8000 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=80 ticks (4.00 s), pitch=0.50, volume=2.30, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 8000 blocks north (dist index 3)
+[DEVSHOT-LIGHTNING] strike at 1461x256x96: distToCam=2221 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=3.20, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x2009: distToCam=223 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=2.55, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 200 blocks north (dist index 0)
+[DEVSHOT-LIGHTNING] strike at 2200x256x6278: distToCam=4075 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=40 ticks (2.00 s), pitch=0.73, volume=1.68, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at -1291x256x4003: distToCam=3860 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.78, volume=1.70, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x709: distToCam=1503 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=1.91, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 1500 blocks north (dist index 1)
+[DEVSHOT-LIGHTNING] strike at 2122x170x-791: distToCam=3001 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=3.12, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 3000 blocks north (dist index 2)
+[DEVSHOT-LIGHTNING] strike at 5789x256x2924: distToCam=3741 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.81, volume=3.30, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 3448x256x4997: distToCam=3094 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.98, volume=1.63, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-5791: distToCam=8000 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=80 ticks (4.00 s), pitch=0.50, volume=2.30, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 8000 blocks north (dist index 3)
+[DEVSHOT-LIGHTNING] strike at 5235x256x-2: distToCam=3823 blocks, onlySound=true, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.79, volume=3.39, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 820x256x-1857: distToCam=4273 blocks, onlySound=true, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=40 ticks (2.00 s), pitch=0.68, volume=1.56, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x2009: distToCam=223 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=2.55, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 200 blocks north (dist index 0)
+[DEVSHOT-LIGHTNING] strike at 2122x170x709: distToCam=1503 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=1.91, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 1500 blocks north (dist index 1)
+[DEVSHOT-LIGHTNING] strike at 4433x256x-1685: distToCam=4532 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=40 ticks (2.00 s), pitch=0.62, volume=4.47, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-791: distToCam=3001 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=3.12, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 3000 blocks north (dist index 2)
+[DEVSHOT-LIGHTNING] strike at 5095x256x137: distToCam=3629 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.84, volume=4.47, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-5791: distToCam=8000 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=80 ticks (4.00 s), pitch=0.50, volume=2.30, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 8000 blocks north (dist index 3)
+[DEVSHOT-LIGHTNING] strike at 5498x256x-515: distToCam=4342 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=40 ticks (2.00 s), pitch=0.66, volume=2.58, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at -958x256x-177: distToCam=3900 blocks, onlySound=true, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.78, volume=2.97, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 5051x256x-134: distToCam=3756 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.81, volume=2.62, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x2009: distToCam=223 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=2.55, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 200 blocks north (dist index 0)
+[DEVSHOT-LIGHTNING] strike at 911x256x-457: distToCam=2933 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=1.51, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x709: distToCam=1503 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=1.91, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 1500 blocks north (dist index 1)
+[DEVSHOT-LIGHTNING] strike at -1227x256x2295: distToCam=3355 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.91, volume=4.66, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-791: distToCam=3001 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=3.12, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 3000 blocks north (dist index 2)
+[DEVSHOT-LIGHTNING] strike at 3206x256x2378: distToCam=1113 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=2.51, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-5791: distToCam=8000 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=80 ticks (4.00 s), pitch=0.50, volume=2.30, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 8000 blocks north (dist index 3)
+[DEVSHOT-LIGHTNING] strike at 2748x256x2881: distToCam=938 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=4.24, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 4349x256x-700: distToCam=3668 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.83, volume=3.11, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x2009: distToCam=223 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=2.55, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 200 blocks north (dist index 0)
+[DEVSHOT-LIGHTNING] strike at 2122x170x709: distToCam=1503 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=1.91, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 1500 blocks north (dist index 1)
+[DEVSHOT-LIGHTNING] strike at -1736x256x815: distToCam=4106 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=40 ticks (2.00 s), pitch=0.72, volume=4.03, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at -1069x256x5897: distToCam=4880 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=40 ticks (2.00 s), pitch=0.53, volume=4.73, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-791: distToCam=3001 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=3.12, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 3000 blocks north (dist index 2)
+[DEVSHOT-LIGHTNING] strike at 4862x256x12: distToCam=3517 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.87, volume=4.09, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-5791: distToCam=8000 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=80 ticks (4.00 s), pitch=0.50, volume=2.30, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 8000 blocks north (dist index 3)
+[DEVSHOT-LIGHTNING] strike at 15x256x5687: distToCam=4071 blocks, onlySound=true, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=40 ticks (2.00 s), pitch=0.73, volume=4.63, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 3692x256x2860: distToCam=1710 blocks, onlySound=true, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=2.37, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x2009: distToCam=223 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=2.55, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 200 blocks north (dist index 0)
+[DEVSHOT-LIGHTNING] strike at 2122x170x709: distToCam=1503 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=1.91, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 1500 blocks north (dist index 1)
+[DEVSHOT-LIGHTNING] strike at -1432x256x5164: distToCam=4626 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=40 ticks (2.00 s), pitch=0.59, volume=4.83, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 3581x256x-814: distToCam=3362 blocks, onlySound=true, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.91, volume=3.31, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-791: distToCam=3001 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=3.12, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 3000 blocks north (dist index 2)
+[DEVSHOT-LIGHTNING] strike at -1649x256x1300: distToCam=3883 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.78, volume=4.76, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-5791: distToCam=8000 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=80 ticks (4.00 s), pitch=0.50, volume=2.30, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 8000 blocks north (dist index 3)
+[DEVSHOT-LIGHTNING] strike at 633x256x-712: distToCam=3283 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.93, volume=3.38, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x2009: distToCam=223 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=2.55, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 200 blocks north (dist index 0)
+[DEVSHOT-LIGHTNING] strike at 4552x256x295: distToCam=3099 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.98, volume=2.80, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x709: distToCam=1503 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=1.91, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 1500 blocks north (dist index 1)
+[DEVSHOT-LIGHTNING] strike at 5113x256x5456: distToCam=4419 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=40 ticks (2.00 s), pitch=0.65, volume=1.35, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-791: distToCam=3001 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=3.12, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 3000 blocks north (dist index 2)
+[DEVSHOT-LIGHTNING] strike at 2122x170x-5791: distToCam=8000 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=80 ticks (4.00 s), pitch=0.50, volume=2.30, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 8000 blocks north (dist index 3)
+[DEVSHOT-LIGHTNING] strike at 899x256x-1558: distToCam=3964 blocks, onlySound=true, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.76, volume=2.50, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 1655x256x1023: distToCam=1288 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=1.47, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 1318x256x5333: distToCam=3232 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.94, volume=2.90, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 730x256x3485: distToCam=1898 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=4.14, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x2009: distToCam=223 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=2.55, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 200 blocks north (dist index 0)
+[DEVSHOT-LIGHTNING] strike at 2122x170x709: distToCam=1503 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=1.91, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 1500 blocks north (dist index 1)
+[DEVSHOT-LIGHTNING] strike at 5771x256x603: distToCam=3991 blocks, onlySound=true, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.75, volume=2.33, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-791: distToCam=3001 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=3.12, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 3000 blocks north (dist index 2)
+[DEVSHOT-LIGHTNING] strike at 3169x256x1294: distToCam=1403 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=4.70, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-5791: distToCam=8000 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=80 ticks (4.00 s), pitch=0.50, volume=2.30, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 8000 blocks north (dist index 3)
+[DEVSHOT-LIGHTNING] strike at -1095x256x4964: distToCam=4240 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=40 ticks (2.00 s), pitch=0.69, volume=1.87, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 123x256x751: distToCam=2481 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=4.96, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at -565x256x-1618: distToCam=4679 blocks, onlySound=true, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=40 ticks (2.00 s), pitch=0.58, volume=3.41, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x2009: distToCam=223 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=2.55, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 200 blocks north (dist index 0)
+[DEVSHOT-LIGHTNING] strike at 2122x170x709: distToCam=1503 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=1.91, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 1500 blocks north (dist index 1)
+[DEVSHOT-LIGHTNING] strike at -722x256x3398: distToCam=3088 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.98, volume=2.91, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 3162x256x1604: distToCam=1218 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=2.11, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-791: distToCam=3001 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=3.12, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 3000 blocks north (dist index 2)
+[DEVSHOT-LIGHTNING] strike at 2122x170x-5791: distToCam=8000 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=80 ticks (4.00 s), pitch=0.50, volume=2.30, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 8000 blocks north (dist index 3)
+[DEVSHOT-LIGHTNING] strike at 3393x256x531: distToCam=2113 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=1.59, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 50x256x5289: distToCam=3717 blocks, onlySound=true, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.82, volume=1.23, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x2009: distToCam=223 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=2.55, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 200 blocks north (dist index 0)
+[DEVSHOT-LIGHTNING] strike at 2992x256x5323: distToCam=3239 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.94, volume=2.48, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x709: distToCam=1503 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=1.91, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 1500 blocks north (dist index 1)
+[DEVSHOT-LIGHTNING] strike at 2122x170x-791: distToCam=3001 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=3.12, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 3000 blocks north (dist index 2)
+[DEVSHOT-LIGHTNING] strike at 5374x256x3266: distToCam=3425 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.89, volume=1.10, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-5791: distToCam=8000 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=80 ticks (4.00 s), pitch=0.50, volume=2.30, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 8000 blocks north (dist index 3)
+[DEVSHOT-LIGHTNING] strike at 1163x256x1279: distToCam=1348 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=2.50, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 4266x256x3907: distToCam=2742 blocks, onlySound=true, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=2.25, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 4447x256x3476: distToCam=2655 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=4.69, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x2009: distToCam=223 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=2.55, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 200 blocks north (dist index 0)
+[DEVSHOT-LIGHTNING] strike at 964x256x-51: distToCam=2546 blocks, onlySound=true, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=3.46, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 613x256x4627: distToCam=2856 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=2.94, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x709: distToCam=1503 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=1.91, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 1500 blocks north (dist index 1)
+[DEVSHOT-LIGHTNING] strike at 5645x256x3149: distToCam=3652 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.84, volume=4.97, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-791: distToCam=3001 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=3.12, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 3000 blocks north (dist index 2)
+[DEVSHOT-LIGHTNING] strike at -1408x256x5883: distToCam=5098 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=40 ticks (2.00 s), pitch=0.50, volume=1.62, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-5791: distToCam=8000 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=80 ticks (4.00 s), pitch=0.50, volume=2.30, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 8000 blocks north (dist index 3)
+[DEVSHOT-LIGHTNING] strike at -746x256x1683: distToCam=2921 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=2.35, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2068x256x4608: distToCam=2407 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=1.49, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2133x256x5560: distToCam=3357 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.91, volume=4.67, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 5813x256x1614: distToCam=3744 blocks, onlySound=true, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.81, volume=3.12, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 1143x256x-650: distToCam=3027 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.99, volume=1.27, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x2009: distToCam=223 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=2.55, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 200 blocks north (dist index 0)
+[DEVSHOT-LIGHTNING] strike at 3546x256x3707: distToCam=2076 blocks, onlySound=true, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=3.17, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x709: distToCam=1503 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=1.91, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 1500 blocks north (dist index 1)
+[DEVSHOT-LIGHTNING] strike at 3221x256x5704: distToCam=3669 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.83, volume=4.69, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-791: distToCam=3001 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=3.12, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 3000 blocks north (dist index 2)
+[DEVSHOT-LIGHTNING] strike at 1698x256x4750: distToCam=2583 blocks, onlySound=true, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=1.50, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-5791: distToCam=8000 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=80 ticks (4.00 s), pitch=0.50, volume=2.30, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 8000 blocks north (dist index 3)
+[DEVSHOT-LIGHTNING] strike at 1989x256x1486: distToCam=758 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=1.00, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 5349x256x-1218: distToCam=4711 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=40 ticks (2.00 s), pitch=0.57, volume=4.93, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at -1724x256x5563: distToCam=5106 blocks, onlySound=true, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=40 ticks (2.00 s), pitch=0.50, volume=4.31, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x2009: distToCam=223 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=2.55, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 200 blocks north (dist index 0)
+[DEVSHOT-LIGHTNING] strike at 3861x256x5521: distToCam=3746 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.81, volume=4.78, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 4111x256x5887: distToCam=4186 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=40 ticks (2.00 s), pitch=0.70, volume=2.17, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x709: distToCam=1503 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=1.91, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 1500 blocks north (dist index 1)
+[DEVSHOT-LIGHTNING] strike at 2191x256x535: distToCam=1685 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=3.55, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-791: distToCam=3001 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=3.12, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 3000 blocks north (dist index 2)
+[DEVSHOT-LIGHTNING] strike at 1451x256x4809: distToCam=2692 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=4.78, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-5791: distToCam=8000 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=80 ticks (4.00 s), pitch=0.50, volume=2.30, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 8000 blocks north (dist index 3)
+[DEVSHOT-LIGHTNING] strike at 4415x256x5531: distToCam=4042 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=40 ticks (2.00 s), pitch=0.74, volume=2.23, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 3812x256x4453: distToCam=2816 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=4.35, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x2009: distToCam=223 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=2.55, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 200 blocks north (dist index 0)
+[DEVSHOT-LIGHTNING] strike at -1225x256x1104: distToCam=3529 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.87, volume=4.63, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x709: distToCam=1503 blocks, onlySound=false, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=1.91, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 1500 blocks north (dist index 1)
+[DEVSHOT-LIGHTNING] strike at 1252x256x5708: distToCam=3611 blocks, onlySound=true, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.85, volume=1.38, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 913x256x2753: distToCam=1339 blocks, onlySound=true, flash sky-flash (2t per frame while bolt bright, fade>0.5)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:close_thunder, fixedRange=Optional.empty], delay=0 ticks (0.00 s), pitch=1.00, volume=1.46, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-791: distToCam=3001 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=1.00, volume=3.12, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 3000 blocks north (dist index 2)
+[DEVSHOT-LIGHTNING] strike at 5281x256x2746: distToCam=3210 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=20 ticks (1.00 s), pitch=0.95, volume=1.86, attenuation=2000
+[DEVSHOT-LIGHTNING] strike at 2122x170x-5791: distToCam=8000 blocks, onlySound=false, flash none (beyond the 2000-block flash cutoff)
+[DEVSHOT-LIGHTNING] thunder: sound=SoundEvent[location=simpleclouds:distant_thunder, fixedRange=Optional.empty], delay=80 ticks (4.00 s), pitch=0.50, volume=2.30, attenuation=2000
+[DEVSHOT-LIGHTNING] FORCED strike at 8000 blocks north (dist index 3)

@@ -1,0 +1,6 @@
+[09:29:46] [Render thread/INFO]: [DEVSHOT-FPS] fps=30 frameNs=6292811 (6 ms) tick 29108
+[09:30:53] [Render thread/INFO]: [DEVSHOT-FPS] fps=30 frameNs=3806737 (3 ms) tick 30308
+[09:32:26] [Render thread/INFO]: [DEVSHOT-FPS] fps=69 frameNs=2833640 (2 ms) tick 31508
+[09:33:52] [Render thread/INFO]: [DEVSHOT-FPS] fps=30 frameNs=3528307 (3 ms) tick 32708
+[09:35:22] [Render thread/INFO]: [DEVSHOT-FPS] fps=30 frameNs=4099694 (4 ms) tick 33908
+[09:36:32] [Render thread/INFO]: [DEVSHOT-FPS] fps=30 frameNs=4125005 (4 ms) tick 35108

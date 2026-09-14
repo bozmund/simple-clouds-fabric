@@ -493,19 +493,164 @@ the day; the numbers below are from the controlled runs.
   params, verified via `/proc/<pid>/cmdline`. `SC_RAIN=1`, `SC_XMX`.
 - `rss-sample.sh`: per-minute RSS sampler.
 
-### Storm plan (STORM-PLAN.md) — NOT STARTED (stopped at Jan's request)
-Jan's four storm screenshots read; recon done (no code changed):
-- Whole-screen far-storm flash: port sets `flashTicks` for EVERY strike (any
-  distance, even sound-only) and the flash drives a global screen brightening
-  (`getDarkenFactor` + `drawStormFog` `lightningMul`). Original: 2-tick
-  `setSkyFlashTime(2)` only for a bolt within 2000 blocks with fade > 0.5,
-  plus per-bolt LOCAL lighting inside the raymarched storm fog.
-- Flat grey wall / smeared blobs: port's storm fog is a **screen-wide flat
-  overlay** (screen-space vertical gradient, CPU intensity) — a documented
-  deviation; cumulonimbus has `transparency_fade: 0` so its smear is NOT the
-  transparency pass. `OVL0`/`NOFOG` devshot tokens exist to separate fog from
-  geometry. Straight vertical cut = chunk-border hypothesis (step 4/5 of the
-  plan); port data for cumulonimbus is byte-identical to the original.
-- 26.2 API names verified: `Level.setSkyFlashTime(2)`,
-  `Options.hideLightningFlash` (OptionInstance `.get()`), vanilla
-  `LightmapRenderStateExtractor` already honors the option.
+## Storm plan (STORM-PLAN.md) — steps 0–7 (2026-09-13/14)
+
+Jan's two reported bugs, from four screenshots (`Fabric 26.2/screenshots/
+2026-09-13_19.37.41.png`, `_19.38.36`, `_19.38.49`, `_19.38.56`):
+1. **Lightning from a far storm flashes the whole screen.**
+2. **The cumulonimbus looks broken** — flat grey wall, a perfectly straight
+   vertical cut, smeared grey blobs with streaks from below.
+
+Both are fixed and verified in the dev client, then re-verified in the real
+profile (full 329-mod pack + Distant Horizons). Commits: `b143a75` (step 0),
+`24c956a` (steps 1+2), `99aa986` (step 3), `7a7e65a` (steps 4+5 + HIDEFLASH),
+`3abc226` (step 7 HOLD test-infra).
+
+### Step 0 — storm views S1–S5 (so the bugs can be seen and proven fixed)
+DevShot `STORM` token: spawns a cumulonimbus formation 2000 blocks north of the
+camera (fixed offset, radius ~200 cloud units) and runs S1–S5 at pinned noon:
+S1 ground/pitch-0 with the formation edge (Jan's wall), S2 looking up from
+under it, S3 y≈260 beside it, S4 above it, S5 a 60-frame ground sequence while
+four FORCED strikes fire at known distances (200 / 1500 / 3000 / 8000 blocks
+north) with a `[DEVSHOT-LIGHTNING]` log line per strike (distance, flash
+applied, thunder choice/delay/pitch). S1–S5 are now in the standard views.
+- Proved both bugs in the dev client: every strike (223–12370 blocks) flashed
+  the whole screen; S5-01 showed the straight vertical seam at frame centre;
+  S2 showed the flat grey wash.
+
+### Step 1 — lightning flash (the whole-screen far-storm flash)
+- **Root cause:** the port set `flashTicks = 24+(seed&31)` (1.2–2.75 s) for
+  EVERY strike at any distance — even sound-only ones (set before the
+  `onlySound` return) — and the flash drove a global screen brightening.
+- **26.2 finding:** the vanilla sky flash is DEAD in 26.2 (nothing consumes
+  `ClientLevel.getSkyFlashTime`), so the original's 2-tick cloud-colour flash
+  would be invisible. The port therefore draws its own short full-screen white
+  `sky_flash` pass (alpha-blended, same fullscreen triangle as the storm fog),
+  driven by the gated `flashStrength`.
+- **Fix:** (1) no flash for sound-only strikes — they return before adding a
+  rendered bolt, so they never renew the flash; (2) the flash is only for a
+  rendered bolt within `CLOSE_THUNDER_CUTOFF` (2000 blocks) with lifetime fade
+  > 0.5, as a short (2-tick, flickering) sky flash — not a 1–3 s multiplier;
+  (3) it honours vanilla's **Hide Sky Flashes** option (`flashStrength` returns
+  0 when `options.hideLightningFlash()` is on).
+- **KNOWN DEVIATION (plan step 1 fix #3 not ported):** the original ALSO lights
+  the storm fog LOCALLY around each bolt (per-bolt positions+alphas fed into
+  the raymarched fog; toggle `stormFogLightningFlashes`). The 26.2 storm fog
+  is a documented simplified screen-space overlay (the shadow-map raymarch is
+  not ported), so its flash hook is a gated GLOBAL `LightningMul` rather than
+  per-bolt local lighting. The reported far-storm bug is fixed either way;
+  per-bolt local fog light is a remaining fidelity item for Jan to weigh.
+- **Proof (dev client S5 luminance curve):** baseline ~44–47; spikes 52.7/52.5
+  at the 200-block strike and 53.7/54.1/53.5 at the 1500-block strike; **no**
+  spike at the 3000/8000-block strikes. Pre-fix every strike spiked 34→53.
+
+### Step 2 — thunder (same code path)
+Ported verbatim from the original: close vs distant thunder at
+`CLOSE_THUNDER_CUTOFF` (2000 blocks), pitch `0.5+fade*0.5` fading
+`THUNDER_PITCH_FULL_DIST`(3000)→`THUNDER_PITCH_MINIMUM_DIST`(5000), volume
+`1+rand*4`, delay `floor(dist/2000)*20` ticks via `playDelayed`, and an
+`AdjustableAttenuationSoundInstance` for the `thunderAttenuationDistance`.
+- **Proof (log):** 223 b → `close_thunder delay=0 pitch=1.00`; 3001 b →
+  `distant_thunder delay=20t pitch=1.00`; 8000 b → `distant_thunder
+  delay=80t pitch=0.50`.
+
+### Step 3 — the smeared, streaky storm cloud
+- **OIT REFUTED** (per Jan's instruction to find the real cause first, and skip
+  the weighted-blend OIT port if it is not the cause): cumulonimbus has
+  `transparency_fade: 0`, so `CpuCloudGenerator` emits **zero** transparent
+  cubes for it — the transparency pass is not the smear. **OIT port skipped.**
+- **Root cause:** the flat screen-space storm-fog overlay saturated to opaque
+  (`coverage*2.5` capped at 1.0, gradient floor 0.3) — a fully opaque flat
+  grey wash under a storm that hid ALL the cube geometry = the "smeared grey
+  blobs with streaks" in Jan's shots 3–4.
+- **Fix:** `storm_fog.fsh` density capped at **0.45** and the vertical gradient
+  now fades to **zero** at the screen top (was a 0.3 floor), so the cube
+  structure of the storm cloud stays visible through the fog (the original's
+  raymarch fog darkens/softens but never fully occludes).
+- **Proof:** S2 with fog on = clear 3D cloud masses, blue sky through gaps,
+  storm-shaded undersides, no flat wash. Isolation pair: `docs/storm-evidence/
+S2-final-fog-on.png` vs `S2-nofog.png`. (Residual fine vertical streaks in the
+  darkest undersides = transparent edge-dithering + columnar noise of
+  coexisting cloud types — a remaining fidelity gap, not OIT/fog.)
+
+### Step 4 — the straight vertical cut / LOD
+Evidence (no code): the distant field is genuinely multi-scale (large soft
+far-LOD undulations, fine dithered cubes near; the generation log shows lod
+4/8 chunks) — no uniform 128-cube block. The visible straight cut was the
+chunk-border seam, root-caused and fixed in step 5.
+
+### Step 5 — choppy motion + the straight cut (one root cause)
+- **Root cause:** each chunk mesh is a snapshot of the wind scroll drift
+  (`genScrollX/Y/Z` recorded at generation) but was drawn at its grid position
+  until the drift accumulated `SCROLL_REGEN_THRESHOLD` (8 cloud units = 64
+  blocks). That gives (a) a staircase of 64-block jumps staggered across chunks
+  (the "choppy" motion) and (b) adjacent chunks holding different snapshot
+  phases → a hard vertical seam at the border (the straight cut).
+- **Fix:** draw each chunk at grid position + `(scrollNow − genScroll)` via a
+  new `CloudOffset` UBO (a ring of 3 slots for the Mesa/Intel fixed-buffer
+  constraint). Algebraically exact because `CpuCloudGenerator.sampleLayer`
+  offsets the sampling by the full scroll for every layer, so the field moves
+  as a rigid body in world space and one draw offset is exact for all layers.
+  The shadow pass keeps a zero offset (≤8-unit error is invisible in a diffuse
+  shadow).
+- **Proof:** the vertical seam at frame centre (step 0's S5-01) is **GONE**
+  (`docs/storm-evidence/S5-01-final-no-seam.png`); the low cloud deck drifts
+  continuously at ~1.3 blocks/s (the expected wind speed) with no jumps
+  (`S5-60-final-drift.png`).
+
+### Step 6 — options
+- **Hide Sky Flashes:** new `HIDEFLASH` devshot token calls
+  `options.hideLightningFlash().set(true)`. Run `sc-storm-s6-hideflash` S5
+  curve is FLAT 66.2–70.4 (no spikes) vs +8–9 spikes without the option, with
+  the near strikes still firing — suppression is the option gate in
+  `flashStrength`. **PASS.**
+- **Storm fog toggle:** covered by the step 3 isolation pair
+  (S2-final-fog-on vs S2-nofog).
+- **Show Clouds off:** covered by the real-profile `renderClouds=false` FPS run
+  below.
+
+### Step 7 — real profile (this report)
+- **Install:** `./dev-relaunch.sh --install` → `simple-clouds-0.7.3+26.2-
+  fabric.jar` (2 683 492 bytes) into the real `mods/`; dev-client install-
+  verify screenshot clean (white 3D cubes, dithered edges, no seams) with the
+  new offset UBO; dev client stopped after the check.
+- **World / pack:** `New World (1)` (the lightweight test world — the main
+  `New World` worldgen OOM-loops / joins in ~8 min; the STORM scene is
+  self-contained, spawning its own formation, so the world does not change the
+  cloud-cost / playability result), full 329-mod pack incl. Distant Horizons,
+  16 GB heap (`SC_XMX=16384m`), cgroup ceiling 14 GB.
+- **S1–S5 re-run** (real profile, 09:4x): images in `docs/storm-evidence/real/
+  devshot-S{1,2,3,4}.png` + S5 sequence frames. Read on screen: structured 3D
+  cloud masses, no flat wash, no seam, no vanilla cloud layer, clouds sorting
+  correctly against the DH far-view terrain.
+- **Flash log (real profile):** close strikes (≤2000 b) log `flash sky-flash
+  (2t per frame while bolt bright, fade>0.5)` + `close_thunder delay=0`;
+  every far strike (>2000 b) logs `flash none (beyond the 2000-block flash
+  cutoff)` + `distant_thunder` with distance-scaled delay (20 t / 40 t / 80 t)
+  and pitch fade (1.00 → 0.70 → 0.50). Full log: `docs/storm-evidence/real/
+  flashlog.txt`.
+- **FPS near the storm** (S5 ground view, `HOLD` keeps the run active, the
+  game's own `getFps()`/`getFrameTimeNs()` counters, same scene):
+  - Clouds **ON** (default config): display 30 FPS; steady render frame time
+    **2.8–4.1 ms** (median ~3.5 ms).
+  - Clouds **OFF** (`renderClouds=false` + `generateMesh=false`, same scene):
+    display 29–30 FPS; steady render frame time **2.6–4.0 ms** (median ~3 ms),
+    with occasional 7–25 ms spikes (GC / chunk-gen, present in both runs).
+  - **Delta ≈ 0.5 ms/frame (within the run-to-run noise).** The displayed 30
+    FPS is a **cap**, not a load: `options.txt` has `enableVsync:true`,
+    `maxFps:120` and the pack ships the **dynamic-fps** mod. The render work
+    (~4 ms) is far below the 33 ms a true 30 FPS would need, so in this 329-
+    mod + Distant Horizons pack the game loop is tick/worldgen-bound and the
+    cloud render cost sits in the noise — consistent with the session-2 finding
+    above. The full multi-LOD cloud field (the "109 million instances" scale)
+    stays playable: no OOM, no crash, stable 30 FPS.
+- **Memory (storm scene, real profile):** RSS stable at **~10–12 GB** with the
+  cumulonimbus + full field (ON sampled ~10.4 GB; OFF leveled off 11.94→
+  11.98 GB across 3 min), 13–16 GB of mony's 46 GB available. Well under the
+  14 GB cgroup ceiling and 16 GB heap. Levels off — no growth trend. (The
+  30-min clean-run cloud delta of ~2.1–2.2 GB and the OOM-in-streamsreflowing
+  note are in the session-2 Memory section above.)
+- **Reboot note:** mony rebooted 08:53 (clean — no OOM in the current boot; the
+  Sep 13 OOM kills in `dmesg` are the pre-16 GB era). After the reboot the
+  X11 cookie changed, so `~/.cache/simpleclouds/launch.env` (the saved launch
+  env) needed its `XAUTHORITY`/`ICEAUTHORITY` refreshed to open `:1` again.

@@ -236,6 +236,37 @@ that is a step-5/6 quality detail and is out of scope for the motion proof.)
 Evidence: `docs/reference/step4-drift-*.png` + the scroll log (X -19 -> -38,
 Z -98 -> -93 between E1 and E2).
 
+## STORM — lightning, thunder, storm fog, smooth motion (STORM-PLAN, 2026-09-13/14)
+
+Jan reported two bugs in the real profile: (1) lightning from a far storm flashes
+the whole screen, and (2) the cumulonimbus looks broken (flat grey wall, a straight
+vertical cut, smeared grey blobs). Full results + proofs are in
+`VISUAL-PARITY-RESULT.md` ("Storm plan — steps 0–7"); this is the port-status
+summary. Commits `b143a75`, `24c956a`, `99aa986`, `7a7e65a`, `3abc226`.
+
+- **Lightning flash** (`WorldEffects`, `CloudsDrawPipeline`): the port used to
+  start a 1.2–2.75 s global flash on EVERY strike at any distance (even
+  sound-only). Now the flash is the original's short sky flash: only for a
+  rendered bolt within 2000 blocks with fade > 0.5, 2 ticks (flickering), and it
+  honours vanilla **Hide Sky Flashes**. 26.2 note: the vanilla sky flash is dead
+  (nothing consumes `getSkyFlashTime`), so the port draws its own short full-
+  screen white `sky_flash` pass on the gated strength. **Known deviation:** the
+  original's per-bolt LOCAL storm-fog lighting is not ported (the 26.2 fog is a
+  simplified screen-space overlay; its flash hook is a gated global
+  `LightningMul`).
+- **Thunder** (`WorldEffects` + `AdjustableAttenuationSoundInstance`): close vs
+  distant at 2000 blocks, pitch 0.5+fade*0.5 (3000→5000 fade), volume 1+rand*4,
+  delay floor(dist/2000)*20 ticks, attenuation distance from config.
+- **Storm fog** (`storm_fog.fsh`): density capped at 0.45 and the vertical
+  gradient fades to zero at the screen top (was an opaque flat wash) — this was
+  the "smeared grey blobs" (NOT the transparency pass: cumulonimbus has
+  `transparency_fade:0`, so it emits no transparent cubes; OIT port skipped).
+- **Smooth motion + no seam** (`clouds*.vsh` `CloudOffset` UBO, `CloudsDrawPipeline`,
+  `SimpleCloudsRenderer`): each chunk is drawn at grid position +
+  `(scrollNow − genScroll)` — exact because the noise sample is rigid in world
+  space for all layers. Fixes both the 64-block staircase ("choppy") and the
+  chunk-border seam (the straight cut). Shadow pass keeps a zero offset.
+
 ## CLOUD VOLUME ANCHORING — **CORRECTED (2026-09-13, Step 1 of VISUAL-PARITY-PLAN)**
 
 The 2026-09-12 entry below this one (and the table row it came from) concluded the 1.20.1
