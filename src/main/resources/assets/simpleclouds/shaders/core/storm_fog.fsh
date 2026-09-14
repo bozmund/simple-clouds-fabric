@@ -40,11 +40,18 @@ void main()
 	// (coverage*2.5 capped at 1.0) - a fully opaque flat layer that hid ALL of
 	// the cloud geometry, which is what read as the "smeared grey blobs with
 	// streaks" in Jan's shots 3-4. The original's raymarch fog darkens and
-	// softens but never fully occludes, so: cap the accumulated density well
-	// below opaque (0.45) and fade it to ZERO at the top of the screen, so the
-	// cube structure of the storm cloud stays visible through the fog.
+	// softens but never fully occludes, so the density is HARD-CAPPED well below
+	// opaque and fades to ZERO at the top of the screen, keeping the cube
+	// structure of the storm cloud visible through the fog.
+	//
+	// NOTE: the first attempt only MULTIPLIED by 0.45 and still clamped to 1.0.
+	// Under a DENSE cumulonimbus (coverage ~1.0 -> Intensity = coverage*2.5 =
+	// 2.5) that is 2.5*0.45 = 1.125 -> clamped to 1.0 = opaque again, which the
+	// real profile's S2 (straight up under the storm) exposed as a flat grey
+	// wash. The hard cap below fixes that: the fog can darken/soften but never
+	// fully occludes, no matter how dense the storm is.
 	float gradient = mix(1.0, 0.0, pow(clamp(texCoord.y, 0.0, 1.0), VerticalFade));
-	float density = clamp(Intensity * gradient * LightningMul * 0.45, 0.0, 1.0);
+	float density = clamp(Intensity * gradient * LightningMul * 0.45, 0.0, 0.5);
 
 	fragColor = vec4(FogColor, density);
 }
