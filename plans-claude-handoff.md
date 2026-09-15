@@ -1,3 +1,6 @@
+> **11:50 update:** 30-minute LOOP stress PASSED (30 cycles, failed=0 everywhere, no errors, RSS 3.28 -> 3.44 GB,
+> direct 68 -> 72 MB, transform capacity <= 32). Caveats: AFK 10-FPS cap for 13 min, two ~2.2 s hitches. Details: end of
+> `PORT-PROGRESS-2026-09-14.md`. Open bug from real play: atmospheric (cirrus) layer drawn over blocks - unfixed.
 > **Repository (2026-09-15 11:35):** all further work happens in `/home/jan/simple-clouds-fabric`
 > (GitHub `bozmund/simple-clouds-fabric`, private). Branch per task, one commit per verified step,
 > push when done, never force-push or rewrite `main`. The old candidate folder is frozen (read-only

@@ -464,3 +464,35 @@ Remaining, not defects by evidence but open parity questions (need 1.20.1 captur
 scene): band darkness/colour (port: FogColor 0.04/0.045/0.06, alpha cap 0.8; original: shadow-map
 colour × ColorMultiplier, density grows with distance, 200 quadratic steps to ~7900 blocks); the
 fine dither grain (visible only zoomed; STEPS 24 → 48 would halve it at twice the pass cost).
+
+## 2026-09-15 11:14–11:45 CEST — Claude: 30-minute LOOP stress test (handoff item 7)
+
+Jar `d91c38c0…` (candidate, not installed; the real profile still runs `1fa5ff98…`). Script
+`tools/claude-stress.sh 1800`: `A B C D F LOOP` via `dev-relaunch.sh`, a sample every 30 s,
+stop by deleting `run/devshot.request`, then only `simpleclouds-devclient` stopped. Evidence (not in
+git): `/home/jan/.cache/simpleclouds/port-candidate-tgkFnnmU/evidence-claude-0915-40-stress/`
+(`samples.tsv`, `summary.txt`, `latest.log`, last-cycle A–F shots).
+
+Verified from the log:
+- Ran 1805 s, ended by time; 30 LOOP cycles; clean stop (request file removed, unit inactive).
+- 61 generation summaries, **all `failed=0`**; no Simple Clouds error, exception, cap error,
+  refused view or OOM. Dynamic Transforms capacity max **32**; writes peak per frame ≤ 1202.
+- Memory (60 samples): RSS 3.28 → 3.44 GB (+0.16 GB; +0.13 in the first 5 min, then ≈ +0.03 GB
+  per 10 min), direct buffers 68 → 72 MB (403–416 buffers), heap oscillating 1.0–2.3 GB (GC keeps
+  up). No growth pattern that points at a leak over 30 min.
+- Cloud field never collapsed: faces before each A shot moved gradually between 236,762 and
+  921,254 (drift and formation changes); last-cycle shots show a thinner field, not an empty one.
+
+Caveats (observed):
+- **Minecraft's AFK frame cap distorted 13 of the 30 minutes.** The dev client's `run/options.txt`
+  has `inactivityFpsLimit:"afk"`: from 11:24:39 (≈ 10 min without input) the worst frame sat at
+  103–115 ms (≈ 10 FPS, was 34–48 ms) and each view's gate took ~26.9 s instead of ~9 s (cycles
+  47 s → 137 s). From ~11:38 cycles were fast again (input on the dev-client window, presumably).
+  For a full-load repeat set `inactivityFpsLimit:"minimized"` in the checkout's `run/options.txt`
+  (dev world only; the real profile's options are not touched).
+- Two single-frame hitches of ≈ 2.2 s (11:18:39: 2266 ms; 11:26:39: 2206 ms), 8 min apart, cause
+  not determined (suspects: full GC or integrated-server autosave). Check with GC logging or
+  spark in the next long run.
+
+Result: no memory growth, no failed chunks and no errors over 30 minutes; the stress item is passed
+for the looping standard views, with the AFK-cap and hitch caveats above.
