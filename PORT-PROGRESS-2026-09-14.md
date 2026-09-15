@@ -496,3 +496,47 @@ Caveats (observed):
 
 Result: no memory growth, no failed chunks and no errors over 30 minutes; the stress item is passed
 for the looping standard views, with the AFK-cap and hitch caveats above.
+
+## 2026-09-15 11:50–12:10 CEST — Claude: atmospheric layer drawn over blocks (fixed) + install
+
+Jan saw "wind lines through blocks" in real play (installed jar `1fa5ff98`). Cause (verified by
+code): the atmospheric (high cirrus) layer is drawn at the end of `generateAndDrawClouds`, which
+runs from `MixinLevelRenderer` at the TAIL of `LevelRenderer.render` — after terrain and clouds —
+and the pass had no depth input, so it blended the layer into every pixel whose view ray points
+upward: blocks and clouds above the horizon included. The 1.20.1 original draws the layer in
+`DefaultPipeline.afterSky`, under terrain and clouds.
+
+Fix (branch `claude/atmospheric-sky-only`): `core/atmospheric_clouds.fsh` samples `DepthSampler` and
+discards every non-sky pixel (depth > 1e-7, the cleared-depth test sky_flash.fsh uses);
+`CloudsDrawPipeline` declares the sampler in the atmospheric bind group and binds the main depth
+view. Build OK, jar `8d3d11306c62149828f6ac547080cb80564b48e00513585da745c09ae19266ab`.
+
+Evidence (view B: camera Y 100, pitch −15, cliff and trees above the horizon; NOSHADOW NOFOG =
+layer on, OVL0 = layer off; sky mask from a FOGDEBUG shot; new `tools/maskdiff.py`):
+- `evidence-claude-0915-50-before-atmos` / `-51-before-ovl0` (jar d91c38c0),
+  `-52-after-atmos` / `-53-after-ovl0` (jar 8d3d1130), mask `-54-mask`; all 1/1, no errors. The
+  11:52 before-atmos attempt failed with "no completed in-game screenshot" (dev-relaunch checked
+  before the async save finished; the retry passed) — harness race, not a render failure.
+- Static terrain only (geometry in the mask AND ≤ 2 levels different between the two OVL0 runs,
+  256,920 px): layer on vs off BEFORE the fix changed 11.2 % of those pixels by > 4 levels (7.7 %
+  by > 12), all in rows 0–299 (above the horizon); AFTER the fix 0.30 % (mean 0.14 levels).
+  **Verified: the layer no longer touches terrain.** Visually: before, a pale streak across the
+  grey cliff face; after, the cliff is clean and the sky keeps its wisps.
+- Whole-mask numbers are dominated by the 3D clouds moving between runs (control OVL0-vs-OVL0:
+  geometry 4.04, sky 37.44), so only the static-terrain figure is meaningful.
+- Jan's own dev-client screenshot `run/screenshots/2026-09-15_11.38.40.png` (old build d91c38c0,
+  taken during the stress run at the B spot) shows the streaks across the grey cliff face and the
+  floating rock — the same artefact as the before-fix B shot. Visual confirmation of the bug.
+- Smoke test `evidence-claude-0915-55-after-abcdf` (A B C D F) on jar 8d3d1130: B, C, D, F
+  captured, no Simple Clouds render error. View A was refused by the DevShot terrain gate
+  ("terrain in view false" after 90 s). After today's runs the dev player stands elsewhere, so A
+  (player-column fallback, 198x79x-1237) faces a hillside at point-blank range and the 2/3-visible
+  frustum-probe rule is borderline: refused twice with default overlays on the fix build
+  (`-55`, `-57`), passed once with OVL0 (`-56`, 243/281), and **refused on main (d91c38c0, no fix)
+  too** (`-58`, watchdog stopped it) → not caused by the fix (verified). Harness follow-up: give
+  view A a fixed origin, or relax the gate when the camera faces terrain at close range.
+
+**Installed 2026-09-15 12:21 at Jan's request:** `Fabric 26.2/mods/simple-clouds-0.7.3+26.2-fabric.jar`
+is now `8d3d11306c62149828f6ac547080cb80564b48e00513585da745c09ae19266ab` (built from `a47259a`: everything on main plus this fix — per-frame transform
+reset, spatial storm fog, sky-only sky flash, sky-only atmospheric layer). Previous jar `1fa5ff98…` backed up
+to `/home/jan/.cache/simpleclouds/claude-backups/installed-1fa5ff98-20260915-122126`. Minecraft was not running during the swap. Not yet seen in real play.

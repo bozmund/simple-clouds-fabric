@@ -1,3 +1,6 @@
+> **12:25 update:** atmospheric layer fixed (sky pixels only; was painted over blocks/clouds) and the build
+> `8d3d1130` INSTALLED in the real Fabric 26.2 profile at Jan's request (old jar backed up). View A gate is
+> borderline at the moved dev-player spot (harness, not renderer). Details: end of `PORT-PROGRESS-2026-09-14.md`.
 > **11:50 update:** 30-minute LOOP stress PASSED (30 cycles, failed=0 everywhere, no errors, RSS 3.28 -> 3.44 GB,
 > direct 68 -> 72 MB, transform capacity <= 32). Caveats: AFK 10-FPS cap for 13 min, two ~2.2 s hitches. Details: end of
 > `PORT-PROGRESS-2026-09-14.md`. Open bug from real play: atmospheric (cirrus) layer drawn over blocks - unfixed.
