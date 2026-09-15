@@ -50,16 +50,7 @@ vec3 sideNormal(int side)
 	return vec3(0.0, 0.0, 1.0);
 }
 
-vec3 applySideTransform(vec3 p, int side)
-{
-	// Exact port of the former per-face 4x4 matrices (column-major).
-	if (side == 0) return p;
-	if (side == 1) return vec3(-p.x, p.y, p.z);
-	if (side == 2) return vec3(p.y, -p.x, p.z);
-	if (side == 3) return vec3(p.y, p.x, p.z);
-	if (side == 4) return vec3(p.z, p.y, -p.x);
-	return vec3(-p.z, p.y, p.x);
-}
+#moj_import <simpleclouds:cloud_faces.glsl>
 
 vec4 mixLight(vec3 lightDir0, vec3 lightDir1, vec3 normal, vec4 color)
 {

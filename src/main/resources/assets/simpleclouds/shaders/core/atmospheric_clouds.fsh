@@ -115,9 +115,15 @@ void main()
 	// component is negative), then to world space via the transpose of the view
 	// rotation.
 	vec2 uv = texCoord * 2.0 - 1.0;
-	vec3 dirCam = normalize(vec3(uv * Aspect, -1.0 / TanHalfFov));
+	vec3 dirCam = normalize(vec3(uv.x * Aspect, uv.y, -1.0 / TanHalfFov));
 	vec3 rayDir = transpose(mat3(ViewMat)) * dirCam;
 
+	// A horizontal/downward ray never intersects the layer above the camera.
+	if (rayDir.y <= 0.00001)
+	{
+		fragColor = col;
+		return;
+	}
 	float rayLen = 5000.0 / rayDir.y; // plane 5000 blocks above the camera
 	if (rayLen <= 0.0)
 	{

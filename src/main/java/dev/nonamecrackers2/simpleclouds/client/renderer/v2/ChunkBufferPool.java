@@ -53,6 +53,7 @@ public final class ChunkBufferPool
 		if (best >= 0)
 		{
 			buffer = this.free.remove(best);
+			this.retainedBytes -= buffer.capacity();
 		}
 		else
 		{

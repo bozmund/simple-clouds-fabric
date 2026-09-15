@@ -7,3 +7,7 @@ bin/
 .idea/
 *.iml
 .vscode/
+
+# Local test evidence (screenshots, logs) and backup copies stay out of git
+evidence-*/
+*.before-*.java

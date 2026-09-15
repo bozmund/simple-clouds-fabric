@@ -31,8 +31,6 @@ load_env() { while IFS= read -r -d "" kv; do export "$kv"; done < "$ENVF"; }
 #    Modrinth game is a KnotClient too, and killing it would end Jan's session.
 systemctl --user stop "$UNIT" 2>/dev/null
 systemctl --user reset-failed "$UNIT" 2>/dev/null
-pkill -f "simple-clouds/[.]gradle/loom-cache/launch[.]cfg" 2>/dev/null
-pkill -f "simple-clouds/gradle/wrapper/gradle-wrapper[.]jar" 2>/dev/null
 sleep 3
 
 # 2. Launch as its own user unit: it survives the symbiote_job that ran this
@@ -78,19 +76,33 @@ if [ "$drawn" -ne 1 ]; then echo "FAIL ($stage): no cloud draw within 400s"; tai
 # 4. The mod takes its own screenshots (no HUD) once FRAMES frames have
 #    rendered, so window stacking cannot hide the game. Standard-view runs
 #    produce devshot-A.png ... devshot-E2.png; the legacy run devshot.png.
-VIEWWANT=0; for t in ${DEVSHOT_EXTRA:-}; do case "$t" in A|B|C|D|E) VIEWWANT=$((VIEWWANT+1));; esac; done
-EVIEW=0; case " ${DEVSHOT_EXTRA:-} " in *" E "*) EVIEW=2;; esac
+VIEWWANT=0
+for t in ${DEVSHOT_EXTRA:-}; do
+  case "$t" in
+    A|B|C|D|F|G|H) VIEWWANT=$((VIEWWANT+1));;
+    E) VIEWWANT=$((VIEWWANT+3));;
+    SHAKE) VIEWWANT=$((VIEWWANT+41));;
+    STORM) VIEWWANT=$((VIEWWANT+64));;
+  esac
+done
 if [ "$VIEWWANT" -gt 0 ]; then
-  WANT=$(( VIEWWANT + EVIEW ))   # E produces three files (E1/E2/E3, A2)
+  WANT=$VIEWWANT
   # 240 x 2s = 8 min: the LOD field fill-wait (step 2) can take ~2-3 min before the
   # first shot, then 12s settle per view.
   for i in $(seq 1 240); do
     n=$(ls run/screenshots/devshot-*.png 2>/dev/null | wc -l)
     [ "$n" -ge "$WANT" ] && break
+    if ! systemctl --user is-active --quiet "$UNIT"; then
+      echo "FAIL (runtime): dev client stopped before all $WANT screenshots"; exit 1
+    fi
     sleep 2
   done
+  if [ "$n" -lt "$WANT" ]; then
+    echo "FAIL (evidence): expected $WANT screenshots, found $n"; exit 1
+  fi
 else
   for i in $(seq 1 45); do [ -s "$DEVSHOT" ] && break; sleep 2; done
+  if [ ! -s "$DEVSHOT" ]; then echo "FAIL (evidence): no in-game screenshot"; exit 1; fi
 fi
 
 # 5. Log check. "unsupported uniform" means a shader uses a uniform block the
@@ -114,8 +126,7 @@ done
 if [ ${#SHOTS[@]} -gt 0 ]; then
   SRC="in-game devshot, no HUD"
 else
-  load_env; spectacle -b -n -o "$SHOT" >/dev/null 2>&1
-  SHOTS=("$SHOT"); SRC="desktop capture (no devshot within the wait -- the game window may be covered)"
+  echo "FAIL (evidence): no completed in-game screenshot"; exit 1
 fi
 
 if [ -n "$BAD" ]; then
@@ -128,5 +139,5 @@ if [ "${1:-}" = "--install" ]; then
     || { echo "FAIL (build): jar build/install failed"; tail -20 "$HOME/.cache/simpleclouds/build.out"; exit 1; }
 fi
 
-for s in "${SHOTS[@]}"; do echo "PASS (log clean). Screenshot: $s ($SRC). READ it and confirm what you changed is actually visible."; done
+for s in "${SHOTS[@]}"; do echo "CAPTURED: $s ($SRC). Render-log gate passed; visual review still required."; done
 echo "The dev client keeps running as user unit $UNIT for play-testing (stop it: systemctl --user stop $UNIT)."

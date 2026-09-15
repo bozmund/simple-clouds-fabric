@@ -83,7 +83,7 @@ public final class CpuCloudGenerator
 
 	/**
 	 * X/Z footprint of one spawned cloud formation (a compute-shader CloudRegion entry).
-	 * x/z/radius are in WORLD BLOCKS; m00..m11 are the region's rotation+stretch
+	 * x/z/radius are in CLOUD UNITS (8 blocks); m00..m11 are the region's rotation+stretch
 	 * transform (CloudRegion.createTransform, dimensionless); groupIndex is the index
 	 * of the formation's cloud type in the active group list.
 	 */
@@ -184,15 +184,19 @@ public final class CpuCloudGenerator
 		// Region mode: precompute the per-column formation mask (port of cloud_regions.comp).
 		// Regions are 2D, so this is xz-sized, not volume-sized.
 		boolean regionMode = !this.regions.isEmpty();
-		int[] columnGroup = regionMode ? new int[xCells * zCells] : null;
-		float[] columnFade = regionMode ? new float[xCells * zCells] : null;
+		// Sample one column beyond every edge. Treating a neighboring chunk as
+		// empty emits interior walls along every 32-cell boundary.
+		int maskZCells = zCells + 2;
+		int[] columnGroup = regionMode ? new int[(xCells + 2) * maskZCells] : null;
+		float[] columnFade = regionMode ? new float[(xCells + 2) * maskZCells] : null;
+		boolean hasInteriorFormation = false;
 		if (regionMode)
 		{
 			Arrays.fill(columnGroup, -1);
 			float edge = 1.0F / REGION_EDGE_FADE_FACTOR;
-			for (int x = x0; x < x1; x += lodScale)
+			for (int x = x0 - lodScale; x <= x1; x += lodScale)
 			{
-				for (int z = z0; z < z1; z += lodScale)
+				for (int z = z0 - lodScale; z <= z1; z += lodScale)
 				{
 					// Cloud units (1 unit = CLOUD_SCALE = 8 world blocks): the region
 					// positions/radii and the noise coordinates share this space, and the
@@ -224,12 +228,26 @@ public final class CpuCloudGenerator
 							bestG *= Math.min((d - radius) * REGION_EDGE_FADE_FACTOR, 1.0F);
 						}
 					}
-					int i = ((x - x0) / lodScale) * zCells + ((z - z0) / lodScale);
+					int i = ((x - x0) / lodScale + 1) * maskZCells + ((z - z0) / lodScale + 1);
 					columnGroup[i] = best;
+					if (x >= x0 && x < x1 && z >= z0 && z < z1 && best >= 0 && best < groupCount)
+						hasInteriorFormation = true;
 					// cube_mesh.comp: fade = -5 * (1 - g)^10
 					columnFade[i] = best < 0 ? 0.0F : -5.0F * (float) Math.pow(1.0F - bestG, 10.0);
 				}
 			}
+		}
+
+		// No selected interior columns means neither opaque nor transparent cells
+		// can be emitted. Halo-only coverage must not keep an empty volume busy.
+		// Reset the borrowed buffers and result counters, including stale values.
+		if (regionMode && !hasInteriorFormation)
+		{
+			outOpaqueCount[0] = outTransparentCount[0] = outStormCoverage[0] = 0;
+			this.recordStormColumns(null, xCells, zCells);
+			opaqueOut.position(0).limit(0);
+			transparentOut.position(0).limit(0);
+			return new ByteBuffer[] { opaqueOut, transparentOut };
 		}
 
 		for (int x = x0; x < x1; x += lodScale)
@@ -239,18 +257,19 @@ public final class CpuCloudGenerator
 				for (int z = z0; z < z1; z += lodScale)
 				{
 					int ci = ((x - x0) / lodScale) * zCells + ((z - z0) / lodScale);
+					int mi = ((x - x0) / lodScale + 1) * maskZCells + ((z - z0) / lodScale + 1);
 					// Region mode: a column with no formation emits nothing.
-					if (regionMode && columnGroup[ci] < 0)
+					if (regionMode && columnGroup[mi] < 0)
 						continue;
 
 					boolean anyOpaque = false;
 					for (int g = 0; g < groupCount; g++)
 					{
-						if (regionMode && g != columnGroup[ci])
+						if (regionMode && g != columnGroup[mi])
 							continue;
 						float noise = sampleGroup(this.groups.get(g), x, y, z, scale, scrollX, scrollY, scrollZ, wiggle, gradient);
 						if (regionMode)
-							noise += columnFade[ci];
+							noise += columnFade[mi];
 						groupNoises[g] = noise;
 						if (noise > 0.0F)
 							anyOpaque = true;
@@ -261,8 +280,8 @@ public final class CpuCloudGenerator
 					// Region mode: the cell's formation group; legacy infinite field:
 					// group 0. Stormy types darken toward their base; fair-weather
 					// types stay bright — the "not uniformly white" 1.20.1 look.
-					int ownGroup = regionMode ? columnGroup[ci] : 0;
-					float fade0 = regionMode ? columnFade[ci] : 0.0F;
+					int ownGroup = regionMode ? columnGroup[mi] : 0;
+					float fade0 = regionMode ? columnFade[mi] : 0.0F;
 					float brightness = 1.0F;
 					if (stormShading && ownGroup >= 0 && ownGroup < groupCount)
 					{
@@ -296,7 +315,7 @@ public final class CpuCloudGenerator
 						{
 							for (int g = 0; g < groupCount; g++)
 							{
-								if (groupNoises[g] > 0.0F && this.groups.get(g).stormType())
+								if ((!regionMode || g == ownGroup) && groupNoises[g] > 0.0F && this.groups.get(g).stormType())
 								{
 									columnStorm[ci] = true;
 									break;
@@ -318,7 +337,7 @@ public final class CpuCloudGenerator
 					boolean inTranspDist = tx * tx + tz * tz <= TRANSPARENCY_DISTANCE * TRANSPARENCY_DISTANCE;
 					for (int g = 0; g < groupCount; g++)
 					{
-						if (regionMode && g != columnGroup[ci])
+						if (regionMode && g != columnGroup[mi])
 							continue;
 						if (groupNoises[g] > 0.0F)
 							continue;
@@ -338,20 +357,10 @@ public final class CpuCloudGenerator
 			}
 		}
 
-		// Fraction of the 8x8 central columns (around the camera) with storm above.
-		int center = xCells / 2;
-		int marked = 0;
-		for (int dx = center - 4; dx < center + 4; dx++)
-		{
-			if (dx < 0 || dx >= xCells) continue;
-			for (int dz = center - 4; dz < center + 4; dz++)
-			{
-				if (dz < 0 || dz >= zCells) continue;
-				if (columnStorm[dx * zCells + dz])
-					marked++;
-			}
-		}
-		outStormCoverage[0] = marked / 64.0F;
+		// Each chunk covers only its share of the SAME camera footprint.
+		outStormCoverage[0] = StormCoverage.contribution(columnStorm, xCells, zCells,
+				x0, z0, lodScale, camCloudXZ[0], camCloudXZ[1]);
+		this.recordStormColumns(columnStorm, xCells, zCells);
 
 		outOpaqueCount[0] = opaqueWritten / CloudVertexFormat.BYTES_PER_INSTANCE;
 		outTransparentCount[0] = transparentWritten / CloudVertexFormat.BYTES_PER_INSTANCE_ALPHA;
@@ -366,7 +375,7 @@ public final class CpuCloudGenerator
 			if (now - lastYRangeLog >= 5_000_000_000L)
 			{
 				lastYRangeLog = now;
-				LOGGER.info("Simple Clouds clouds: generated Y range {}..{} (worldBaseY={}, {} opaque instances, brightness {}..{})",
+				LOGGER.debug("Simple Clouds clouds: generated Y range {}..{} (worldBaseY={}, {} opaque instances, brightness {}..{})",
 						String.format(java.util.Locale.ROOT, "%.1f", minY), String.format(java.util.Locale.ROOT, "%.1f", maxY),
 						String.format(java.util.Locale.ROOT, "%.1f", worldBaseY), (int) outOpaqueCount[0],
 						String.format(java.util.Locale.ROOT, "%.2f", minBright), String.format(java.util.Locale.ROOT, "%.2f", maxBright));
@@ -386,6 +395,39 @@ public final class CpuCloudGenerator
 	/** Step 8 diagnostic (DevShot FLAT): false = force brightness 1.0 (no storm
 	 *  shading) for an A/B comparison. Default true. */
 	public static volatile boolean stormShading = true;
+
+	// Plan item 3 (spatial storm fog): the storm columns of the last generate() call -- which
+	// columns hold storm-type cloud above the camera, index ix * zCells + iz. The worker that owns
+	// this generator reads them right after generate() (the generator is not shared).
+	private byte[] lastStormColumns = new byte[0];
+	private int lastStormXCells;
+	private int lastStormZCells;
+
+	private void recordStormColumns(boolean[] columns, int xCells, int zCells)
+	{
+		byte[] out = new byte[xCells * zCells];
+		if (columns != null)
+			for (int i = 0; i < out.length; i++)
+				out[i] = columns[i] ? (byte) 1 : (byte) 0;
+		this.lastStormColumns = out;
+		this.lastStormXCells = xCells;
+		this.lastStormZCells = zCells;
+	}
+
+	public byte[] copyStormColumns()
+	{
+		return this.lastStormColumns.clone();
+	}
+
+	public int lastStormXCells()
+	{
+		return this.lastStormXCells;
+	}
+
+	public int lastStormZCells()
+	{
+		return this.lastStormZCells;
+	}
 
 	/** Step 1/8 proof log: only when a DevShot run is active (DevShot sets it),
 	 *  so the shipped mod's chunk workers stay quiet. */
@@ -495,7 +537,7 @@ public final class CpuCloudGenerator
 		float cx = (x + lodScale * 0.5F) * scale, cy = (y + lodScale * 0.5F) * scale + this.worldBaseY, cz = (z + lodScale * 0.5F) * scale;
 		// Cell-based index (matches the precompute + the spaced loop); the span-based
 		// (x-x0)*(z1-z0) is only valid for lodScale==1.
-		int gi = columnGroup[((x - x0) / lodScale) * ((z1 - z0) / lodScale) + ((z - z0) / lodScale)];
+		int gi = columnGroup[((x - x0) / lodScale + 1) * ((z1 - z0) / lodScale + 2) + ((z - z0) / lodScale + 1)];
 		int written = 0;
 		written += this.emitRegionFace(buffer, offset + written, 0, cx, cy, cz, radius, brightness, x - lodScale, y, z, gi, x0, y0, z0, x1, y1, z1, columnGroup, columnFade, s, lodScale, scrollX, scrollY, scrollZ, wiggle, gradient);
 		written += this.emitRegionFace(buffer, offset + written, 1, cx, cy, cz, radius, brightness, x + lodScale, y, z, gi, x0, y0, z0, x1, y1, z1, columnGroup, columnFade, s, lodScale, scrollX, scrollY, scrollZ, wiggle, gradient);
@@ -528,10 +570,10 @@ public final class CpuCloudGenerator
 	private boolean isValidRegion(int x, int y, int z, int gi, int x0, int y0, int z0, int x1, int y1, int z1,
 			int[] columnGroup, float[] columnFade, float scale, int lodScale, float scrollX, float scrollY, float scrollZ, float wiggle, float[] gradient)
 	{
-		if (x < x0 || x >= x1 || y < y0 || y >= y1 || z < z0 || z >= z1)
+		if (x < x0 - lodScale || x > x1 || y < y0 || y >= y1 || z < z0 - lodScale || z > z1)
 			return false;
-		int zCells = (z1 - z0) / lodScale;
-		int i = ((x - x0) / lodScale) * zCells + ((z - z0) / lodScale);
+		int zCells = (z1 - z0) / lodScale + 2;
+		int i = ((x - x0) / lodScale + 1) * zCells + ((z - z0) / lodScale + 1);
 		if (columnGroup[i] != gi)
 			return false;
 		float noise = sampleGroup(this.groups.get(gi), x, y, z, scale, scrollX, scrollY, scrollZ, wiggle, gradient);

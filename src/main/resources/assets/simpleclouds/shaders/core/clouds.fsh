@@ -30,8 +30,7 @@ void main()
 {
 	float fade = ColorModulator.a;
 	float r = texture(BayerMatrixSampler, gl_FragCoord.xy * DitherScale).r;
-	if (fade < r)
-		discard;
+	if (fade < r) discard;
 
 	vec4 color = vertexColor * vec4(ColorModulator.rgb, 1.0);
 	color = mix(color, FogColor, smoothstep(FogStart, FogEnd, fogDistance));

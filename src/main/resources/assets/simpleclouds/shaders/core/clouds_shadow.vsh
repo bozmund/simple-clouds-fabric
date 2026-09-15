@@ -16,15 +16,7 @@ layout(std140) uniform ShadowMatrices {
 
 out float dummy;
 
-vec3 applySideTransform(vec3 p, int side)
-{
-	if (side == 0) return p;
-	if (side == 1) return vec3(-p.x, p.y, p.z);
-	if (side == 2) return vec3(p.y, -p.x, p.z);
-	if (side == 3) return vec3(p.y, p.x, p.z);
-	if (side == 4) return vec3(p.z, p.y, -p.x);
-	return vec3(-p.z, p.y, p.x);
-}
+#moj_import <simpleclouds:cloud_faces.glsl>
 
 void main()
 {

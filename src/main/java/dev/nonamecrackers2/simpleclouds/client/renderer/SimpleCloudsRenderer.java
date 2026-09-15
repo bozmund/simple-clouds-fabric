@@ -301,35 +301,6 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		return out;
 	}
 
-	/**
-	 * Cheap per-frame fingerprint of the formation set (positions/radii/stretches/rotations
-	 * quantized to 1/2 cloud unit, 1/100 rad); the mesh is only regenerated when this or
-	 * the band origin changes.
-	 */
-	private long regionSignature(float tick)
-	{
-		if (this.cloudManager == null)
-			return 0L;
-		long sig = 1L;
-		for (dev.nonamecrackers2.simpleclouds.common.cloud.region.CloudRegion region : this.cloudManager.getClouds())
-		{
-			sig = 31L * sig + region.getCloudTypeId().hashCode();
-			// Very coarse quantization on purpose: a crossing of any boundary
-		// invalidates every band of the grid (4 x ~15-150 ms of generation +
-		// ~2 MB of buffer uploads), so the deltas must stay far below what is
-		// visible. Spawned formations are HUGE (radius 6000-10000 blocks = 750-1250
-		// cloud units, drifting at 0.1-0.2 units/tick): a 20-unit (160 block) position
-		// step or a 5-unit radius step shifts the type mask by ~0.2% of a disk radius
-		// — invisible. Rotation/stretch never change during a region tick.
-			sig = 31L * sig + (long) (region.getPosX(tick) * 0.05F);
-			sig = 31L * sig + (long) (region.getPosZ(tick) * 0.05F);
-			sig = 31L * sig + (long) (region.getRadius(tick) * 0.2F);
-			sig = 31L * sig + (long) (region.getStretch(tick) * 10.0F);
-			sig = 31L * sig + (long) (region.getRotation(tick) * 10.0F);
-		}
-		return sig;
-	}
-
 	// Full-region generation cache: per-chunk instance data keyed by the chunk's
 	// SNAPPED world position (cloud units) + lodScale. A chunk regenerates only when
 	// its region signature or the data-driven group set changes. The layout comes from
@@ -345,7 +316,6 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	private static final int MAX_CACHED_CHUNKS = 512;
 	/** A1: reusable list of shadow-map sources (one per chunk with opaque data). */
 	private final java.util.List<CloudsDrawPipeline.InstanceSource> shadowSources = new java.util.ArrayList<>();
-	private int cacheGroupsHash = Integer.MIN_VALUE;
 	private boolean loggedFieldStats = false; // one-shot A1 field-size stats
 	/** Total chunks in the current target LOD set (for the fill-progress accessor). */
 	private int totalChunkCount = 0;
@@ -389,6 +359,11 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		GpuBuffer transparent;
 		int transparentCount;
 		float stormCoverage;
+		// Plan item 3: the chunk's storm columns (storm-type cloud above the camera, index
+		// ix * stormZCells + iz) for the spatial storm-fog map.
+		byte[] stormColumns;
+		int stormXCells;
+		int stormZCells;
 		// Fade-in (step 3, original CHUNK_FADE_IN_ALPHA_PER_TICK = 0.2/tick): the
 		// game tick at which this data was published; the chunk ramps alpha 0->1 over
 		// five ticks so new content fades in instead of popping.
@@ -415,6 +390,31 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	@Nullable
 	private java.util.concurrent.ExecutorService chunkWorkerPool;
 	private final java.util.concurrent.atomic.AtomicInteger chunkThreadCounter = new java.util.concurrent.atomic.AtomicInteger();
+	private final java.util.ArrayDeque<ChunkJob> batchWaiting = new java.util.ArrayDeque<>();
+	private final java.util.Map<ChunkCoord, ChunkData> batchStaged = new java.util.HashMap<>();
+	private final java.util.Set<ChunkCoord> batchExpected = new java.util.HashSet<>();
+	private long batchId;
+	private long publishedBatchCount;
+	private final java.util.Map<ChunkCoord, ChunkData> previousBatch = new java.util.HashMap<>();
+	private long transitionStartedNanos;
+	private static final long TRANSITION_NANOS = 300_000_000L;
+
+	private float transitionProgress()
+	{
+		return Math.min(1.0F, (System.nanoTime() - this.transitionStartedNanos) / (float)TRANSITION_NANOS);
+	}
+	private boolean batchFailed;
+	private long retryBatchAfterNanos;
+	private boolean hasScrollPhase;
+	private float phaseX, phaseY, phaseZ;
+	private float batchX, batchY, batchZ;
+	private volatile boolean workersStopped;
+	private final Object completionLock = new Object();
+	private long nextSummaryNanos = System.nanoTime() + 30_000_000_000L;
+	private long lastFrameNanos;
+	private long worstFrameNanos;
+	private long summaryQueued, summaryCompleted, summaryUploadBytes, summaryGenerationNanos;
+	private long summaryMissing, summaryMask, summaryScroll, summaryConfig, summaryFailed;
 
 	/** One off-thread chunk generation request (immutable inputs). x0/y0/z0/x1/y1/z1
 	 *  are the chunk bounds in CLOUD UNITS; lodScale is the cube/grid spacing (cloud
@@ -424,7 +424,7 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 			List<CpuCloudGenerator.CloudLayerGroup> groups, List<CpuCloudGenerator.RegionMask> regions,
 			long regionSig, int groupsHash, int camGridY, float cloudHeight,
 			float scrollX, float scrollY, float scrollZ,
-			float camCloudX, float camCloudZ)
+			float camCloudX, float camCloudZ, long batch)
 	{
 	}
 
@@ -433,14 +433,108 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	 *  scroll the geometry was generated with (A2: staleness test). */
 	private record ChunkResult(ChunkCoord coord, java.nio.ByteBuffer opaque, int opaqueCount,
 			java.nio.ByteBuffer transparent, int transparentCount, float stormCoverage,
-			float scrollX, float scrollY, float scrollZ)
+			byte[] stormColumns, int stormXCells, int stormZCells,
+			float scrollX, float scrollY, float scrollZ, long regionSig, int groupsHash,
+			long batch, long generationNanos, boolean success)
 	{
+	}
+
+	private void prepareBatch(List<long[]> target, List<CpuCloudGenerator.CloudLayerGroup> groups,
+			List<CpuCloudGenerator.RegionMask> regions, int config, int maxY, int cameraY, int cloudHeight,
+			float sx, float sy, float sz, float cameraX, float cameraZ)
+	{
+		if (!this.previousBatch.isEmpty())
+		{
+			if (this.transitionProgress() < 1.0F) return;
+			this.previousBatch.values().forEach(SimpleCloudsRenderer::closeChunk);
+			this.previousBatch.clear();
+		}
+		if (!this.batchExpected.isEmpty() || !this.batchStaged.isEmpty()
+				|| System.nanoTime() < this.retryBatchAfterNanos) return;
+		boolean scrollChanged = !this.hasScrollPhase || Math.abs(sx - this.phaseX) > SCROLL_REGEN_THRESHOLD
+				|| Math.abs(sy - this.phaseY) > SCROLL_REGEN_THRESHOLD || Math.abs(sz - this.phaseZ) > SCROLL_REGEN_THRESHOLD;
+		this.batchX = scrollChanged ? (float)Math.floor(sx) : this.phaseX;
+		this.batchY = scrollChanged ? (float)Math.floor(sy) : this.phaseY;
+		this.batchZ = scrollChanged ? (float)Math.floor(sz) : this.phaseZ;
+		this.batchFailed = false;
+		this.batchId++;
+		int coarsestLod = target.stream().mapToInt(c -> (int)c[2]).max().orElse(1);
+		int latticeX = dev.nonamecrackers2.simpleclouds.client.renderer.v2.ChunkGenerationKey.latticeShift(this.batchX, coarsestLod);
+		int latticeZ = dev.nonamecrackers2.simpleclouds.client.renderer.v2.ChunkGenerationKey.latticeShift(this.batchZ, coarsestLod);
+		List<CpuCloudGenerator.CloudLayerGroup> immutableGroups = List.copyOf(groups);
+		var masks = regions.stream().map(r -> new dev.nonamecrackers2.simpleclouds.client.renderer.v2.ChunkGenerationKey.Mask(
+				r.x(), r.z(), r.radius(), r.m00(), r.m01(), r.m10(), r.m11(), r.groupIndex())).toList();
+		for (long[] c : target)
+		{
+			int x = (int)c[0], z = (int)c[1], lod = (int)c[2], span = PRIMARY_CHUNK * lod;
+			ChunkCoord coord = new ChunkCoord(x, z, lod);
+			x += latticeX;
+			z += latticeZ;
+			ChunkData old = this.chunkCaches.get(coord);
+			long key = dev.nonamecrackers2.simpleclouds.client.renderer.v2.ChunkGenerationKey.local(x, z, span, lod, masks);
+			if (old != null && old.regionSig == key && old.groupsHash == config && !scrollChanged) continue;
+			if (old == null) this.summaryMissing++;
+			else if (old.groupsHash != config) this.summaryConfig++;
+			else if (scrollChanged) this.summaryScroll++;
+			else this.summaryMask++;
+			this.batchExpected.add(coord);
+			this.batchWaiting.add(new ChunkJob(coord, x, 0, z, x + span, maxY, z + span, lod,
+					immutableGroups, regions, key, config, cameraY, cloudHeight,
+					this.batchX, this.batchY, this.batchZ, cameraX, cameraZ, this.batchId));
+		}
+	}
+
+	private static void closeChunk(@Nullable ChunkData data)
+	{
+		if (data == null) return;
+		if (data.opaque != null) data.opaque.close();
+		if (data.transparent != null) data.transparent.close();
+	}
+
+	private void logGenerationSummary()
+	{
+		long now = System.nanoTime();
+		if (this.lastFrameNanos != 0) this.worstFrameNanos = Math.max(this.worstFrameNanos, now - this.lastFrameNanos);
+		this.lastFrameNanos = now;
+		if (now < this.nextSummaryNanos) return;
+		LOGGER.info("Simple Clouds generation backend=CPU queued={} completed={} failed={} stale[missing={},mask={},scroll={},config={}] generationMs={} uploadBytes={} worstFrameMs={} pending={} staged={} transformWritesPeakPerFrame={}",
+				this.summaryQueued, this.summaryCompleted, this.summaryFailed, this.summaryMissing, this.summaryMask,
+				this.summaryScroll, this.summaryConfig, this.summaryGenerationNanos / 1_000_000L,
+				this.summaryUploadBytes, this.worstFrameNanos / 1_000_000L, this.batchExpected.size(), this.batchStaged.size(),
+				this.drawPipeline != null ? this.drawPipeline.takePeakFrameTransforms() : 0);
+		this.summaryQueued = this.summaryCompleted = this.summaryFailed = this.summaryMissing = this.summaryMask = 0;
+		this.summaryScroll = this.summaryConfig = this.summaryGenerationNanos = this.summaryUploadBytes = this.worstFrameNanos = 0;
+		this.nextSummaryNanos = now + 30_000_000_000L;
+	}
+
+	public String generationDiagnostic()
+	{
+		return "phase=" + this.phaseX + "," + this.phaseY + "," + this.phaseZ
+				+ " batch=" + this.batchId + " waiting=" + this.batchExpected.size()
+				+ " staged=" + this.batchStaged.size();
+	}
+
+	public String meshDiagnostic()
+	{
+		return "faces=" + this.chunkCaches.values().stream().mapToLong(d -> d.opaqueCount).sum()
+				+ " previousFaces=" + this.previousBatch.values().stream().mapToLong(d -> d.opaqueCount).sum()
+				+ " transition=" + this.transitionProgress();
+	}
+
+	public long getPublishedBatchCount() { return this.publishedBatchCount; }
+
+	/** Dev captures must not accept a partially populated post-teleport field. */
+	public boolean isCaptureFieldSettled()
+	{
+		return this.getChunkFillFraction() >= 0.97F
+				&& (this.previousBatch.isEmpty() || this.transitionProgress() >= 1.0F);
 	}
 
 	private void startChunkWorkerPool()
 	{
 		if (this.chunkWorkerPool != null)
 			return;
+		this.workersStopped = false;
 		int threads = Math.max(2, Runtime.getRuntime().availableProcessors() / 2);
 		this.chunkWorkerPool = java.util.concurrent.Executors.newFixedThreadPool(threads, r ->
 		{
@@ -465,6 +559,7 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		{
 			while ((job = this.chunkJobQueue.take()) != null)
 			{
+				long started = System.nanoTime();
 				boolean published = false;
 				java.nio.ByteBuffer opaque = null;
 				java.nio.ByteBuffer transparent = null;
@@ -516,15 +611,26 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 					transparent = out[1];
 					ownedO[0] = opaque;
 					ownedT[0] = transparent;
-					this.completedChunks.add(new ChunkResult(job.coord(), opaque, (int) opaqueCount[0], transparent, (int) transparentCount[0], stormCoverage[0],
-							job.scrollX(), job.scrollY(), job.scrollZ()));
-					published = true;
-					LOGGER.info("Simple Clouds clouds: chunk {}x{} (lod {}) generated off-thread, {} formations, {} opaque / {} transparent instances",
-							job.x0(), job.z0(), job.lodScale(), job.regions().size(), (int) opaqueCount[0], (int) transparentCount[0]);
+					synchronized (this.completionLock)
+					{
+						if (!this.workersStopped)
+						{
+							this.completedChunks.add(new ChunkResult(job.coord(), opaque, (int) opaqueCount[0], transparent, (int) transparentCount[0], stormCoverage[0],
+									generator.copyStormColumns(), generator.lastStormXCells(), generator.lastStormZCells(),
+									job.scrollX(), job.scrollY(), job.scrollZ(), job.regionSig(), job.groupsHash(), job.batch(), System.nanoTime() - started, true));
+							published = true;
+						}
+					}
 				}
 				catch (Throwable t)
 				{
-					LOGGER.error("Simple Clouds clouds: off-thread chunk generation failed", t);
+					synchronized (this.completionLock)
+					{
+						if (!this.workersStopped)
+							this.completedChunks.add(new ChunkResult(job.coord(), null, 0, null, 0, 0, null, 0, 0,
+									job.scrollX(), job.scrollY(), job.scrollZ(), job.regionSig(), job.groupsHash(), job.batch(), System.nanoTime() - started, false));
+					}
+					LOGGER.debug("Simple Clouds chunk generation failure", t);
 				}
 				finally
 				{
@@ -532,7 +638,6 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 					// re-requested next frame; return the CURRENTLY owned buffers on
 					// failure only (on success they are owned by the result and
 					// released by the render thread after the GPU upload).
-					this.pendingChunks.remove(job.coord());
 					if (!published)
 					{
 						this.chunkBufferPool.release(ownedO[0]);
@@ -669,17 +774,10 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		// formations (not synced yet / vanilla weather) the generator falls back to
 		// the infinite field.
 		java.util.Map<net.minecraft.resources.Identifier, Integer> typeToGroup = dataDrivenGroupIndices();
-		// Sample region positions at the INTEGER tick, not the render partial tick:
-		// the partial tick changes every frame, which would fingerprint a different
-		// (interpolated) formation set per frame and force a full CPU regeneration
-		// every frame. At integer ticks the signature only changes when a region has
-		// moved by at least half a cloud unit (4 blocks).
-		double sigTick = Math.floor(partialTick);
-		List<CpuCloudGenerator.RegionMask> regions = this.buildRegionMasks(typeToGroup, (float) sigTick);
-		long regionSig = this.regionSignature((float) sigTick);
-		boolean groupsChanged = groupsHash != this.cacheGroupsHash;
-		this.cacheGroupsHash = groupsHash;
-		boolean chunkSetChanged = gridKey != this.lastChunkGridKey;
+		// Capture actual interpolated transforms; per-chunk keys quantize their
+		// influence at that chunk's sampling resolution. No global signature.
+		List<CpuCloudGenerator.RegionMask> regions = List.copyOf(this.buildRegionMasks(typeToGroup, partialTick));
+		boolean chunkSetChanged = !gridKey.equals(this.lastChunkGridKey);
 		this.lastChunkGridKey = gridKey;
 
 		// Y span: the max ACTIVE layer height (cloud units), rounded up to a multiple
@@ -689,6 +787,8 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		java.util.Set<Integer> activeGroups = new java.util.HashSet<>();
 		for (CpuCloudGenerator.RegionMask r : regions)
 			activeGroups.add(r.groupIndex());
+		if (regions.isEmpty())
+			for (int gi = 0; gi < groups.size(); gi++) activeGroups.add(gi);
 		for (int gi : activeGroups)
 		{
 			if (gi < 0 || gi >= groups.size())
@@ -720,12 +820,16 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		}
 		target.sort(java.util.Comparator.comparingLong(c -> c[3]));
 		this.totalChunkCount = target.size();
+		java.util.Set<ChunkCoord> targetKeys = new java.util.HashSet<>();
+		for (long[] c : target) targetKeys.add(new ChunkCoord((int)c[0], (int)c[1], (int)c[2]));
+		int generationConfig = java.util.Objects.hash(groupsHash, maxLayerY, cloudHeight,
+				snapX, snapZ, Math.floorDiv(camGridY, 8));
+		this.prepareBatch(target, groups, regions, generationConfig, maxLayerY, camGridY, cloudHeight,
+				scrollX, scrollY, scrollZ, (float)camCloudX, (float)camCloudZ);
 
 		// Pick up finished chunks (budgeted, generated off-thread — no render hitch).
-		// Last-writer-wins: a completion is at most one generation cycle behind the
-		// current region state, far below the visible drift of the formations, so
-		// stamp it with the CURRENT signature. Fade-in only for NEW chunks (the
-		// original resets a chunk's alpha only after 120 ticks without regeneration).
+		// Results retain the exact key/config/phase with which they were generated.
+		// Replacement buffers are staged and become visible together, not as a wave.
 		// A1: the CPU result is uploaded into the chunk's PERSISTENT per-chunk GPU
 		// buffer here, and the CPU copy goes straight back to the pool (the GPU buffer
 		// is the home of the data; it is freed when the chunk is replaced or evicted).
@@ -735,9 +839,28 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		{
 			polled++;
 			final ChunkResult r = result; // final capture for the buffer-name lambdas
+			this.pendingChunks.remove(r.coord());
+			if (r.batch() != this.batchId)
+			{
+				this.chunkBufferPool.release(r.opaque());
+				this.chunkBufferPool.release(r.transparent());
+				continue;
+			}
+			this.batchExpected.remove(r.coord());
+			this.summaryCompleted++;
+			this.summaryGenerationNanos += r.generationNanos();
+			if (!r.success())
+			{
+				this.batchFailed = true;
+				this.retryBatchAfterNanos = System.nanoTime() + 2_000_000_000L;
+				this.summaryFailed++;
+				continue;
+			}
 			ChunkData d = new ChunkData();
-			d.regionSig = regionSig;
-			d.groupsHash = groupsHash;
+			try
+			{
+			d.regionSig = r.regionSig();
+			d.groupsHash = r.groupsHash();
 			ChunkData prev = this.chunkCaches.get(r.coord());
 			d.lastGenTick = prev != null ? prev.lastGenTick : mc.level.getGameTime();
 			d.opaqueCount = r.opaqueCount();
@@ -749,21 +872,52 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 					? RenderSystem.getDevice().createBuffer(() -> "simpleclouds.chunk.t." + r.coord().x0() + "." + r.coord().z0() + "." + r.coord().lodScale(), GpuBuffer.USAGE_VERTEX, r.transparent())
 					: null;
 			d.stormCoverage = r.stormCoverage();
+			d.stormColumns = r.stormColumns();
+			d.stormXCells = r.stormXCells();
+			d.stormZCells = r.stormZCells();
 			d.genScrollX = r.scrollX();
 			d.genScrollY = r.scrollY();
 			d.genScrollZ = r.scrollZ();
-			// Free the replaced chunk's GPU buffers.
-			if (prev != null)
-			{
-				if (prev.opaque != null)
-					prev.opaque.close();
-				if (prev.transparent != null)
-					prev.transparent.close();
+			this.batchStaged.put(r.coord(), d);
+			this.summaryUploadBytes += (r.opaque() == null ? 0 : r.opaque().remaining())
+					+ (r.transparent() == null ? 0 : r.transparent().remaining());
 			}
-			this.chunkCaches.put(r.coord(), d);
+			catch (RuntimeException uploadFailure)
+			{
+				closeChunk(d);
+				this.batchFailed = true;
+				this.summaryFailed++;
+				this.retryBatchAfterNanos = System.nanoTime() + 2_000_000_000L;
+				LOGGER.debug("Simple Clouds chunk upload failed; retaining previous batch", uploadFailure);
+			}
+			finally
+			{
 			// A1: the CPU copies are released back to the pool now that the GPU has them.
 			this.chunkBufferPool.release(r.opaque());
 			this.chunkBufferPool.release(r.transparent());
+			}
+		}
+		if (this.batchExpected.isEmpty() && !this.batchStaged.isEmpty())
+		{
+			// Publish one immutable phase at a frame boundary. Old meshes remain
+			// visible until every replacement is uploaded; no marching update seam.
+			for (var entry : this.batchStaged.entrySet())
+			{
+				if (this.batchFailed || !targetKeys.contains(entry.getKey())) closeChunk(entry.getValue());
+				else
+				{
+					ChunkData previous = this.chunkCaches.put(entry.getKey(), entry.getValue());
+					if (previous != null) this.previousBatch.put(entry.getKey(), previous);
+				}
+			}
+			if (!this.batchFailed)
+			{
+				this.publishedBatchCount++;
+				this.transitionStartedNanos = System.nanoTime();
+				this.phaseX = this.batchX; this.phaseY = this.batchY; this.phaseZ = this.batchZ;
+				this.hasScrollPhase = true;
+			}
+			this.batchStaged.clear();
 		}
 		// A1: hard cap on cached chunks (safety net; frees the GPU buffers of any
 		// leaked entries).
@@ -781,52 +935,39 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 			}
 		}
 
-		// Enqueue stale chunks, nearest first, budgeted. pendingChunks makes enqueuing
-		// idempotent across frames; the worker pool fills the field, nearest first.
-		int enqueued = 0;
-		for (long[] c : target)
+		for (int i = 0; i < CHUNK_ENQUEUE_BUDGET && !this.batchWaiting.isEmpty(); i++)
 		{
-			if (enqueued >= CHUNK_ENQUEUE_BUDGET)
-				break;
-			int lodScale = (int) c[2];
-			ChunkCoord key = new ChunkCoord((int) c[0], (int) c[1], lodScale);
-			ChunkData d = this.chunkCaches.get(key);
-			// A2: also stale when the wind scroll drifted beyond the threshold since
-			// this chunk was generated (the noise was sampled at the old phase).
-			boolean stale = d == null || d.regionSig != regionSig || d.groupsHash != groupsHash || groupsChanged
-					|| Math.abs(scrollX - d.genScrollX) > SCROLL_REGEN_THRESHOLD
-					|| Math.abs(scrollY - d.genScrollY) > SCROLL_REGEN_THRESHOLD
-					|| Math.abs(scrollZ - d.genScrollZ) > SCROLL_REGEN_THRESHOLD;
-			if (stale && this.pendingChunks.add(key))
-			{
-				enqueued++;
-				int x0 = (int) c[0], z0 = (int) c[1];
-				// Step 5: camera XZ in cloud units (TransparencyDistance gate).
-				this.chunkJobQueue.add(new ChunkJob(key, x0, 0, z0,
-						x0 + PRIMARY_CHUNK * lodScale, maxLayerY, z0 + PRIMARY_CHUNK * lodScale, lodScale,
-						groups, regions, regionSig, groupsHash, camGridY, (float) cloudHeight,
-						scrollX, scrollY, scrollZ,
-						(float) (camX / CLOUD_SCALE_F), (float) (camZ / CLOUD_SCALE_F)));
-			}
+			ChunkJob job = this.batchWaiting.removeFirst();
+			this.pendingChunks.add(job.coord());
+			this.chunkJobQueue.add(job);
+			this.summaryQueued++;
 		}
+		this.logGenerationSummary();
 
-		float maxStorm = 0.0F;
+		float localStorm = 0.0F;
 		int totalOpaque = 0, totalTransp = 0;
 		long nowTick = mc.level.getGameTime();
+		// Plan item 3: where storm cloud is overhead around the camera, for the spatial storm
+		// fog. Each chunk's columns sit where its geometry is drawn (grid position plus the drift
+		// since its generation, as in drawClouds).
+		this.stormFogMap.begin(camX, camZ);
 		for (long[] c : target)
 		{
 			ChunkData d = this.chunkCaches.get(new ChunkCoord((int) c[0], (int) c[1], (int) c[2]));
 			if (d == null)
 				continue;
-			if (d.stormCoverage > maxStorm)
-				maxStorm = d.stormCoverage;
+			localStorm += d.stormCoverage;
+			if (d.stormColumns != null)
+				this.stormFogMap.addChunk(d.stormColumns, d.stormXCells, d.stormZCells,
+						(c[0] + d.genScrollX - scrollX) * CLOUD_SCALE_F, (c[1] + d.genScrollZ - scrollZ) * CLOUD_SCALE_F,
+						c[2] * CLOUD_SCALE_F);
 			totalOpaque += d.opaqueCount;
 			totalTransp += d.transparentCount;
 		}
 		// Evict chunks that left the target set (keeps the map bounded; A1: their
 		// GPU buffers are freed here — "free GPU buffers of chunks that leave the
 		// LOD layout").
-		if (chunkSetChanged)
+		if (chunkSetChanged || polled > 0)
 		{
 			java.util.Set<ChunkCoord> keep = new java.util.HashSet<>(target.size());
 			for (long[] c : target)
@@ -846,7 +987,7 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 				}
 			}
 		}
-		this.cacheStormCoverage = maxStorm;
+		this.cacheStormCoverage = Mth.clamp(localStorm, 0.0F, 1.0F);
 
 		// A1: no combined buffer, no per-frame rebuild. The per-chunk GPU buffers are
 		// persistent (created when a chunk is published); a one-shot stats line
@@ -900,9 +1041,20 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		// alpha (step 3) is just this chunk's pass ColorModulator — no separate fade
 		// uploads, no whole-field rebuild.
 		boolean transpPassEnabled = SimpleCloudsConfig.CLIENT.transparency.get();
+		float transition = this.previousBatch.isEmpty() ? 1.0F : this.transitionProgress();
+		boolean blending = transition < 1.0F;
+		if (blending) this.drawPipeline.beginCloudTransition();
+		try
+		{
+		for (int scene = 0; scene < (blending ? 2 : 1); scene++)
+		{
+		boolean oldScene = blending && scene == 0;
+		if (blending) this.drawPipeline.selectCloudTransitionScene(oldScene);
 		for (long[] c : target)
 		{
-			ChunkData d = this.chunkCaches.get(new ChunkCoord((int) c[0], (int) c[1], (int) c[2]));
+			ChunkCoord coord = new ChunkCoord((int)c[0], (int)c[1], (int)c[2]);
+			ChunkData old = this.previousBatch.get(coord);
+			ChunkData d = oldScene && old != null ? old : this.chunkCaches.get(coord);
 			if (d == null || d.opaque == null)
 				continue;
 			float alpha = chunkAlpha(d, nowTick, partialTick);
@@ -911,7 +1063,7 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 			// Step 5: continuous scroll — draw the chunk at its grid position plus
 			// the drift accumulated since its mesh was generated (see drawClouds).
 			this.drawPipeline.drawClouds(view, d.opaque, d.opaqueCount, alpha,
-					scrollX - d.genScrollX, scrollY - d.genScrollY, scrollZ - d.genScrollZ);
+					(d.genScrollX - scrollX) * CLOUD_SCALE_F, (d.genScrollY - scrollY) * CLOUD_SCALE_F, (d.genScrollZ - scrollZ) * CLOUD_SCALE_F);
 		}
 		// Transparent edges after the opaque pass (same chunk order; far-to-near
 		// blending order is a step-5 concern).
@@ -919,7 +1071,9 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		{
 			for (long[] c : target)
 			{
-				ChunkData d = this.chunkCaches.get(new ChunkCoord((int) c[0], (int) c[1], (int) c[2]));
+				ChunkCoord coord = new ChunkCoord((int)c[0], (int)c[1], (int)c[2]);
+				ChunkData old = this.previousBatch.get(coord);
+				ChunkData d = oldScene && old != null ? old : this.chunkCaches.get(coord);
 				if (d == null || d.transparent == null || d.transparentCount == 0)
 					continue;
 				float alpha = chunkAlpha(d, nowTick, partialTick);
@@ -928,9 +1082,14 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 				// Step 5: same scroll offset as the opaque pass (one chunk = one
 				// generation phase).
 				this.drawPipeline.drawTransparencyClouds(view, d.transparent, d.transparentCount, alpha,
-						scrollX - d.genScrollX, scrollY - d.genScrollY, scrollZ - d.genScrollZ);
+						(d.genScrollX - scrollX) * CLOUD_SCALE_F, (d.genScrollY - scrollY) * CLOUD_SCALE_F, (d.genScrollZ - scrollZ) * CLOUD_SCALE_F);
 			}
 		}
+
+		}
+		if (blending) this.drawPipeline.finishCloudTransition(transition);
+		}
+		finally { this.drawPipeline.resetCloudDestination(); }
 
 		// World effects: custom rain (1.20.1 PrecipitationQuads; slice without
 		// wind tilt / snow) into the scene, before the overlays.
@@ -940,13 +1099,20 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 			if (this.getWorldEffectsManager().hasLightningToRender())
 				this.getWorldEffectsManager().renderLightning(view, partialTick, camX, camY, camZ, this.drawPipeline);
 
-		// Storm fog (26.2 slice): darkened overlay while under storm clouds. The
-		// lightning flash (WorldEffects.flashStrength) reduces the darkening via the
-		// LightningMul uniform, brightening the scene on a strike.
+		// Storm fog (plan item 3): ray-marched through the spatial coverage map, so only view
+		// rays under storm cover darken, and lit locally by nearby bolts (no global lift: the
+		// old LightningMul brightened the whole fog for every strike).
 		if (stormFogEnabled && overlaysEnabled && SimpleCloudsConfig.CLIENT.renderStormFog.get())
 		{
-			float lightningMul = 1.0F - this.getWorldEffectsManager().flashStrength(partialTick) * 0.9F;
-			this.drawPipeline.drawStormFog(this.cacheStormCoverage * 2.5F, lightningMul);
+			boolean boltLight = devFogFlashes && SimpleCloudsConfig.CLIENT.stormFogLightningFlashes.get()
+					&& !this.mc.options.hideLightningFlash().get();
+			float fogMax = this.getFogEnd() > 0.0F
+					? Math.min(this.getFogEnd(), dev.nonamecrackers2.simpleclouds.client.renderer.v2.StormFogMap.MAX_FOG_DISTANCE)
+					: dev.nonamecrackers2.simpleclouds.client.renderer.v2.StormFogMap.MAX_FOG_DISTANCE;
+			this.collectFogBolts(camX, camY, camZ, partialTick, fogMax, boltLight);
+			if (this.stormFogMap.hasCoverage() || devStormFogDebug > 0)
+				this.drawPipeline.drawStormFog(view, camX, camY, camZ, cloudHeight, fogMax, this.stormFogMap,
+						this.fogBolts, this.fogBoltCount, devStormFogDebug);
 		}
 
 		// Sky flash (storm plan step 1): the vanilla 26.2 sky flash is dead (nothing
@@ -1022,6 +1188,67 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	public @Nullable RainDrawPipeline getRainPipeline()
 	{
 		return this.rainPipeline;
+	}
+
+	// Plan item 3: spatial storm-fog coverage around the camera, and up to MAX_BOLTS live bolts
+	// that light the fog ([x, y, z, strength, r, g, b, radius] each), nearest first. Every bolt is
+	// logged once with the fog light it gets, so the S5 strikes at 200/1500/3000/8000 blocks are
+	// proof data for "a far strike lights nothing".
+	private final dev.nonamecrackers2.simpleclouds.client.renderer.v2.StormFogMap stormFogMap =
+			new dev.nonamecrackers2.simpleclouds.client.renderer.v2.StormFogMap();
+	private final float[] fogBolts = new float[dev.nonamecrackers2.simpleclouds.client.renderer.v2.StormFogMap.MAX_BOLTS * 8];
+	private int fogBoltCount;
+	private final java.util.Set<dev.nonamecrackers2.simpleclouds.client.renderer.lightning.LightningBolt> loggedFogBolts =
+			java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>());
+	private static boolean devFogFlashes = true;
+	private static int devStormFogDebug;
+
+	/** DevShot NOFLASH: storm fog without bolt light (A/B against the default). */
+	public static void setDevFogFlashes(boolean on)
+	{
+		devFogFlashes = on;
+	}
+
+	/** DevShot FOGDEBUG: 1 = reconstructed scene distance (depth convention check), 2 = fog amount. */
+	public static void setDevStormFogDebug(int mode)
+	{
+		devStormFogDebug = mode;
+	}
+
+	private void collectFogBolts(double camX, double camY, double camZ, float partialTick, float fogMax, boolean lightOn)
+	{
+		final float radius = dev.nonamecrackers2.simpleclouds.client.renderer.v2.StormFogMap.BOLT_RADIUS;
+		java.util.List<float[]> near = new java.util.ArrayList<>();
+		this.getWorldEffectsManager().forLightning(bolt ->
+		{
+			org.joml.Vector3f p = bolt.getPosition();
+			double dx = p.x - camX, dy = p.y - camY, dz = p.z - camZ;
+			float dist = (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
+			boolean inRange = dist <= fogMax + radius;
+			float strength = lightOn && inRange ? Mth.clamp(bolt.getFade(partialTick), 0.0F, 1.0F) : 0.0F;
+			if (this.loggedFogBolts.add(bolt))
+				LOGGER.info("[DEVSHOT-LIGHTNING] storm fog: bolt at {} blocks -> {}", Math.round(dist),
+						!lightOn ? "no fog light (storm fog lightning flashes off or Hide Lightning Flashes on)"
+								: inRange ? "local fog light within " + (int) radius + " blocks of the bolt"
+								: "no fog light (beyond the " + (int) (fogMax + radius) + "-block fog range)");
+			if (strength > 0.0F)
+				near.add(new float[] { p.x, p.y, p.z, strength, dist });
+		});
+		near.sort((a, b) -> Float.compare(a[4], b[4]));
+		this.fogBoltCount = Math.min(near.size(), dev.nonamecrackers2.simpleclouds.client.renderer.v2.StormFogMap.MAX_BOLTS);
+		for (int i = 0; i < this.fogBoltCount; i++)
+		{
+			float[] b = near.get(i);
+			int o = i * 8;
+			this.fogBolts[o] = b[0];
+			this.fogBolts[o + 1] = b[1];
+			this.fogBolts[o + 2] = b[2];
+			this.fogBolts[o + 3] = b[3];
+			this.fogBolts[o + 4] = 0.75F;
+			this.fogBolts[o + 5] = 0.8F;
+			this.fogBolts[o + 6] = 1.0F;
+			this.fogBolts[o + 7] = radius;
+		}
 	}
 
 	public float getStormCoverage()
@@ -1134,6 +1361,24 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 
 	public void shutdown()
 	{
+		this.previousBatch.values().forEach(SimpleCloudsRenderer::closeChunk);
+		this.previousBatch.clear();
+		synchronized (this.completionLock)
+		{
+			this.workersStopped = true;
+			ChunkResult result;
+			while ((result = this.completedChunks.poll()) != null)
+			{
+				this.chunkBufferPool.release(result.opaque());
+				this.chunkBufferPool.release(result.transparent());
+			}
+		}
+		this.chunkJobQueue.clear();
+		this.batchWaiting.clear();
+		this.batchExpected.clear();
+		this.pendingChunks.clear();
+		for (ChunkData data : this.batchStaged.values()) closeChunk(data);
+		this.batchStaged.clear();
 		if (this.drawPipeline != null)
 		{
 			this.drawPipeline.close();
@@ -1220,6 +1465,11 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	{
 		if (!SimpleCloudsCompatHelper.renderThisPass())
 			return;
+		// One reset per rendered frame of the pipeline's private transform ring (see
+		// CloudsDrawPipeline.beginFrame): every cloud, shadow, lightning, storm and transition
+		// draw of this frame writes its slice after it.
+		if (this.drawPipeline != null)
+			this.drawPipeline.beginFrame();
 		// 26.2 3D previewer: while the previewer screen is open, draw the preview
 		// box into the main frame (snippet pipeline, orbit camera, no depth test)
 		// instead of the normal cloud pass.

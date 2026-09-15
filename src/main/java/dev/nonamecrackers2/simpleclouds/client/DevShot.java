@@ -55,7 +55,7 @@ import net.minecraft.world.phys.Vec2;
  * <li>{@code C} up: straight up from the beach (same position as A) &rarr; {@code devshot-C.png}</li>
  * <li>{@code D} inside/above: the beach XZ held at y=260, pitch -20 &rarr; {@code devshot-D.png}</li>
  * <li>{@code F} above: the beach XZ held at y=400 (above the 156..324 cloud
- * volume), pitch -20 &rarr; {@code devshot-F.png} (A3: the true "view from above")</li>
+ * volume), pitch +45 down &rarr; {@code devshot-F.png} (A3: the true "view from above")</li>
  * <li>{@code OVL0} disable the overlay passes (shadow map + terrain shadows,
  * storm fog, atmospheric layer) for the whole run (A3 isolation tool).</li>
  * <li>{@code E} motion: view A three times, 200 game ticks (10 s) apart &rarr;
@@ -69,10 +69,13 @@ import net.minecraft.world.phys.Vec2;
  * <li>{@code STORM} (storm plan step 0) spawn a cumulonimbus formation at a
  * fixed offset from the player and queue the storm views S1-S5: S1 ground
  * facing the formation's near edge, S2 from under it looking up, S3 beside it
- * at y=260, S4 above it, S5 a 30-frame / 2 s (60 s) ground sequence while
+ * at y=260, S4 above its east side looking 30 degrees down toward the center,
+ * S5 a 30-frame / 2 s (60 s) ground sequence while
  * lightning runs (four strikes at 200/1500/3000/8000 blocks are forced at
  * 5/15/25/35 s; every strike — natural or forced — logs distance + flash).
- * Implies no standard test formation (the storm IS the scene).</li>
+ * Implies no standard test formation (the storm IS the scene). The storm is full
+ * size from the start and the scroll angle is fixed, so runs are comparable;
+ * {@code STORMGROW} brings back the growing (non-repeatable) formation.</li>
  * </ul>
  * Held (pinned) views teleport the player to the view position every frame and switch
  * it to creative flying, so the camera stays exactly where the view says.
@@ -101,6 +104,15 @@ public final class DevShot
 	// known distances: 200/1500/3000/8000 blocks north of the camera).
 	private static boolean hold; // HOLD token (step 7): after the last view, keep the run active on that view so FPSLOG can sample one scene
 	private static boolean storm;
+	// Repeatable STORM scene (Claude, 2026-09-15): the fixture spawns at full size and barely
+	// shrinks during a run (a region ages 20x faster while no spawn region sees it, so with the
+	// old 72000-tick lifetime S3/S4/S5 showed a different storm size in every run), and the
+	// scroll angle -- which the saved world carries over from the previous run -- starts at the
+	// same value (2.88 rad = the phase -97,26 of Codex's settled 09:35 evidence).
+	// STORMGROW restores the old growth (300 ticks, lifetime 72000).
+	private static boolean stormGrow;
+	private static final int STORM_FIXTURE_LIFETIME = 2_000_000; // worst case 40000 ticks/run = 2% shrink
+	private static final float STORM_SCROLL_ANGLE = 2.88F;
 	private static double stormCxCu = Double.NaN;
 	private static double stormCzCu = Double.NaN;
 	private static int seqFrame; // 1 = file1 taken, then 2..seqCount
@@ -127,6 +139,11 @@ public final class DevShot
 		// file1-with-suffix (-02 .. -NN), seqInterval game ticks apart.
 		int seqCount;
 		long seqInterval;
+		// Plan item 2 (STORM S2): stand on the terrain at (x, z) itself, not at the probe
+		// origin's ground height (reused 800 blocks away, it put the camera among plants /
+		// inside hills). Resolved once that column's chunk is loaded.
+		boolean groundAtTarget;
+		boolean groundResolved;
 
 		View(String file1, float pitch, float yaw, double x, double y, double z)
 		{
@@ -160,6 +177,15 @@ public final class DevShot
 	private static int pendingShot = 0; // 2 = file2 pending, 3 = file3 pending (motion view)
 	private static long firstTick = -1; // game time of the first frame with a player
 	private static final int POST_VIEW_FRAMES = 240; // settle time after switching views
+	// Plan item 2: a view is only shot once the terrain around the camera is loaded and
+	// compiled, stable for TERRAIN_STABLE_FRAMES frames; after TERRAIN_WAIT_TIMEOUT_NS the
+	// view is refused with an error instead of accepting a half-loaded screenshot.
+	private static final int TERRAIN_STABLE_FRAMES = 30;
+	private static final long TERRAIN_WAIT_TIMEOUT_NS = 90_000_000_000L;
+	private static final long TERRAIN_SETTLE_NS = 3_000_000_000L;
+	private static int terrainStableFrames;
+	private static long terrainWaitStartNs = -1;
+	private static boolean terrainReadyLogged;
 
 	private DevShot() {}
 
@@ -318,9 +344,11 @@ public final class DevShot
 	 * center 250 cloud units = 2000 blocks NORTH, radius 200 units = 1600 blocks).
 	 * The world noise field is dense in some places and empty in others, so the
 	 * exact center is the densest of a 4x4 probe grid around the nominal offset
-	 * (±30/±40 units); the choice is logged and deterministic per world. Growth is
-	 * 300 ticks (the original 6000-10000 is 5-8 minutes, too slow for a test),
-	 * lifetime 72000 (the original exist_ticks max), stretch 0.5 (original spawn
+	 * (±30/±40 units); the choice is logged and deterministic per world. Full size
+	 * from the first tick with a 2,000,000-tick lifetime and a fixed scroll angle, so
+	 * every run shows the same storm (STORMGROW: the old 300-tick growth — the
+	 * original's 6000-10000 is 5-8 minutes, too slow for a test — and lifetime 72000,
+	 * the original exist_ticks max), stretch 0.5 (original spawn
 	 * range 0.3-0.6), order weight 1000 (the original's). The near edge of the
 	 * formation then sits ~400 blocks north of the S1/S5 camera, inside the
 	 * 32-chunk render distance.
@@ -328,6 +356,8 @@ public final class DevShot
 	private static void spawnStormFormation(Minecraft mc)
 	{
 		forceNoon(mc);
+		stormCxCu = Double.NaN;
+		stormCzCu = Double.NaN;
 		try
 		{
 			ClientCloudManager manager = (ClientCloudManager) CloudManager.get(mc.level);
@@ -383,14 +413,21 @@ public final class DevShot
 			}
 			float cx = px + dxs[bestI];
 			float cz = pz + dzs[bestJ];
+			int lifetime = stormGrow ? 72000 : STORM_FIXTURE_LIFETIME;
+			int grow = stormGrow ? 300 : 0;
 			CloudRegion region = new CloudRegion(nimbus.id(), new Vec2(0.001F, 0.0F), 0.0F, 0.0F,
-				cx, cz, 200.0F, 0.0F, 0.5F, 72000, 300, 1000);
-			if (manager.getCloudGenerator().addCloud(region, CloudGenerator.Order.USE_WEIGHT))
+				cx, cz, 200.0F, 0.0F, 0.5F, lifetime, grow, 1000);
+			// A replay must not be refused because a previous run filled the
+			// saved generator's formation limit. Sync below copies this fixture
+			// and the scroll angle to the integrated server too.
+			manager.getCloudGenerator().setClouds(List.of(region));
+			manager.setScrollAngle(STORM_SCROLL_ANGLE);
+			if (manager.getClouds().contains(region))
 			{
 				stormCxCu = cx;
 				stormCzCu = cz;
-				LOGGER.info("[DEVSHOT] STORM: spawned {} (r=200u, stretch 0.5, grow 300t) at cloud units {}x{} (offset {}x{} from player, probe density {})",
-					nimbus.id(), cx, cz, cx - px, cz - pz, bestCount);
+				LOGGER.info("[DEVSHOT] STORM: spawned {} (r=200u, stretch 0.5, grow {}t, lifetime {}t, scroll angle {}) at cloud units {}x{} (offset {}x{} from player, probe density {})",
+					nimbus.id(), grow, lifetime, STORM_SCROLL_ANGLE, cx, cz, cx - px, cz - pz, bestCount);
 			}
 			else
 			{
@@ -568,7 +605,7 @@ public final class DevShot
 	/** Terrain surface height at (x, z) ignoring liquids; -1 when the chunk is not loaded. */
 	private static double terrainTop(Minecraft mc, int x, int z)
 	{
-		if (mc.level.getChunk(x >> 4, z >> 4) == null)
+		if (!mc.level.hasChunk(x >> 4, z >> 4))
 			return -1;
 		return mc.level.getHeight(Heightmap.Types.WORLD_SURFACE, x, z); // 26.2: was MOTION_BLOCKING_NO_LIQUID
 	}
@@ -711,7 +748,9 @@ public final class DevShot
 		if (beach == null)
 		{
 			int[] o = probeOrigin(mc);
-			beach = new double[] { o[0], 70.0, o[1], 0.0 };
+			// A previous above-cloud test persists its altitude. Ground views must
+			// use the terrain height, not that saved camera position.
+			beach = new double[] { o[0], terrainTop(mc, o[0], o[1]) + 3.0, o[1], 0.0 };
 		}
 		double[] land = findLand(mc);
 		if (land == null)
@@ -728,10 +767,17 @@ public final class DevShot
 			else if (v.file1.endsWith("B.png"))
 			{
 				v.x = land[0];
-				v.y = 100.0;
+				v.y = Math.max(100.0, terrainTop(mc, (int)land[0], (int)land[1]) + 16.0);
 				v.z = land[1];
 				if (Float.isNaN(v.yaw))
 					v.yaw = 0.0F;
+			}
+			else if (v.file1.startsWith("devshot-SHAKE-"))
+			{
+				v.x = beach[0];
+				v.y = beach[1] + 24.0;
+				v.z = beach[2];
+				v.yaw = (float)beach[3];
 			}
 			else if (v.file1.endsWith("D.png"))
 			{
@@ -775,6 +821,12 @@ public final class DevShot
 		// depend on the chosen formation center.
 		if (storm)
 			spawnStormFormation(mc);
+		if (storm && (!Double.isFinite(stormCxCu) || !Double.isFinite(stormCzCu)))
+		{
+			LOGGER.error("[DEVSHOT] STORM fixture failed; refusing invalid camera positions");
+			done = true;
+			return;
+		}
 		if (storm)
 		{
 			double px = mc.player.getX(), pz = mc.player.getZ();
@@ -797,6 +849,7 @@ public final class DevShot
 					v.x = px;
 					v.y = beach[1];
 					v.z = pz - 100 * 8.0;
+					v.groundAtTarget = true; // y is resolved from the terrain there (plan item 2)
 				}
 				else if (f.endsWith("S3.png"))
 				{
@@ -808,10 +861,14 @@ public final class DevShot
 				}
 				else if (f.endsWith("S4.png"))
 				{
-					// Above it: 256 cloud units = 2048 blocks is the max height;
-					// 2300 puts the camera ~250 blocks over the tops.
-					v.x = stormCxCu * 8.0;
-					v.y = 2300.0;
+					// Above it, obliquely (Claude, 2026-09-15): straight down from Y 2300
+					// over the center, the full-size cell (repeatable fixture) filled the
+					// frame with top faces -- 100 % white in every run. Now 250 units
+					// (2000 blocks) east of the center, Y 2600 (~400-550 blocks over the
+					// 2048-2176-block volume top), 30 degrees down toward the center: the
+					// tops, the cell outline and the sky beyond it stay in view.
+					v.x = (stormCxCu + 250.0) * 8.0;
+					v.y = 2600.0;
 					v.z = stormCzCu * 8.0;
 				}
 			}
@@ -837,22 +894,75 @@ public final class DevShot
 			CloudManager manager = CloudManager.get(mc.level);
 			if (manager != null)
 			{
+				// Client-only mode reads the config directly; setCloudSpeed alone
+				// is ignored there. This is in-memory dev-test state, not saved config.
+				dev.nonamecrackers2.simpleclouds.common.config.SimpleCloudsConfig.CLIENT.speedModifier.set(32.0);
 				manager.setCloudSpeed(32.0F);
-				LOGGER.info("[DEVSHOT] FAST: cloud speed set to 32x for the drift test");
+				LOGGER.info("[DEVSHOT] FAST: effective cloud speed {}", manager.getCloudSpeed());
 			}
+		}
+		// Singleplayer is still server-authoritative. A client-only test formation
+		// or speed is overwritten by the next normal sync packet, producing a
+		// synthetic whole-sky jump that must not be blamed on the mesh cache.
+		var clientManager = CloudManager.get(mc.level);
+		IntegratedServer testServer = mc.getSingleplayerServer();
+		if (clientManager != null && views.stream().anyMatch(v -> v.file1.startsWith("devshot-SHAKE-")))
+		{
+			// A replay starts from one named formation and the same noise phase.
+			// Saved random formations otherwise make normal/FAST runs incomparable.
+			for (CloudType type : ClientSideCloudTypeManager.getInstance().getIndexedCloudTypes())
+			{
+				if (!type.id().toString().equals("simpleclouds:cumulus")) continue;
+				View motion = views.stream().filter(v -> v.file1.startsWith("devshot-SHAKE-")).findFirst().orElseThrow();
+				CloudRegion region = new CloudRegion(type.id(), new Vec2(0.0F, 0.0F), 0.0F, 0.0F,
+						(float)(motion.x/8.0), (float)(motion.z/8.0), 1200.0F, 0.0F, 1.0F, 240000, 1, 9);
+				clientManager.getCloudGenerator().setClouds(List.of(region));
+				clientManager.setScrollAngle(0.75F);
+				LOGGER.info("[DEVSHOT] fixed SHAKE scene: one cumulus formation, initial angle=0.75");
+				break;
+			}
+		}
+		if (clientManager != null && testServer != null)
+		{
+			var formationTags = clientManager.getClouds().stream().map(CloudRegion::toTag).toList();
+			float angle = clientManager.getScrollAngle();
+			float speed = fastClouds ? 32.0F : 1.0F;
+			dev.nonamecrackers2.simpleclouds.common.config.SimpleCloudsConfig.CLIENT.speedModifier.set((double)speed);
+			clientManager.setCloudSpeed(speed);
+			testServer.execute(() -> {
+				var authoritative = CloudManager.get(testServer.overworld());
+				if (authoritative == null) return;
+				authoritative.getCloudGenerator().setClouds(formationTags.stream().map(CloudRegion::new).toList());
+				authoritative.setScrollAngle(angle);
+				authoritative.setCloudSpeed(speed);
+				if (authoritative instanceof dev.nonamecrackers2.simpleclouds.common.world.ServerCloudManager serverManager)
+				{
+					serverManager.queueSync(dev.nonamecrackers2.simpleclouds.common.world.SyncType.BASE_PROPERTIES);
+					serverManager.queueSync(dev.nonamecrackers2.simpleclouds.common.world.SyncType.CLOUD_FORMATIONS);
+				}
+				LOGGER.info("[DEVSHOT] authoritative test scene synchronized; speed={}", speed);
+			});
 		}
 	}
 
 	private static int viewIdx = -1;
+	private static long viewGenerationBase;
+	private static long viewStartedTick;
 
 	private static void switchToView(Minecraft mc, int idx)
 	{
 		viewIdx = idx;
+		viewGenerationBase = SimpleCloudsRenderer.getInstance().getPublishedBatchCount();
+		viewStartedTick = mc.level.getGameTime();
+		terrainStableFrames = 0;
+		terrainWaitStartNs = System.nanoTime();
+		terrainReadyLogged = false;
 		View v = views.get(idx);
 		shotAngle = v.pitch;
 		shotYaw = v.yaw;
 		if (v.pin)
 		{
+			syncViewToServer(mc, v);
 			mc.player.teleportSetPosition(new net.minecraft.world.entity.PositionMoveRotation(
 					new net.minecraft.world.phys.Vec3(v.x, v.y, v.z), net.minecraft.world.phys.Vec3.ZERO,
 					v.yaw, v.pitch), java.util.EnumSet.noneOf(net.minecraft.world.entity.Relative.class));
@@ -867,6 +977,23 @@ public final class DevShot
 	private static View currentView()
 	{
 		return views.get(viewIdx);
+	}
+
+	private static void syncViewToServer(Minecraft mc, View view)
+	{
+		var server = mc.getSingleplayerServer();
+		if (server == null) return;
+		var uuid = mc.player.getUUID();
+		double x = view.x, y = view.y, z = view.z;
+		float yaw = view.yaw, pitch = view.pitch;
+		server.execute(() -> {
+			var player = server.getPlayerList().getPlayer(uuid);
+			if (player != null)
+			{
+				player.connection.teleport(x, y, z, yaw, pitch);
+				LOGGER.info("[DEVSHOT] server view synchronized at {}x{}x{}", x, y, z);
+			}
+		});
 	}
 
 	/** Called once per rendered world frame, after the clouds were drawn. */
@@ -973,6 +1100,19 @@ public final class DevShot
 						dev.nonamecrackers2.simpleclouds.client.renderer.SimpleCloudsRenderer.setStormFogEnabled(false);
 						continue;
 					}
+					if (part.equalsIgnoreCase("FOGDEBUG"))
+					{
+						// Plan item 3: storm fog debug view -- the reconstructed scene distance as
+						// grey (sky white), to check the depth convention on a captured frame.
+						SimpleCloudsRenderer.setDevStormFogDebug(1);
+						continue;
+					}
+					if (part.equalsIgnoreCase("NOFLASH"))
+					{
+						// Plan item 3: storm fog without bolt light (A/B against the default).
+						SimpleCloudsRenderer.setDevFogFlashes(false);
+						continue;
+					}
 					if (part.equalsIgnoreCase("FLAT"))
 					{
 						// Step 8 diagnostic: disable the per-cube storm shading
@@ -1022,6 +1162,13 @@ public final class DevShot
 						fpsLog = true;
 						continue;
 					}
+					if (part.equalsIgnoreCase("STORMGROW"))
+					{
+						// With STORM: let the fixture grow over 300 ticks and age with the
+						// old 72000-tick lifetime (not repeatable run to run).
+						stormGrow = true;
+						continue;
+					}
 					if (part.equalsIgnoreCase("STORM"))
 					{
 						// Storm plan step 0: cumulonimbus at a fixed offset + the
@@ -1031,7 +1178,7 @@ public final class DevShot
 						View s1 = new View("devshot-S1.png", 0.0F, 180.0F, 0, 0, 0); // ground, facing the near edge (north)
 						View s2 = new View("devshot-S2.png", -90.0F, 0.0F, 0, 0, 0); // under the formation, looking up
 						View s3 = new View("devshot-S3.png", -20.0F, 90.0F, 0, 0, 0); // beside it at y=260, facing west (toward center)
-						View s4 = new View("devshot-S4.png", -45.0F, 0.0F, 0, 0, 0); // above it (cumulonimbus tops reach 256u = 2048 blocks)
+						View s4 = new View("devshot-S4.png", 30.0F, 90.0F, 0, 0, 0); // above the east side, 30 deg down, facing west (toward center)
 						View s5 = new View("devshot-S5-01.png", 0.0F, 180.0F, 0, 0, 0); // ground sequence, 60 frames x 0.25 s
 						s5.seqCount = 60;
 						s5.seqInterval = 5; // storm plan step 1 proof: the gated flash flickers
@@ -1042,6 +1189,14 @@ public final class DevShot
 						views.add(s3);
 						views.add(s4);
 						views.add(s5);
+						continue;
+					}
+					if (part.equalsIgnoreCase("SHAKE"))
+					{
+						View motion = new View("devshot-SHAKE-01.png", -35.0F, 0.0F, 0, 0, 0);
+						motion.seqCount = 41;
+						motion.seqInterval = 5;
+						views.add(motion);
 						continue;
 					}
 					if (part.length() == 1)
@@ -1056,7 +1211,7 @@ public final class DevShot
 							case 'B': v.pitch = -15.0F; break;        // landscape from y=100
 							case 'C': v.pitch = -90.0F; break;        // straight up
 							case 'D': v.pitch = -20.0F; break;        // inside the layer (y=260)
-							case 'F': v.pitch = -20.0F; break;        // above the layer (y=400, A3)
+							case 'F': v.pitch = 45.0F; break;         // above the layer, looking down
 								case 'G': v.pitch = -45.0F; break;        // look UP at the cloud base from below (step 5: soft edges)
 								case 'H': v.pitch = -12.0F; break;        // SHADOWTEST: terrain + cloud (step 6: shadow coverage/soft edges)
 							case 'E':
@@ -1097,6 +1252,7 @@ public final class DevShot
 			firstTick = mc.level.getGameTime();
 		if (!views.isEmpty() && !viewSetupDone && mc.level.getGameTime() - firstTick >= 60)
 			setupViews(mc);
+		if (done) return;
 
 		// FPSLOG: one line per 1200 ticks (60 s of game time). getFps()/
 		// getFrameTimeNs() are Minecraft's own counters, independent of the
@@ -1135,6 +1291,19 @@ public final class DevShot
 			View v = currentView();
 			shotAngle = v.pitch;
 			shotYaw = v.yaw;
+			if (v.groundAtTarget && !v.groundResolved)
+			{
+				double top = terrainTop(mc, (int) Math.floor(v.x), (int) Math.floor(v.z));
+				if (top >= 0)
+				{
+					v.y = top + 1.0;
+					v.groundResolved = true;
+					syncViewToServer(mc, v);
+					terrainStableFrames = 0;
+					LOGGER.info("[DEVSHOT] {}: terrain at the target column {}x{} is Y {}; camera pinned at Y {}",
+							v.file1, (int) Math.floor(v.x), (int) Math.floor(v.z), (int) top, v.y);
+				}
+			}
 			if (v.pin)
 			{
 				// Re-pin EVERY frame (step 7, real profile): a one-shot teleport per
@@ -1212,7 +1381,8 @@ public final class DevShot
 				{
 					// S5 sequence frame (devshot-S5-01.png is file1; 02..30 follow).
 					seqFrame++;
-					shoot(mc, String.format("devshot-S5-%02d.png", seqFrame));
+					String prefix = v.file1.substring(0, v.file1.length() - "01.png".length());
+					shoot(mc, String.format("%s%02d.png", prefix, seqFrame));
 					if (seqFrame < v.seqCount)
 					{
 						waitUntilTick = mc.level.getGameTime() + v.seqInterval;
@@ -1243,7 +1413,9 @@ public final class DevShot
 		{
 			SimpleCloudsRenderer r = SimpleCloudsRenderer.getInstance();
 			float frac = r != null ? r.getChunkFillFraction() : 1.0F;
-			if (frac >= 0.97F || mc.level.getGameTime() - firstTick >= FILL_WAIT_TIMEOUT_TICKS)
+			boolean fresh = r != null && r.getPublishedBatchCount() >= viewGenerationBase + 2;
+			boolean grown = mc.level.getGameTime() - viewStartedTick >= (storm ? 400 : 100);
+			if ((frac >= 0.97F && fresh && grown) || mc.level.getGameTime() - firstTick >= FILL_WAIT_TIMEOUT_TICKS)
 			{
 				fillWaitDone = true;
 				// STORM: the devshot cumulonimbus needs 300t to grow; in a warm world
@@ -1265,6 +1437,27 @@ public final class DevShot
 		}
 		if (--framesLeft > 0)
 			return;
+		// Plan item 2: never shoot while the terrain around the camera is still loading.
+		if (!views.isEmpty() && viewIdx >= 0)
+		{
+			int gate = terrainGate(mc);
+			if (gate < 0)
+			{
+				finishOrAdvance(mc); // refused (logged as an error): no screenshot for this view
+				return;
+			}
+			if (gate == 0)
+			{
+				framesLeft = 1;
+				return;
+			}
+		}
+		if (viewIdx > 0 && SimpleCloudsRenderer.getInstance().getPublishedBatchCount() <= viewGenerationBase
+				&& mc.level.getGameTime() - viewStartedTick < FILL_WAIT_TIMEOUT_TICKS)
+		{
+			framesLeft = 1;
+			return;
+		}
 
 		if (views.isEmpty())
 		{
@@ -1286,7 +1479,7 @@ public final class DevShot
 				pendingShot = 4;
 				waitUntilTick = mc.level.getGameTime() + v.seqInterval;
 				stormStrikeIdx = 0;
-				stormStrikeTick = mc.level.getGameTime() + 20; // first forced strike 1 s in (frames 03-08 catch its flash)
+				stormStrikeTick = storm ? mc.level.getGameTime() + 20 : -1;
 				return;
 			}
 			if (v.waitTicks > 0)
@@ -1306,6 +1499,78 @@ public final class DevShot
 			try { Files.deleteIfExists(request); }
 			catch (Exception ignored) {}
 		}
+	}
+
+	/**
+	 * Plan item 2: 1 when the terrain around the pinned camera is loaded and compiled (the
+	 * camera's column resolved, the 7x7 chunks around it present, every visible section
+	 * compiled and the compile queue empty) for TERRAIN_STABLE_FRAMES consecutive frames;
+	 * 0 while still loading; -1 when it did not settle within TERRAIN_WAIT_TIMEOUT_NS
+	 * (the view is refused and the failure is logged as an error for the log gate).
+	 */
+	private static int terrainGate(Minecraft mc)
+	{
+		View v = currentView();
+		int cx = Mth.floor(mc.player.getX()) >> 4, cz = Mth.floor(mc.player.getZ()) >> 4;
+		boolean loaded = true;
+		for (int dx = -3; dx <= 3 && loaded; dx++)
+			for (int dz = -3; dz <= 3 && loaded; dz++)
+				loaded = mc.level.hasChunk(cx + dx, cz + dz);
+		// Reassessment: "ground ahead" need not be in the camera frustum, and at
+		// high altitude it is outside the terrain render distance altogether. Only
+		// demand compiled ground samples that can contribute to the current view.
+		var camera = mc.gameRenderer.mainCamera();
+		var state = mc.gameRenderer.gameRenderState().levelRenderState.cameraRenderState;
+		var projectionView = new org.joml.Matrix4f(state.projectionMatrix).mul(state.viewRotationMatrix);
+		int radius = mc.options.renderDistance().get() * 16;
+		int probes = 0, visible = 0, groundSamples = 0;
+		for (int dx = -radius; dx <= radius; dx += 32)
+			for (int dz = -radius; dz <= radius; dz += 32)
+			{
+				int px = Mth.floor(camera.position().x) + dx;
+				int pz = Mth.floor(camera.position().z) + dz;
+				double top = terrainTop(mc, px, pz);
+				if (top < 0) continue;
+				groundSamples++;
+				var point = new org.joml.Vector4f((float) (px - state.pos.x),
+						(float) (top - state.pos.y), (float) (pz - state.pos.z), 1.0F);
+				projectionView.transform(point);
+				if (point.w <= 0.05 || point.w > radius || Math.abs(point.x) > point.w
+						|| Math.abs(point.y) > point.w) continue;
+				probes++;
+				if (mc.levelRenderer.isSectionCompiledAndVisible(new net.minecraft.core.BlockPos(px, (int) top - 1, pz)))
+					visible++;
+			}
+		boolean inView = groundSamples >= 9 && (probes == 0 || visible * 3 >= probes * 2);
+		long waited = terrainWaitStartNs >= 0 ? System.nanoTime() - terrainWaitStartNs : 0;
+		var renderer = SimpleCloudsRenderer.getInstance();
+		boolean cloudReady = renderer.getPublishedBatchCount() >= viewGenerationBase + 2
+				&& renderer.isCaptureFieldSettled();
+		boolean ready = (!v.groundAtTarget || v.groundResolved) && loaded && inView
+				&& cloudReady
+				&& mc.levelRenderer.hasRenderedAllSections()
+				&& mc.levelRenderer.sectionRenderDispatcher().getCompileQueueSize() == 0
+				&& waited >= TERRAIN_SETTLE_NS;
+		terrainStableFrames = ready ? terrainStableFrames + 1 : 0;
+		if (terrainStableFrames >= TERRAIN_STABLE_FRAMES)
+		{
+			if (!terrainReadyLogged)
+			{
+				terrainReadyLogged = true;
+				LOGGER.info("[DEVSHOT] {}: terrain loaded and compiled after {} ms at {}x{}x{}; frustum probes {}/{}, ground samples {}, render pitch/yaw {}/{}",
+						v.file1, waited / 1_000_000, (int) mc.player.getX(), (int) mc.player.getY(), (int) mc.player.getZ(), visible, probes, groundSamples, state.xRot, state.yRot);
+			}
+			return 1;
+		}
+		if (waited > TERRAIN_WAIT_TIMEOUT_NS)
+		{
+			LOGGER.error("Simple Clouds ERROR: [DEVSHOT] {}: scene still loading after {} ms (column resolved {}, chunks loaded {}, terrain in view {}, sections rendered {}, compile queue {}, cloud ready {}, batches {}/{}); view refused",
+					v.file1, waited / 1_000_000, !v.groundAtTarget || v.groundResolved, loaded, inView,
+					mc.levelRenderer.hasRenderedAllSections(), mc.levelRenderer.sectionRenderDispatcher().getCompileQueueSize(),
+					cloudReady, renderer.getPublishedBatchCount(), viewGenerationBase + 2);
+			return -1;
+		}
+		return 0;
 	}
 
 	/** After a shot: either start the wait for the view's second shot, switch to the
@@ -1362,6 +1627,8 @@ public final class DevShot
 		float sx = cm != null ? cm.getScrollX() : 0.0F;
 		float sy = cm != null ? cm.getScrollY() : 0.0F;
 		float sz = cm != null ? cm.getScrollZ() : 0.0F;
+		LOGGER.info("[DEVSHOT] state speed={} {}", cm != null ? cm.getCloudSpeed() : 0,
+				SimpleCloudsRenderer.getInstance().generationDiagnostic() + " " + SimpleCloudsRenderer.getInstance().meshDiagnostic());
 		LOGGER.info("[DEVSHOT] shooting {}: cam pos {}x{}x{} camXRot {} camYRot {} (player xRot {} yRot {}, xRotO {} viewXRot(0.5) {}) scroll (drift) {}x{}x{}",
 				name, cam.position().x, cam.position().y, cam.position().z,
 				(int) cam.xRot(), (int) cam.yRot(),

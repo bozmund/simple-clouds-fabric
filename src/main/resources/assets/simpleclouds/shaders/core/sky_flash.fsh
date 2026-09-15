@@ -1,12 +1,14 @@
 #version 330
 
-// 26.2 sky flash (storm plan step 1): the vanilla lightmap sky flash is dead in
-// 26.2 — nothing consumes ClientLevel.getSkyFlashTime() anymore (verified in the
-// jar: only Level/ClientLevel reference the field). The port therefore draws its
-// own short full-screen white brightening, driven by the SAME gated strength as
-// the storm-fog lift: 2-tick renewal per frame while a rendered bolt is within
-// 2000 blocks and bright (fade > 0.5), zero for far strikes and zero when
-// "Hide Sky Flashes" is on (flashStrength checks the option).
+// 26.2 sky flash (storm plan step 1, plan item 3): the vanilla lightmap sky flash is dead in
+// 26.2 -- nothing consumes ClientLevel.getSkyFlashTime() anymore (verified in the jar: only
+// Level/ClientLevel reference the field). The port draws its own short brightening, driven by
+// the gated strength (a rendered bolt within 2000 blocks and bright, zero for far strikes and
+// with "Hide Lightning Flashes" on). Plan item 3: SKY pixels only, like vanilla's sky flash --
+// the earlier full-screen white also brightened terrain and clouds (the whole-scene S5 flashes).
+// 26.2 clears the main depth to 0.0: sky samples ~0, geometry (0, 1] (terrain_shadows.fsh).
+uniform sampler2D DepthSampler;
+
 in vec2 texCoord;
 
 out vec4 fragColor;
@@ -22,8 +24,9 @@ void main()
 {
 	if (texCoord.x < 0.0 || texCoord.x > 1.0 || texCoord.y < 0.0 || texCoord.y > 1.0)
 		discard;
-
-	// Alpha-blended white = a uniform brightening of everything on screen,
-	// close to the original's lightmap sky-column lift.
+	// Sky = the cleared depth only: with the reversed depth (near 1, far 0, ~near / distance)
+	// geometry beyond ~500 blocks already stores < 0.0001, which the old threshold called sky.
+	if (texture(DepthSampler, texCoord).r > 1.0e-7)
+		discard; // terrain, clouds, entities: not the sky
 	fragColor = vec4(1.0, 1.0, 1.0, clamp(Strength, 0.0, 1.0));
 }
