@@ -37,6 +37,7 @@ import dev.nonamecrackers2.simpleclouds.common.noise.StaticLayeredNoise;
 import dev.nonamecrackers2.simpleclouds.common.noise.StaticNoiseSettings;
 import dev.nonamecrackers2.simpleclouds.client.renderer.pipeline.CloudsRenderPipeline;
 import dev.nonamecrackers2.simpleclouds.client.renderer.settings.CloudsRendererSettings;
+import dev.nonamecrackers2.simpleclouds.client.renderer.lightning.LightningBolt;
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudsDrawPipeline;
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudVertexFormat;
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.ChunkBufferPool;
@@ -669,14 +670,34 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		// formations (not synced yet / vanilla weather) the generator falls back to
 		// the infinite field.
 		java.util.Map<net.minecraft.resources.Identifier, Integer> typeToGroup = dataDrivenGroupIndices();
-		// Sample region positions at the INTEGER tick, not the render partial tick:
-		// the partial tick changes every frame, which would fingerprint a different
-		// (interpolated) formation set per frame and force a full CPU regeneration
-		// every frame. At integer ticks the signature only changes when a region has
-		// moved by at least half a cloud unit (4 blocks).
-		double sigTick = Math.floor(partialTick);
-		List<CpuCloudGenerator.RegionMask> regions = this.buildRegionMasks(typeToGroup, (float) sigTick);
-		long regionSig = this.regionSignature((float) sigTick);
+		// Sample region positions at the INTEGER tick (the current tick's position,
+		// partialTick=1.0 -> posX), not the render partial tick: the partial tick
+		// changes every frame, which would fingerprint a different (interpolated)
+		// formation set per frame and force a full CPU regeneration every frame.
+		// At integer ticks the signature only changes when a region has moved by at
+		// least one quantization step. (The old code used Math.floor(partialTick),
+		// which is ALWAYS 0 because partialTick is in [0,1) — so it sampled posXO,
+		// the PREVIOUS tick's position, and the signature lagged by a tick.)
+		float sigTick = 1.0F;
+		List<CpuCloudGenerator.RegionMask> regions = this.buildRegionMasks(typeToGroup, sigTick);
+		long regionSig = this.regionSignature(sigTick);
+		// [DIAG] shake step 2+3: log the regionSig + each region's quantized
+		// components every 20 ticks, to see which component makes the hash churn.
+		if (this.cloudManager != null && (mc.level.getGameTime() % 20 == 0))
+		{
+			java.util.List<dev.nonamecrackers2.simpleclouds.common.cloud.region.CloudRegion> regs = this.cloudManager.getClouds();
+			StringBuilder sb = new StringBuilder("[REGIONSIG] tick=" + mc.level.getGameTime() + " sig=" + regionSig + " n=" + regs.size());
+			for (dev.nonamecrackers2.simpleclouds.common.cloud.region.CloudRegion rg : regs)
+			{
+				sb.append(" | ").append(rg.getCloudTypeId()).append(":(")
+					.append((long) (rg.getPosX((float) sigTick) * 0.05F)).append(',')
+					.append((long) (rg.getPosZ((float) sigTick) * 0.05F)).append(',')
+					.append((long) (rg.getRadius((float) sigTick) * 0.2F)).append(',')
+					.append((long) (rg.getStretch((float) sigTick) * 10.0F)).append(',')
+					.append((long) (rg.getRotation((float) sigTick) * 10.0F)).append(")");
+			}
+			LOGGER.info(sb.toString());
+		}
 		boolean groupsChanged = groupsHash != this.cacheGroupsHash;
 		this.cacheGroupsHash = groupsHash;
 		boolean chunkSetChanged = gridKey != this.lastChunkGridKey;
@@ -720,6 +741,30 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		}
 		target.sort(java.util.Comparator.comparingLong(c -> c[3]));
 		this.totalChunkCount = target.size();
+
+		// [DIAG] shake: log the scroll + the nearest cached chunk's genScroll/offset
+		// every 100 frames, to see the drift speed and the regen snap-back.
+		if (mc.level.getGameTime() % 100 == 0)
+		{
+			ChunkData nn = null;
+			for (long[] c : target)
+			{
+				ChunkData dd = this.chunkCaches.get(new ChunkCoord((int) c[0], (int) c[1], (int) c[2]));
+				if (dd != null && dd.opaque != null)
+				{
+					nn = dd;
+					break;
+				}
+			}
+			if (nn != null)
+				LOGGER.info("[SCROLLDIAG] scroll=({},{},{}) gen=({},{},{}) offset=({},{},{}) thr={}",
+					String.format("%.3f", scrollX), String.format("%.3f", scrollY), String.format("%.3f", scrollZ),
+					String.format("%.3f", nn.genScrollX), String.format("%.3f", nn.genScrollY), String.format("%.3f", nn.genScrollZ),
+					String.format("%.3f", scrollX - nn.genScrollX), String.format("%.3f", scrollY - nn.genScrollY), String.format("%.3f", scrollZ - nn.genScrollZ),
+					SCROLL_REGEN_THRESHOLD);
+			else
+				LOGGER.info("[SCROLLDIAG] scroll=({},{},{}) (no cached chunk yet)", String.format("%.3f", scrollX), String.format("%.3f", scrollY), String.format("%.3f", scrollZ));
+		}
 
 		// Pick up finished chunks (budgeted, generated off-thread — no render hitch).
 		// Last-writer-wins: a completion is at most one generation cycle behind the
@@ -793,10 +838,21 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 			ChunkData d = this.chunkCaches.get(key);
 			// A2: also stale when the wind scroll drifted beyond the threshold since
 			// this chunk was generated (the noise was sampled at the old phase).
-			boolean stale = d == null || d.regionSig != regionSig || d.groupsHash != groupsHash || groupsChanged
-					|| Math.abs(scrollX - d.genScrollX) > SCROLL_REGEN_THRESHOLD
+			boolean scrollStale = d != null
+					&& (Math.abs(scrollX - d.genScrollX) > SCROLL_REGEN_THRESHOLD
 					|| Math.abs(scrollY - d.genScrollY) > SCROLL_REGEN_THRESHOLD
-					|| Math.abs(scrollZ - d.genScrollZ) > SCROLL_REGEN_THRESHOLD;
+					|| Math.abs(scrollZ - d.genScrollZ) > SCROLL_REGEN_THRESHOLD);
+			if (scrollStale)
+				LOGGER.info("[SCROLLDIAG] REGEN chunk {} scroll=({},{},{}) gen=({},{},{})", key,
+					String.format("%.2f", scrollX), String.format("%.2f", scrollY), String.format("%.2f", scrollZ),
+					String.format("%.2f", d.genScrollX), String.format("%.2f", d.genScrollY), String.format("%.2f", d.genScrollZ));
+			boolean stale = d == null || d.regionSig != regionSig || d.groupsHash != groupsHash || groupsChanged || scrollStale;
+			if (stale && mc.level.getGameTime() % 100 == 0)
+				LOGGER.info("[SCROLLDIAG] STALE {} reason={} regionSig{} groupsHash{} groupsChanged={} scrollStale={}", key,
+					d == null ? "null" : (d.regionSig != regionSig ? "regionSig" : (d.groupsHash != groupsHash ? "groupsHash" : (groupsChanged ? "groupsChanged" : "scroll"))),
+					d != null ? (d.regionSig != regionSig ? "DIFF" : "same") : "-",
+					d != null ? (d.groupsHash != groupsHash ? "DIFF" : "same") : "-",
+					groupsChanged, scrollStale);
 			if (stale && this.pendingChunks.add(key))
 			{
 				enqueued++;
@@ -940,13 +996,70 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 			if (this.getWorldEffectsManager().hasLightningToRender())
 				this.getWorldEffectsManager().renderLightning(view, partialTick, camX, camY, camZ, this.drawPipeline);
 
-		// Storm fog (26.2 slice): darkened overlay while under storm clouds. The
-		// lightning flash (WorldEffects.flashStrength) reduces the darkening via the
-		// LightningMul uniform, brightening the scene on a strike.
+		// Full-port storm fog (the 1.20.1 storm_fog): render the cloud instances
+		// into a rotated top-down shadow map (depth + storm colour), then raymarch
+		// the fog over it. The fog follows the actual cloud shapes and lifts around
+		// each bright lightning bolt (per-bolt local lighting). Replaces the 26.2
+		// slice's flat screen-space overlay. The shadow sources are collected here
+		// (unconditionally) and reused by the terrain shadow below.
+		this.shadowSources.clear();
+		for (long[] c : target)
+		{
+			ChunkData d = this.chunkCaches.get(new ChunkCoord((int) c[0], (int) c[1], (int) c[2]));
+			if (d != null && d.opaque != null)
+				this.shadowSources.add(new CloudsDrawPipeline.InstanceSource(d.opaque, d.opaqueCount));
+		}
 		if (stormFogEnabled && overlaysEnabled && SimpleCloudsConfig.CLIENT.renderStormFog.get())
 		{
-			float lightningMul = 1.0F - this.getWorldEffectsManager().flashStrength(partialTick) * 0.9F;
-			this.drawPipeline.drawStormFog(this.cacheStormCoverage * 2.5F, lightningMul);
+			// Standard [-1,1] projection from the camera FOV+aspect. The live
+			// projection buffer is not readable (map() throws "not writable"), and the
+			// raymarch's ray direction is independent of the near/far and the z
+			// convention; the scene depth (z-to-1) is converted to [-1,1] in the
+			// shader. (A large far keeps the reconstructed scene distance sane.)
+			float fogFovRad = (float) Math.toRadians(this.mc.gameRenderer.gameRenderState().levelRenderState.cameraRenderState.hudFov);
+			float fogAspect = (float) this.mc.getWindow().getWidth() / Math.max(1.0F, (float) this.mc.getWindow().getHeight());
+			org.joml.Matrix4f projMat = new org.joml.Matrix4f().setPerspective(fogFovRad, fogAspect, 0.1F, 16384.0F);
+			float span = (float) (this.lodConfig != null
+					? this.lodConfig.getEffectiveChunkSpan() * PRIMARY_CHUNK
+					: 2560) * CLOUD_SCALE_F;
+			float stormFogAngleDeg = SimpleCloudsConfig.CLIENT.stormFogAngle.get().floatValue();
+			float windYawDeg = 0.0F;
+			if (this.cloudManager != null)
+			{
+				var wind = this.cloudManager.calculateWindDirection();
+				windYawDeg = (float) Math.toDegrees(Math.atan2(wind.x, wind.y));
+			}
+			// HeightCutoff is in WORLD Y here (the 26.2 instances sit at world Y =
+			// cloudHeight + 8*y, >= 128), so it must sit well above the cloud field
+			// (the 1.20.1 value of 128 was in cloud-local units, a different space).
+			this.drawPipeline.renderStormFogShadowMap(camX, camZ, (float) cloudHeight, span, stormFogAngleDeg, (float) Math.toRadians(windYawDeg), 2000.0F, this.shadowSources);
+
+			// Per-bolt lightning (position + brightness) for the fog's local lighting
+			// (gated by the stormFogLightningFlashes option, like the original).
+			float[] boltData = null;
+			int boltCount = 0;
+			if (SimpleCloudsConfig.CLIENT.stormFogLightningFlashes.get())
+			{
+				java.util.List<LightningBolt> bolts = this.getWorldEffectsManager().getLightningBolts();
+				boltCount = Math.min(bolts.size(), 16);
+				if (boltCount > 0)
+				{
+					boltData = new float[boltCount * 4];
+					for (int i = 0; i < boltCount; i++)
+					{
+						var p = bolts.get(i).getPosition();
+						boltData[i * 4] = p.x;
+						boltData[i * 4 + 1] = p.y;
+						boltData[i * 4 + 2] = p.z;
+						boltData[i * 4 + 3] = bolts.get(i).getFade(partialTick);
+					}
+				}
+			}
+			float darken = this.getWorldEffectsManager().getDarkenFactor(partialTick);
+			// Storm colour: a desaturated blue-grey (the original tints the shadow
+			// brightness by the storm colour; tune from the reference screenshots).
+			this.drawPipeline.drawStormFogRaymarch(projMat, view, camX, camY, camZ,
+					fogEnd, darken, 0.5F, 0.5F, 0.55F, boltCount, boltData);
 		}
 
 		// Sky flash (storm plan step 1): the vanilla 26.2 sky flash is dead (nothing
@@ -960,14 +1073,8 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		// instances, then a fullscreen terrain-shadow pass (see CloudShadowPass
 		// section of CloudsDrawPipeline and PORTING.md).
 		// A1: the shadow map draws the per-chunk buffers (one drawIndexed per chunk
-		// inside a single pass).
-		this.shadowSources.clear();
-		for (long[] c : target)
-		{
-			ChunkData d = this.chunkCaches.get(new ChunkCoord((int) c[0], (int) c[1], (int) c[2]));
-			if (d != null && d.opaque != null)
-				this.shadowSources.add(new CloudsDrawPipeline.InstanceSource(d.opaque, d.opaqueCount));
-		}
+		// inside a single pass). (The shadow sources were collected in the storm
+		// fog section above and are reused here.)
 		this.drawPipeline.renderCloudShadowMap(camX, camY, camZ, (float) cloudHeight, this.shadowSources);
 		if (overlaysEnabled)
 		{

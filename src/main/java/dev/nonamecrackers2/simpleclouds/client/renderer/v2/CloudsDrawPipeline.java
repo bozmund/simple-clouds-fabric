@@ -39,6 +39,7 @@ import net.minecraft.resources.Identifier;
 import org.joml.Matrix4f;
 
 import dev.nonamecrackers2.simpleclouds.SimpleCloudsMod;
+import dev.nonamecrackers2.simpleclouds.common.cloud.SimpleCloudsConstants;
 import dev.nonamecrackers2.simpleclouds.common.config.SimpleCloudsConfig;
 
 /**
@@ -60,6 +61,10 @@ public class CloudsDrawPipeline implements AutoCloseable
 	private static final Identifier CLOUDS_TRANSPARENCY_LOCATION = SimpleCloudsMod.id("core/clouds_transparency");
 	// Storm fog overlay (26.2 slice: fullscreen blend pass, see core/storm_fog.fsh).
 	private static final Identifier STORM_FOG_LOCATION = SimpleCloudsMod.id("core/storm_fog");
+	// Full-port storm fog: the raymarched fog (core/storm_fog_raymarch) samples a
+	// rotated top-down ortho depth+colour map of the cloud instances (core/storm_fog_shadow).
+	private static final Identifier STORM_FOG_SHADOW_LOCATION = SimpleCloudsMod.id("core/storm_fog_shadow");
+	private static final Identifier STORM_FOG_RAYMARCH_LOCATION = SimpleCloudsMod.id("core/storm_fog_raymarch");
 	private static final Identifier SKY_FLASH_LOCATION = SimpleCloudsMod.id("core/sky_flash");
 	// Screen-covering triangle in clip space.
 	private static final float[] FULLSCREEN_TRIANGLE = { -1.0F, -1.0F, 3.0F, -1.0F, -1.0F, 3.0F };
@@ -108,6 +113,9 @@ public class CloudsDrawPipeline implements AutoCloseable
 	// instances + a fullscreen terrain-shadow pass. See core/clouds_shadow.* and
 	// core/terrain_shadows.* for the shaders and PORTING.md for the slice scope.
 	private static final int SHADOW_SIZE = 512; // 1 block/texel over the 512x512 block field
+	// Full-port storm fog shadow map: the original's SHADOW_MAP_SIZE and depth range.
+	private static final int STORM_FOG_SHADOW_SIZE = 1024;
+	private static final float STORM_FOG_DEPTH_FAR = 10000.0F;
 	// Step 1 (VISUAL-PARITY-PLAN): the light volume is anchored at WORLD cloudHeight
 	// (like the original's shadow stack: translate(-camOffsetX, -cloudHeight,
 	// -camOffsetZ)), NOT at the camera. The light plane sits at the top of the cloud
@@ -148,6 +156,27 @@ public class CloudsDrawPipeline implements AutoCloseable
 
 	private final SimpleRenderTarget shadowTarget;
 	private final RenderPipeline shadowPipeline;
+
+	// ---- Full-port storm fog shadow map (1.20.1 stormFogShadowMap) ----
+	// Rotated top-down ortho depth+colour map of the cloud instances, covering the
+	// full cloud field, sampled by the raymarched storm fog. Distinct from the
+	// terrain-shadow map above (different span/depth/rotation).
+	private final SimpleRenderTarget stormFogShadowTarget;
+	private final RenderPipeline stormFogShadowPipeline;
+	private final GpuBuffer[] stormFogShadowMatricesRing = new GpuBuffer[3];
+	private int stormFogShadowMatricesIdx = 0;
+	private boolean stormFogShadowRenderedThisFrame = false;
+	// The shadow matrices from the latest renderStormFogShadowMap, reused by the
+	// raymarch so the fog samples the map with the exact same projection.
+	private org.joml.Matrix4f stormFogShadowView = new org.joml.Matrix4f();
+	private org.joml.Matrix4f stormFogShadowProj = new org.joml.Matrix4f();
+
+	// Raymarched storm fog (the 1.20.1 program/storm_fog): samples the shadow map
+	// + scene depth, with per-bolt local lightning.
+	private final RenderPipeline stormFogRaymarchPipeline;
+	private final GpuBuffer stormFogRaymarchUbo; // 352 bytes (see the shader UBO)
+	private final GpuBuffer stormFogLightningUbo; // 16 bolts * 16 bytes
+	private static final int MAX_LIGHTNING_BOLTS = 16;
 	private final RenderPipeline terrainPipeline;
 	// Per-frame shadow uniforms. 26.2 idiom: a MappableRingBuffer (like
 	// DynamicUniforms) -- mapping/unmapping ONE fixed buffer every frame and
@@ -335,6 +364,57 @@ public class CloudsDrawPipeline implements AutoCloseable
 				// LESS_THAN (the scene/inverted-Z default would reject every fragment).
 				.withDepthStencilState(new DepthStencilState(CompareOp.LESS_THAN, true))
 				.build();
+
+		// ---- Full-port storm fog shadow map ----
+		this.stormFogShadowTarget = new SimpleRenderTarget("simpleclouds.stormFogShadow", true, GpuFormat.RGBA8_UNORM);
+		this.stormFogShadowTarget.createBuffers(STORM_FOG_SHADOW_SIZE, STORM_FOG_SHADOW_SIZE);
+
+		BindGroupLayout stormFogShadowBgl = BindGroupLayout.builder()
+				.withUniform("StormFogShadowMatrices", UniformType.UNIFORM_BUFFER)
+				.build();
+		this.stormFogShadowPipeline = RenderPipeline.builder()
+				.withLocation(STORM_FOG_SHADOW_LOCATION)
+				.withVertexShader(STORM_FOG_SHADOW_LOCATION)
+				.withFragmentShader(STORM_FOG_SHADOW_LOCATION)
+				.withBindGroupLayout(stormFogShadowBgl)
+				.withVertexBinding(0, CloudVertexFormat.QUAD_FORMAT)
+				.withVertexBinding(1, CloudVertexFormat.INSTANCE_FORMAT)
+				.withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
+				.withCull(false)
+				// Write the brightness colour (no blend); depth written by the pipeline.
+				.withColorTargetState(new ColorTargetState(Optional.empty(), GpuFormat.RGBA8_UNORM, ColorTargetState.WRITE_COLOR))
+				.withDepthStencilState(new DepthStencilState(CompareOp.LESS_THAN, true))
+				.build();
+
+		for (int slot = 0; slot < 3; slot++)
+		{
+			final int s = slot;
+			this.stormFogShadowMatricesRing[slot] = device.createBuffer(() -> "simpleclouds.stormFogShadowMatrices" + s, GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(160));
+		}
+
+		// ---- Raymarched storm fog ----
+		BindGroupLayout stormFogRaymarchBgl = BindGroupLayout.builder()
+				.withUniform("StormFogRaymarch", UniformType.UNIFORM_BUFFER)
+				.withUniform("LightningBolts", UniformType.UNIFORM_BUFFER)
+				.withSampler("ShadowMap")
+				.withSampler("ShadowMapColor")
+				.withSampler("DepthSampler")
+				.build();
+		this.stormFogRaymarchPipeline = RenderPipeline.builder()
+				.withLocation(STORM_FOG_RAYMARCH_LOCATION)
+				.withVertexShader(STORM_FOG_RAYMARCH_LOCATION)
+				.withFragmentShader(STORM_FOG_RAYMARCH_LOCATION)
+				.withBindGroupLayout(stormFogRaymarchBgl)
+				.withVertexBinding(0, triangleFormat)
+				.withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
+				.withCull(false)
+				// Alpha-blend the accumulated fog over the scene; no depth test (the
+				// raymarch does its own scene-depth occlusion via DepthSampler).
+				.withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT))
+				.withDepthStencilState(Optional.empty())
+				.build();
+		this.stormFogRaymarchUbo = device.createBuffer(() -> "simpleclouds.stormFogRaymarch", GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(352));
+		this.stormFogLightningUbo = device.createBuffer(() -> "simpleclouds.stormFogLightning", GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(MAX_LIGHTNING_BOLTS * 16));
 
 		BindGroupLayout terrainBgl = BindGroupLayout.builder()
 				.withUniform("ShadowPass", UniformType.UNIFORM_BUFFER)
@@ -626,6 +706,97 @@ public class CloudsDrawPipeline implements AutoCloseable
 	}
 
 	/**
+	 * Full-port raymarched storm fog (the 1.20.1 program/storm_fog). Samples the
+	 * storm-fog shadow map (depth + colour) and the scene depth, accumulates fog
+	 * density along 200 accelerating steps, and lifts the fog around each bright
+	 * lightning bolt. Must be called after renderStormFogShadowMap (same frame)
+	 * and after the scene is rendered (so DepthSampler holds the scene).
+	 */
+	public void drawStormFogRaymarch(org.joml.Matrix4f projMat, org.joml.Matrix4f view, double camX, double camY, double camZ,
+			float fogEnd, float darkenFactor, float stormR, float stormG, float stormB,
+			int lightningCount, float[] lightningData)
+	{
+		if (!this.stormFogShadowRenderedThisFrame)
+			return;
+
+		org.joml.Matrix4f invProj = new org.joml.Matrix4f(projMat).invert();
+		org.joml.Matrix4f invView = new org.joml.Matrix4f(view).invert();
+
+		try (var v = this.stormFogRaymarchUbo.slice().map(true, false))
+		{
+			ByteBuffer data = v.data();
+			writeMatrix(data, 0, invProj);
+			writeMatrix(data, 64, invView);
+			writeMatrix(data, 128, this.stormFogShadowProj);
+			writeMatrix(data, 192, this.stormFogShadowView);
+			data.putFloat(256, (float) camX);
+			data.putFloat(260, (float) camY);
+			data.putFloat(264, (float) camZ);
+			data.putFloat(268, 0.0F);
+			data.putFloat(272, 1000.0F * darkenFactor); // CutoffDistance
+			data.putFloat(276, fogEnd / 2.0F);          // FogStart
+			data.putFloat(280, fogEnd);                 // FogEnd
+			data.putFloat(284, 500.0F);                 // LightTransmittenceDistance
+			data.putFloat(288, 400.0F);                 // VerticalFade
+			data.putFloat(292, 0.6F);                   // ColorMultiplier.r
+			data.putFloat(296, 0.6F);                   // ColorMultiplier.g
+			data.putFloat(300, 0.8F);                   // ColorMultiplier.b
+			data.putFloat(304, 0.7F);                   // ColorThreshold.r
+			data.putFloat(308, 0.7F);                   // ColorThreshold.g
+			data.putFloat(312, 0.7F);                   // ColorThreshold.b
+			data.putFloat(316, 0.0F);
+			data.putFloat(320, stormR);                 // ColorModulator.r
+			data.putFloat(324, stormG);                 // ColorModulator.g
+			data.putFloat(328, stormB);                 // ColorModulator.b
+			data.putFloat(332, 1.0F);                   // ColorModulator.a
+			data.putInt(336, Math.min(lightningCount, MAX_LIGHTNING_BOLTS));
+		}
+
+		int boltCount = Math.min(lightningCount, MAX_LIGHTNING_BOLTS);
+		try (var v = this.stormFogLightningUbo.slice().map(true, false))
+		{
+			ByteBuffer data = v.data();
+			for (int i = 0; i < MAX_LIGHTNING_BOLTS; i++)
+			{
+				int o = i * 16;
+				if (i < boltCount && lightningData != null && lightningData.length >= i * 4 + 4)
+				{
+					data.putFloat(o, lightningData[i * 4]);
+					data.putFloat(o + 4, lightningData[i * 4 + 1]);
+					data.putFloat(o + 8, lightningData[i * 4 + 2]);
+					data.putFloat(o + 12, lightningData[i * 4 + 3]);
+				}
+				else
+				{
+					data.putFloat(o, 0.0F);
+					data.putFloat(o + 4, 0.0F);
+					data.putFloat(o + 8, 0.0F);
+					data.putFloat(o + 12, 0.0F); // alpha 0 = no lift
+				}
+			}
+		}
+
+		RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
+		GpuTextureView colorView = main.getColorTextureView();
+		GpuTextureView depthView = main.getDepthTextureView();
+
+		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
+		// Colour-only pass (no depth attachment): we SAMPLE the main depth
+		// (DepthSampler) for scene occlusion, so it must not be an attachment
+		// (same hazard the atmospheric pass avoids).
+		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.stormFogRaymarch", colorView, Optional.empty());
+		pass.setPipeline(this.stormFogRaymarchPipeline);
+		pass.setUniform("StormFogRaymarch", this.stormFogRaymarchUbo);
+		pass.setUniform("LightningBolts", this.stormFogLightningUbo);
+		pass.bindTexture("ShadowMap", this.stormFogShadowTarget.getDepthTextureView(), this.nearestSampler);
+		pass.bindTexture("ShadowMapColor", this.stormFogShadowTarget.getColorTextureView(), this.nearestSampler);
+		pass.bindTexture("DepthSampler", depthView, this.nearestSampler);
+		pass.setVertexBuffer(0, this.triangleBuffer.slice());
+		pass.draw(3, 1, 0, 0);
+		pass.close();
+	}
+
+	/**
 	 * Draws the sky flash (storm plan step 1): a short full-screen white
 	 * brightening while a nearby (<= 2000 blocks) bolt is bright. The strength is
 	 * the gated flash from WorldEffects.flashStrength (2-tick vanilla sky-flash
@@ -797,6 +968,69 @@ public class CloudsDrawPipeline implements AutoCloseable
 		}
 		pass.close();
 		this.shadowRenderedThisFrame = true;
+	}
+
+	/**
+	 * Full-port storm fog (1.20.1 stormFogShadowMap): render the cloud instances
+	 * into a rotated top-down ortho depth+colour map. The raymarched storm fog
+	 * samples this map. The matrices replicate the original's PoseStack:
+	 * T(span/2, span/2, -depthFar/2) * RotX(stormFogAngle) * RotY(windYaw) *
+	 * T(-camOffX, -cloudHeight, -camOffZ), with camOff floored to 256 blocks.
+	 * joml's high-level translate/rotate/setOrtho handle the column-major layout
+	 * (the Step 6 row/col bug only bit hand-written set() groups).
+	 */
+	public void renderStormFogShadowMap(double camX, double camZ, float cloudHeight, float span, float stormFogAngleDeg, float windYawRad, float heightCutoff, List<InstanceSource> sources)
+	{
+		if (sources == null || sources.isEmpty())
+		{
+			this.stormFogShadowRenderedThisFrame = false;
+			return;
+		}
+
+		float chunkSizeUpscaled = (float) SimpleCloudsConstants.CHUNK_SIZE * (float) SimpleCloudsConstants.CLOUD_SCALE;
+		float camOffX = (float) (Math.floor(camX / chunkSizeUpscaled) * chunkSizeUpscaled);
+		float camOffZ = (float) (Math.floor(camZ / chunkSizeUpscaled) * chunkSizeUpscaled);
+
+		org.joml.Matrix4f view = new org.joml.Matrix4f();
+		view.translate(span * 0.5F, span * 0.5F, -STORM_FOG_DEPTH_FAR * 0.5F);
+		view.rotate((float) Math.toRadians(stormFogAngleDeg), 1.0F, 0.0F, 0.0F);
+		view.rotate(windYawRad, 0.0F, 1.0F, 0.0F);
+		view.translate(-camOffX, -cloudHeight, -camOffZ);
+
+		org.joml.Matrix4f proj = new org.joml.Matrix4f().setOrtho(0.0F, span, span, 0.0F, 0.0F, STORM_FOG_DEPTH_FAR);
+		// Store for the raymarch (it must sample the map with the same projection).
+		this.stormFogShadowView = view;
+		this.stormFogShadowProj = proj;
+
+		this.stormFogShadowMatricesIdx = (this.stormFogShadowMatricesIdx + 1) % 3;
+		GpuBuffer matricesBuf = this.stormFogShadowMatricesRing[this.stormFogShadowMatricesIdx];
+		try (var v = matricesBuf.slice().map(true, false))
+		{
+			ByteBuffer data = v.data();
+			writeMatrix(data, 0, view);
+			writeMatrix(data, 64, proj);
+			data.putFloat(128, 1.0F);
+			data.putFloat(132, 1.0F);
+			data.putFloat(136, 1.0F);
+			data.putFloat(140, 1.0F);
+			data.putFloat(144, heightCutoff);
+		}
+
+		GpuTextureView colorView = this.stormFogShadowTarget.getColorTextureView();
+		GpuTextureView depthView = this.stormFogShadowTarget.getDepthTextureView();
+		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
+		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.stormFogShadowMap", colorView, Optional.of(new org.joml.Vector4f(0.0F, 0.0F, 0.0F, 0.0F)), depthView, OptionalDouble.of(1.0));
+		pass.setPipeline(this.stormFogShadowPipeline);
+		pass.setUniform("StormFogShadowMatrices", matricesBuf);
+		pass.setVertexBuffer(0, this.quadVertexBuffer.slice());
+		for (InstanceSource source : sources)
+		{
+			pass.setVertexBuffer(1, source.buffer().slice());
+			pass.setIndexBuffer(this.quadIndexBuffer, IndexType.SHORT);
+			pass.drawIndexed(QUAD_INDICES.length, source.count(), 0, 0, 0);
+		}
+		pass.close();
+		this.stormFogShadowRenderedThisFrame = true;
 	}
 
 	/**

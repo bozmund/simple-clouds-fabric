@@ -1044,6 +1044,16 @@ public final class DevShot
 						views.add(s5);
 						continue;
 					}
+					if (part.equalsIgnoreCase("SHAKE"))
+					{
+						// Shake diagnosis (step 1): 10 shots at 1 s (20 tick) intervals,
+						// looking up at the cloud layer, to capture the drift+reset motion.
+						View sh = new View("devshot-SHAKE-01.png", -45.0F, 0.0F, 0, 0, 0);
+						sh.seqCount = 10;
+						sh.seqInterval = 20; // 1 s between shots
+						views.add(sh);
+						continue;
+					}
 					if (part.length() == 1)
 					{
 						char c = Character.toUpperCase(part.charAt(0));
@@ -1210,9 +1220,12 @@ public final class DevShot
 				}
 				else if (pendingShot == 4)
 				{
-					// S5 sequence frame (devshot-S5-01.png is file1; 02..30 follow).
+					// Sequence frame (file1 is shot 01; 02..NN follow). The base name is
+					// derived from file1 (devshot-S5-01.png -> devshot-S5-, devshot-SHAKE-01.png
+					// -> devshot-SHAKE-) so any view can carry a sequence.
 					seqFrame++;
-					shoot(mc, String.format("devshot-S5-%02d.png", seqFrame));
+					String base = v.file1.substring(0, v.file1.lastIndexOf('-') + 1);
+					shoot(mc, String.format(base + "%02d.png", seqFrame));
 					if (seqFrame < v.seqCount)
 					{
 						waitUntilTick = mc.level.getGameTime() + v.seqInterval;
@@ -1286,7 +1299,9 @@ public final class DevShot
 				pendingShot = 4;
 				waitUntilTick = mc.level.getGameTime() + v.seqInterval;
 				stormStrikeIdx = 0;
-				stormStrikeTick = mc.level.getGameTime() + 20; // first forced strike 1 s in (frames 03-08 catch its flash)
+				// Forced strikes only for the STORM view (the SHAKE seq must be a clean
+				// cloud-field capture, no bolt flashing into frame).
+				stormStrikeTick = storm ? mc.level.getGameTime() + 20 : -1;
 				return;
 			}
 			if (v.waitTicks > 0)
