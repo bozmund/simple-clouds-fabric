@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd /home/jan/.cache/simpleclouds/port-candidate-tgkFnnmU
+cd $(cd "$(dirname "$0")/.." && pwd)
 while IFS= read -r -d '' kv; do export "$kv"; done < /home/jan/.cache/simpleclouds/launch.env
 MC=/home/jan/.gradle/caches/fabric-loom/minecraftMaven/net/minecraft/minecraft-merged-deobf/26.2/minecraft-merged-deobf-26.2.jar
 CP="build/classes/java/main:build/resources/main:$MC"

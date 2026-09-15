@@ -2,7 +2,7 @@
 # Claude, 2026-09-15: is the STORM scene repeatable after the fixed-size / fixed-angle fixture?
 # Two identical STORM runs + one STORM NOFOG, one after another, via tools/claude-run.sh
 # (refuses while the real game runs, stops only simpleclouds-devclient). Log: claude-batch-0915.log.
-C=/home/jan/.cache/simpleclouds/port-candidate-tgkFnnmU
+C=$(cd "$(dirname "$0")/.." && pwd)
 cd "$C" || exit 1
 L="$C/claude-batch-0915.log"
 run() {

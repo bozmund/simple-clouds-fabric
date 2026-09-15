@@ -6,7 +6,7 @@
 # [DEVMEM] line) into <evidence>/samples.tsv, then ends the loop by deleting run/devshot.request (the
 # mod's stop switch) and stops ONLY the simpleclouds-devclient unit. Stops early if Jan's real game
 # (a java/minecraft process outside the dev-client unit) appears or the client dies. Installs nothing.
-C=/home/jan/.cache/simpleclouds/port-candidate-tgkFnnmU
+C=$(cd "$(dirname "$0")/.." && pwd)
 cd "$C" || exit 1
 DUR=${1:-1800}
 E="$C/evidence-claude-0915-40-stress"

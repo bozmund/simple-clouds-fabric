@@ -2,7 +2,7 @@
 # Claude, 2026-09-15: handoff step 1 -- re-run the comparison tests with Codex's settle gate,
 # one after another. Each run goes through tools/claude-run.sh (refuses while the real game runs,
 # stops only simpleclouds-devclient). Progress: claude-batch-0915.log in the candidate folder.
-C=/home/jan/.cache/simpleclouds/port-candidate-tgkFnnmU
+C=$(cd "$(dirname "$0")/.." && pwd)
 cd "$C" || exit 1
 L="$C/claude-batch-0915.log"
 run() {

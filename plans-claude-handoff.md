@@ -1,3 +1,9 @@
+> **Repository (2026-09-15 11:35):** all further work happens in `/home/jan/simple-clouds-fabric`
+> (GitHub `bozmund/simple-clouds-fabric`, private). Branch per task, one commit per verified step,
+> push when done, never force-push or rewrite `main`. The old candidate folder is frozen (read-only
+> reference, evidence lives there); `local-mods/simple-clouds` stays untouched. Evidence folders are
+> gitignored: keep them in the checkout, cite them in the notes. Do not use `dev-relaunch.sh --install`.
+
 > **11:15 update:** fog "horizon streaks" NOT reproduced (fog-on band texture = fog-off control, only 2-5 px dither);
 > earlier description was a thumbnail misreading. No code change. Item closed. Details: end of `PORT-PROGRESS-2026-09-14.md`.
 > **10:50 update:** S4 moved to an oblique view (2000 blocks east, Y 2600, 30 deg down; jar d91c38c0, not installed).

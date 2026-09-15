@@ -5,7 +5,7 @@
 # screenshots into <candidate>/<evidence-name>/ with a contact sheet; prints the summary numbers;
 # then stops ONLY the simpleclouds-devclient unit. Never installs anything.
 set -u
-C=/home/jan/.cache/simpleclouds/port-candidate-tgkFnnmU
+C=$(cd "$(dirname "$0")/.." && pwd)
 cd "$C" || exit 1
 NAME="$1"; shift
 TOKENS="$*"
