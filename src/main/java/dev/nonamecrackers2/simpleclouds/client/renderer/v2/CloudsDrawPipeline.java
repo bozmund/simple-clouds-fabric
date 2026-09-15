@@ -373,6 +373,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 		BindGroupLayout atmosphericBgl = BindGroupLayout.builder()
 				.withUniform("AtmosphericPass", UniformType.UNIFORM_BUFFER)
 				.withSampler("DiffuseSampler")
+				.withSampler("DepthSampler") // sky pixels only (the pass runs after the level)
 				.build();
 		// The shader composites a separate scene copy; write its complete result.
 		this.atmosphericPipeline = RenderPipeline.builder()
@@ -979,12 +980,15 @@ public class CloudsDrawPipeline implements AutoCloseable
 			this.atmosphericSource = replacement;
 		}
 		encoder.copyTextureToTexture(main.getColorTexture(), this.atmosphericSource.getColorTexture(), 0,0,0,0,0, main.width,main.height);
-		// No depth attachment at all: the 3-arg overload (the layer doesn't read
-		// or write depth; the pipeline's empty DepthStencilState handles it).
+		// No depth attachment: the 3-arg overload (colour-only pass, empty
+		// DepthStencilState). The depth is SAMPLED instead: this runs after the whole
+		// level, so only sky pixels may get the layer -- the original drew it right
+		// after the sky, under terrain and clouds (Jan saw the streaks over blocks).
 		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.atmosphericClouds", colorView, Optional.empty());
 		pass.setPipeline(this.atmosphericPipeline);
 		pass.setUniform("AtmosphericPass", buf);
 		pass.bindTexture("DiffuseSampler", this.atmosphericSource.getColorTextureView(), this.nearestSampler);
+		pass.bindTexture("DepthSampler", main.getDepthTextureView(), this.nearestSampler);
 		pass.setVertexBuffer(0, this.triangleBuffer.slice());
 		pass.draw(3, 1, 0, 0);
 		pass.close();

@@ -3,13 +3,18 @@
 // Atmospheric clouds (26.2 port of the 1.20.1 post/program/atmospheric_clouds.fsh):
 // a purely visual high cloud layer. Each fragment casts a ray up to a plane
 // HEIGHT above the camera and samples psrdnoise there, mixed in with the biome
-// formation's density/color. No depth readback needed: the ray direction is
-// rebuilt from NDC + FOV + the camera rotation (mat3 of the view matrix), which
-// is exactly what the original's InverseWorldProj/InverseModelView gave.
+// formation's density/color. The ray direction is rebuilt from NDC + FOV + the
+// camera rotation (mat3 of the view matrix), which is exactly what the
+// original's InverseWorldProj/InverseModelView gave. The depth is read only to
+// find the sky: this pass runs after the whole level (MixinLevelRenderer, TAIL),
+// while the original drew the layer right after the sky, under terrain and
+// clouds -- without the test the streaks were painted over every block and
+// cloud above the horizon.
 in vec2 texCoord;
 out vec4 fragColor;
 
 uniform sampler2D DiffuseSampler;
+uniform sampler2D DepthSampler;
 
 // Declared here (the device does NOT inject sampler/uniform declarations from
 // the bind group layout -- 26.2 GlProgram compiles the source as written).
@@ -103,6 +108,12 @@ float psrdnoise(vec3 x, vec3 period, float alpha, out vec3 gradient)
 
 void main()
 {
+	// Sky = the cleared depth only (26.2 clears to 0.0; reversed depth puts far geometry
+	// below 1e-4, so only the cleared value is safe -- same test as sky_flash.fsh).
+	// Terrain, clouds and entities keep their colour.
+	if (texture(DepthSampler, texCoord).r > 1.0e-7)
+		discard;
+
 	vec4 col = texture(DiffuseSampler, texCoord);
 
 	if (CloudDensity <= 0.01)
