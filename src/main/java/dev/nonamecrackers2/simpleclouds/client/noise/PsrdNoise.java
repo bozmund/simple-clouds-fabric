@@ -16,11 +16,17 @@ public final class PsrdNoise
 	{
 	}
 
+	/** GLSL mod uses floor, unlike Java remainder for negative coordinates. */
+	private static float mod(float x, float divisor)
+	{
+		return x - divisor * (float) Math.floor(x / divisor);
+	}
+
 	/** permute from psrdnoise.glsl, scalarized. */
 	private static float permute(float i)
 	{
-		float im = i % 289.0F;
-		return ((im * 34.0F) + 10.0F) * im % 289.0F;
+		float im = mod(i, 289.0F);
+		return mod(((im * 34.0F) + 10.0F) * im, 289.0F);
 	}
 
 	/**
@@ -45,10 +51,10 @@ public final class PsrdNoise
 
 		// g_ = step(f0.xyx, f0.yzz), l_ = 1 - g_
 		// step(a, b) = b >= a ? 1 : 0
-		// g_.x = step(f0.y, f0.y) = 1 ; g_.y = step(f0.x, f0.z) ; g_.z = step(f0.y, f0.x)
-		float g_x = 1.0F; // step(f0.xyx.x = f0.y, f0.yzz.x = f0.y) -> always 1
-		float g_y = f0x >= f0z ? 1.0F : 0.0F; // step(f0.x, f0.z)
-		float g_z = f0y >= f0x ? 1.0F : 0.0F; // step(f0.y, f0.x)
+		// Edges are (x, y, x); compared values are (y, z, z).
+		float g_x = f0y >= f0x ? 1.0F : 0.0F;
+		float g_y = f0z >= f0y ? 1.0F : 0.0F;
+		float g_z = f0z >= f0x ? 1.0F : 0.0F;
 		float l_x = 1.0F - g_x;
 		float l_y = 1.0F - g_y;
 		float l_z = 1.0F - g_z;
@@ -90,15 +96,15 @@ public final class PsrdNoise
 		{
 			if (periodX > 0.0F)
 			{
-				v0x = v0x % periodX; v1x = v1x % periodX; v2x = v2x % periodX; v3x = v3x % periodX;
+				v0x = mod(v0x, periodX); v1x = mod(v1x, periodX); v2x = mod(v2x, periodX); v3x = mod(v3x, periodX);
 			}
 			if (periodY > 0.0F)
 			{
-				v0y = v0y % periodY; v1y = v1y % periodY; v2y = v2y % periodY; v3y = v3y % periodY;
+				v0y = mod(v0y, periodY); v1y = mod(v1y, periodY); v2y = mod(v2y, periodY); v3y = mod(v3y, periodY);
 			}
 			if (periodZ > 0.0F)
 			{
-				v0z = v0z % periodZ; v1z = v1z % periodZ; v2z = v2z % periodZ; v3z = v3z % periodZ;
+				v0z = mod(v0z, periodZ); v1z = mod(v1z, periodZ); v2z = mod(v2z, periodZ); v3z = mod(v3z, periodZ);
 			}
 			// iN = floor(M * vN + 0.5)
 			i0x = (float) Math.floor(v0y + v0z + 0.5F); i0y = (float) Math.floor(v0x + v0z + 0.5F); i0z = (float) Math.floor(v0x + v0y + 0.5F);
