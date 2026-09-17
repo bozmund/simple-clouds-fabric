@@ -53,7 +53,7 @@ next step that does not depend on it. Steps 6-8 depend on each other; 2-5 do not
 ## Checklist
 
 - [x] **Step 0** — Video-watching tool `frame-watch` for Pi → `nixos-symbiote/plans/2026-09-17-frame-watch-tool.md` (2026-09-17, nixos-symbiote `1646c63`, deployed via `symbiote-apply --source` snapshot — see REPORT for why; evidence: `evidence-sym-0917-01-frame-watch`)
-- [ ] **Step 1** — DevShot capture gates fixed (STORM 64/64, SHAKE FAST 41/41) → `simple-clouds-fabric/plans/2026-09-17-simple-clouds-storm-parity-26.3.md` § Step 1
+- [x] **Step 1** — DevShot capture gates fixed (STORM 64/64, SHAKE FAST 41/41) → `simple-clouds-fabric/plans/2026-09-17-simple-clouds-storm-parity-26.3.md` § Step 1 (2026-09-17, `0f455a7` on `work/storm-parity-26.3`; evidence: `evidence-sym-0917-02-storm`, `-03-shakefast`, `-04-shake` — NN continues from step 0's 01, the plan text's 01/02/03 predates it)
 - [ ] **Step 2** — Original 1.20.1 reference captures (superflat, same seed) → same plan § Step 2
 - [ ] **Step 3** — Port captures of the same scenes (26.2) → same plan § Step 3
 - [ ] **Step 4** — Comparison report original vs port → same plan § Step 4
