@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Claude, 2026-09-15: handoff item 7 -- 30-minute LOOP stress test of the dev client.
-#   claude-stress.sh [seconds]   (default 1800)
+#   claude-stress.sh [seconds] [evidence-folder]   (defaults: 1800, evidence-claude-0915-40-stress)
+# The evidence folder must NOT exist: the script refuses instead of overwriting an
+# existing folder, so two runs can never mix their samples (step 1, 2026-09-17).
 # Starts "A B C D F LOOP" through ./dev-relaunch.sh (which returns after the first 5 shots and leaves
 # the client looping), samples every 30 s (RSS of the dev-client java, LOOP cycles, the mod's own
 # [DEVMEM] line) into <evidence>/samples.tsv, then ends the loop by deleting run/devshot.request (the
@@ -9,7 +11,15 @@
 C=$(cd "$(dirname "$0")/.." && pwd)
 cd "$C" || exit 1
 DUR=${1:-1800}
-E="$C/evidence-claude-0915-40-stress"
+ENAME=${2:-evidence-claude-0915-40-stress}
+case "$ENAME" in
+	*/*|.*|'') echo "invalid evidence folder name: $ENAME"; exit 1 ;;
+esac
+if [ -e "$C/$ENAME" ]; then
+	echo "refusing: evidence folder $ENAME already exists (never overwrite; remove it to retry)"
+	exit 1
+fi
+E="$C/$ENAME"
 L="$C/claude-batch-0915.log"
 LOG=run/logs/latest.log
 mkdir -p "$E"

@@ -1520,40 +1520,37 @@ public final class DevShot
 		for (int dx = -3; dx <= 3 && loaded; dx++)
 			for (int dz = -3; dz <= 3 && loaded; dz++)
 				loaded = mc.level.hasChunk(cx + dx, cz + dz);
-		// Reassessment: "ground ahead" need not be in the camera frustum, and at
-		// high altitude it is outside the terrain render distance altogether. Only
-		// demand compiled ground samples that can contribute to the current view.
-		var camera = mc.gameRenderer.mainCamera();
-		var state = mc.gameRenderer.gameRenderState().levelRenderState.cameraRenderState;
-		var projectionView = new org.joml.Matrix4f(state.projectionMatrix).mul(state.viewRotationMatrix);
-		int radius = mc.options.renderDistance().get() * 16;
-		int probes = 0, visible = 0, groundSamples = 0;
-		for (int dx = -radius; dx <= radius; dx += 32)
-			for (int dz = -radius; dz <= radius; dz += 32)
-			{
-				int px = Mth.floor(camera.position().x) + dx;
-				int pz = Mth.floor(camera.position().z) + dz;
-				double top = terrainTop(mc, px, pz);
-				if (top < 0) continue;
-				groundSamples++;
-				var point = new org.joml.Vector4f((float) (px - state.pos.x),
-						(float) (top - state.pos.y), (float) (pz - state.pos.z), 1.0F);
-				projectionView.transform(point);
-				if (point.w <= 0.05 || point.w > radius || Math.abs(point.x) > point.w
-						|| Math.abs(point.y) > point.w) continue;
-				probes++;
-				if (mc.levelRenderer.isSectionCompiledAndVisible(new net.minecraft.core.BlockPos(px, (int) top - 1, pz)))
-					visible++;
-			}
-		boolean inView = groundSamples >= 9 && (probes == 0 || visible * 3 >= probes * 2);
+		// The terrain the game will actually draw for this view = its visibleSections:
+		// exactly the sections that pass the game's own frustum + occlusion culling, and
+		// exactly what lands in the framebuffer (mod clouds are a separate GPU pass and
+		// never appear as level sections). The old gate sampled ground columns on a fixed
+		// grid and demanded 2/3 of those sections be compiled — on 26.2 that never passes
+		// for horizon views, because most sampled sections are culled from the draw set by
+		// the occlusion graph and never compiled even when the frame is complete (verified
+		// 2026-09-17: a forced shot at the 90 s timeout showed fully rendered terrain, no
+		// holes, while the old gate refused with 16/281 "compiled").
+		int drawSet = 0, notSettled = 0;
+		long nowMs = System.currentTimeMillis();
+		var visible = mc.levelRenderer.visibleSections();
+		for (int i2 = 0; i2 < visible.size(); i2++)
+		{
+			var rs = visible.get(i2);
+			drawSet++;
+			// "Settled": mesh compiled AND faded in (visibility ~1.0). A freshly compiled
+			// section fades in over the chunk-section fade-in time; shooting mid-fade would
+			// capture translucent (ghosted) terrain.
+			if (rs.getSectionMesh() == net.minecraft.client.renderer.chunk.CompiledSectionMesh.UNCOMPILED
+					|| rs.getVisibility(nowMs) < 0.95F)
+				notSettled++;
+		}
+		boolean terrainInView = loaded && notSettled == 0;
 		long waited = terrainWaitStartNs >= 0 ? System.nanoTime() - terrainWaitStartNs : 0;
 		var renderer = SimpleCloudsRenderer.getInstance();
 		boolean cloudReady = renderer.getPublishedBatchCount() >= viewGenerationBase + 2
 				&& renderer.isCaptureFieldSettled();
-		boolean ready = (!v.groundAtTarget || v.groundResolved) && loaded && inView
+		boolean ready = (!v.groundAtTarget || v.groundResolved) && terrainInView
 				&& cloudReady
 				&& mc.levelRenderer.hasRenderedAllSections()
-				&& mc.levelRenderer.sectionRenderDispatcher().getCompileQueueSize() == 0
 				&& waited >= TERRAIN_SETTLE_NS;
 		terrainStableFrames = ready ? terrainStableFrames + 1 : 0;
 		if (terrainStableFrames >= TERRAIN_STABLE_FRAMES)
@@ -1561,17 +1558,21 @@ public final class DevShot
 			if (!terrainReadyLogged)
 			{
 				terrainReadyLogged = true;
-				LOGGER.info("[DEVSHOT] {}: terrain loaded and compiled after {} ms at {}x{}x{}; frustum probes {}/{}, ground samples {}, render pitch/yaw {}/{}",
-						v.file1, waited / 1_000_000, (int) mc.player.getX(), (int) mc.player.getY(), (int) mc.player.getZ(), visible, probes, groundSamples, state.xRot, state.yRot);
+				LOGGER.info("[DEVSHOT] {}: terrain loaded and compiled after {} ms at {}x{}x{}; visible sections {} ({} unsettled), cloud fill {}, render pitch/yaw {}/{}",
+						v.file1, waited / 1_000_000, (int) mc.player.getX(), (int) mc.player.getY(), (int) mc.player.getZ(),
+						drawSet, notSettled, String.format("%.2f", renderer.getChunkFillFraction()),
+						(int) mc.gameRenderer.gameRenderState().levelRenderState.cameraRenderState.xRot,
+						(int) mc.gameRenderer.gameRenderState().levelRenderState.cameraRenderState.yRot);
 			}
 			return 1;
 		}
 		if (waited > TERRAIN_WAIT_TIMEOUT_NS)
 		{
-			LOGGER.error("Simple Clouds ERROR: [DEVSHOT] {}: scene still loading after {} ms (column resolved {}, chunks loaded {}, terrain in view {}, sections rendered {}, compile queue {}, cloud ready {}, batches {}/{}); view refused",
-					v.file1, waited / 1_000_000, !v.groundAtTarget || v.groundResolved, loaded, inView,
-					mc.levelRenderer.hasRenderedAllSections(), mc.levelRenderer.sectionRenderDispatcher().getCompileQueueSize(),
-					cloudReady, renderer.getPublishedBatchCount(), viewGenerationBase + 2);
+			LOGGER.error("Simple Clouds ERROR: [DEVSHOT] {}: scene still loading after {} ms (column resolved {}, chunks loaded {}, unsettled visible sections {}/{}, sections rendered {}, cloud ready {}, cloud fill {}, batches {}/{}); view refused",
+					v.file1, waited / 1_000_000, !v.groundAtTarget || v.groundResolved, loaded, notSettled, drawSet,
+					mc.levelRenderer.hasRenderedAllSections(),
+					cloudReady, String.format("%.2f", renderer.getChunkFillFraction()),
+					renderer.getPublishedBatchCount(), viewGenerationBase + 2);
 			return -1;
 		}
 		return 0;
