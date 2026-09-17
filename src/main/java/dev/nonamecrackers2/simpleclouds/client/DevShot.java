@@ -999,6 +999,10 @@ public final class DevShot
 	/** Called once per rendered world frame, after the clouds were drawn. */
 	public static void onWorldFrame()
 	{
+		// A stale request file must never turn a normal play session into a test.
+		// Only the isolated developer launcher explicitly opts into automation.
+		if (!"1".equals(System.getenv("SIMPLECLOUDS_DEV")))
+			return;
 		if (done)
 			return;
 		Minecraft mc = Minecraft.getInstance();
