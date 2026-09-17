@@ -49,11 +49,19 @@ rm -f run/screenshots/devshot*.png
 TOKENS="${DEVSHOT_ANGLE:-} ${DEVSHOT_YAW:-} ${DEVSHOT_EXTRA:-}"; [ -n "${DEVSHOT_NOSHADOW:-}" ] && TOKENS="$TOKENS NOSHADOW"
 echo "$FRAMES $TOKENS" | sed 's/ *$//g; s/  */ /g' > "$REQUEST"   # optional tokens: camera xRot (default -90), yaw, NOSHADOW, LOOP
 T0=$(date +%s)
-systemd-run --user --unit="$UNIT" --collect --quiet \
+systemd-run --user --unit="$UNIT" --collect --quiet --expand-environment=no \
   --property=WorkingDirectory="$PROJECT" \
   --property=MemoryHigh=9G --property=MemoryMax=10G \
   --property=Environment=SIMPLECLOUDS_DEV=1 \
-  bash -c 'while IFS= read -r -d "" kv; do export "$kv"; done < "$1"; exec ./gradlew --no-daemon runClient --console=plain --args="--quickPlaySingleplayer CloudClean" > "$2" 2>&1' _ "$ENVF" "$OUT" \
+  bash -c '
+    # Keep cached library/tool paths, but never reuse a previous login cookie.
+    live_display=${DISPLAY-}; live_auth=${XAUTHORITY-}
+    live_wayland=${WAYLAND_DISPLAY-}; live_runtime=${XDG_RUNTIME_DIR-}
+    while IFS= read -r -d "" kv; do export "$kv"; done < "$1"
+    export DISPLAY="$live_display" XAUTHORITY="$live_auth"
+    export WAYLAND_DISPLAY="$live_wayland" XDG_RUNTIME_DIR="$live_runtime"
+    exec ./gradlew --no-daemon runClient --console=plain --args="--quickPlaySingleplayer CloudClean" > "$2" 2>&1
+  ' _ "$ENVF" "$OUT" \
   || { echo "FAIL (launch): could not start user unit $UNIT"; exit 1; }
 echo "launched at $(date +%H:%M:%S) as user unit $UNIT; waiting for the first cloud draw..."
 
