@@ -15,7 +15,8 @@
     "MixinMinecraft",
     "MixinOptionsScreen",
     "MixinScreenRenderablesAccessor",
-    "MixinFogRenderer"
+    "MixinFogRenderer",
+    "MixinWeatherEffectRenderer"
   ],
   "minVersion": "0.8"
 }

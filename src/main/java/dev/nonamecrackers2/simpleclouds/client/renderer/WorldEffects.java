@@ -21,6 +21,7 @@ import dev.nonamecrackers2.simpleclouds.client.renderer.lightning.LightningBolt;
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.WorldEffectsDrop;
 import dev.nonamecrackers2.simpleclouds.common.cloud.CloudType;
 import dev.nonamecrackers2.simpleclouds.common.cloud.SimpleCloudsConstants;
+import dev.nonamecrackers2.simpleclouds.common.world.CloudManager;
 import net.minecraft.sounds.SoundEvent;
 import dev.nonamecrackers2.simpleclouds.common.init.SimpleCloudsSounds;
 import net.minecraft.client.Minecraft;
@@ -358,6 +359,19 @@ public class WorldEffects
 		{
 			level.setRainLevel(1.0F);
 			level.setThunderLevel(1.0F);
+		}
+		else
+		{
+			// Step 5 (original parity): push the storm's LOCAL rain level to the
+			// vanilla level, exactly like the 1.20.1 original's WorldEffects.renderPost
+			// (setRainLevel(manager.getRainLevel(camX, camY, camZ))). Without this the
+			// cloud managers keep the vanilla rain at 0, so the read below returns 0 and
+			// we get no rain drops, no vanilla sky darkening, and no rain sound under
+			// storms. Only when the mod owns the weather (not vanilla).
+			CloudManager<ClientLevel> manager = CloudManager.get(level);
+			if (manager != null && !manager.shouldUseVanillaWeather())
+				level.setRainLevel(manager.getRainLevel(
+						(float) player.getX(), (float) player.getY(), (float) player.getZ()));
 		}
 		float rain = level.getRainLevel(0.0F);
 		if (rain <= 0.02F)
