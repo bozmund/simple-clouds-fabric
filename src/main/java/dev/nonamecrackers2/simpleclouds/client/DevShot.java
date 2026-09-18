@@ -24,7 +24,15 @@ import net.minecraft.client.Screenshot;
 import net.minecraft.client.server.IntegratedServer;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.world.level.GameType;
+import net.minecraft.world.level.LevelSettings;
+import net.minecraft.world.level.WorldDataConfiguration;
+import net.minecraft.world.level.levelgen.WorldDimensions;
+import net.minecraft.world.level.levelgen.WorldOptions;
+import net.minecraft.world.level.levelgen.presets.WorldPresets;
 import net.minecraft.world.level.levelgen.Heightmap;
+import net.minecraft.core.HolderLookup;
+import net.minecraft.client.gui.screens.Screen;
+import java.util.function.Function;
 import net.minecraft.world.clock.ClockTimeMarkers;
 import net.minecraft.world.clock.ServerClockManager;
 import net.minecraft.world.clock.WorldClocks;
@@ -115,6 +123,15 @@ public final class DevShot
 	private static final float STORM_SCROLL_ANGLE = 2.88F;
 	private static double stormCxCu = Double.NaN;
 	private static double stormCzCu = Double.NaN;
+	// ---- Step 3: superflat reference scene (26.2 port captures) ----
+	// CREATEFLAT <name> <seed>: on the title screen, create + load a superflat world
+	// (26.2 WorldOpenFlows.createFreshLevel) before the views run; the flat views
+	// A/C/D/F then stand at the spawn origin (identical positions to the 1.20.1
+	// reference run). UNDERSTORM adds the U-01 view (41 frames, from directly under
+	// the storm cell center, pitch -20).
+	private static boolean flatWorld;
+	private static boolean flatCreateAttempted;
+	private static boolean understorm;
 	private static int seqFrame; // 1 = file1 taken, then 2..seqCount
 	private static long seqNextFrameTick = -1;
 	private static final int[] STRIKE_DISTANCES = { 200, 1500, 3000, 8000 };
@@ -744,13 +761,25 @@ public final class DevShot
 		viewSetupDone = true;
 		fillWaitDone = false;
 		forceNoon(mc);
-		double[] beach = findBeach(mc);
-		if (beach == null)
+		double[] beach;
+		if (flatWorld)
 		{
+			// Step 3: superflat reference scene — views stand at the spawn origin
+			// (identical positions to the 1.20.1 reference run: A/C at eye =
+			// terrainTop + 5, D at y=260, F at y=400, all at the origin XZ).
 			int[] o = probeOrigin(mc);
-			// A previous above-cloud test persists its altitude. Ground views must
-			// use the terrain height, not that saved camera position.
-			beach = new double[] { o[0], terrainTop(mc, o[0], o[1]) + 3.0, o[1], 0.0 };
+			beach = new double[] { o[0], terrainTop(mc, o[0], o[1]) + 5.0, o[1], 0.0 };
+		}
+		else
+		{
+			beach = findBeach(mc);
+			if (beach == null)
+			{
+				int[] o = probeOrigin(mc);
+				// A previous above-cloud test persists its altitude. Ground views must
+				// use the terrain height, not that saved camera position.
+				beach = new double[] { o[0], terrainTop(mc, o[0], o[1]) + 3.0, o[1], 0.0 };
+			}
 		}
 		double[] land = findLand(mc);
 		if (land == null)
@@ -870,6 +899,14 @@ public final class DevShot
 					v.x = (stormCxCu + 250.0) * 8.0;
 					v.y = 2600.0;
 					v.z = stormCzCu * 8.0;
+				}
+				else if (f.endsWith("U-01.png"))
+				{
+					// Step 3 UNDERSTORM: directly under the cell center, ground + 1,
+					// looking up at the storm (identical to the 1.20.1 reference run).
+					v.x = stormCxCu * 8.0;
+					v.z = stormCzCu * 8.0;
+					v.groundAtTarget = true; // y resolves to terrainTop + 1 at the center
 				}
 			}
 		}
@@ -997,6 +1034,71 @@ public final class DevShot
 	}
 
 	/** Called once per rendered world frame, after the clouds were drawn. */
+	/**
+	 * Step 3: superflat reference scene. On the title screen (no level yet), if the
+	 * devshot request carries a {@code CREATEFLAT <name> <seed>} token, create + load a
+	 * superflat world (the 26.2 {@code WorldOpenFlows.createFreshLevel} path) so the flat
+	 * views A/C/D/F can stand at the spawn origin. Called from the client tick; guarded
+	 * to run once.
+	 */
+	public static void maybeCreateFlatWorld(Minecraft mc)
+	{
+		if (!"1".equals(System.getenv("SIMPLECLOUDS_DEV")))
+			return;
+		if (mc.level != null || flatCreateAttempted || done)
+			return;
+		Path request = mc.gameDirectory.toPath().resolve("devshot.request");
+		if (!Files.exists(request))
+			return;
+		String content;
+		try
+		{
+			content = Files.readString(request).trim();
+		}
+		catch (Exception e)
+		{
+			return;
+		}
+		String[] parts = content.split("\\s+");
+		String name = null;
+		long seed = 0;
+		for (int i = 0; i + 2 < parts.length; i++)
+		{
+			if (parts[i].equalsIgnoreCase("CREATEFLAT"))
+			{
+				name = parts[i + 1];
+				try
+				{
+					seed = Long.parseLong(parts[i + 2]);
+				}
+				catch (NumberFormatException ignored) { seed = 0; }
+			}
+		}
+		if (name == null)
+			return;
+		flatCreateAttempted = true;
+		flatWorld = true;
+		LOGGER.info("[DEVSHOT] CREATEFLAT: creating superflat world '{}' seed {} (26.2 createFreshLevel)", name, seed);
+		try
+		{
+			LevelSettings settings = new LevelSettings(name, GameType.CREATIVE,
+					LevelSettings.DifficultySettings.DEFAULT, true, WorldDataConfiguration.DEFAULT);
+			WorldOptions options = new WorldOptions(seed, false, false);
+			Function<HolderLookup.Provider, WorldDimensions> provider = registries -> registries
+					.lookupOrThrow(Registries.WORLD_PRESET)
+					.getOrThrow(WorldPresets.FLAT) // thin default superflat (1 bedrock + 2 dirt + 1 grass, surface y=-60) to match the 1.20.1 reference, NOT the thick FLAT_ALL_DIMENSIONS
+					.value()
+					.createWorldDimensions();
+			Screen parent = mc.gui.screen();
+			mc.createWorldOpenFlows().createFreshLevel(name, settings, options, provider, parent);
+		}
+		catch (Throwable t)
+		{
+			LOGGER.error("[DEVSHOT] CREATEFLAT failed", t);
+			done = true;
+		}
+	}
+
 	public static void onWorldFrame()
 	{
 		// A stale request file must never turn a normal play session into a test.
@@ -1195,6 +1297,19 @@ public final class DevShot
 						views.add(s5);
 						continue;
 					}
+					if (part.equalsIgnoreCase("UNDERSTORM"))
+					{
+						// Step 3: same storm fixture as STORM, but a single view U-01 from
+						// directly under the cell center (ground + 1, pitch -20, yaw 0),
+						// 41 frames at 0.25 s (identical to the 1.20.1 reference run).
+						storm = true;
+						understorm = true;
+						View u1 = new View("devshot-U-01.png", -20.0F, 0.0F, 0, 0, 0);
+						u1.seqCount = 41;
+						u1.seqInterval = 5;
+						views.add(u1);
+						continue;
+					}
 					if (part.equalsIgnoreCase("SHAKE"))
 					{
 						View motion = new View("devshot-SHAKE-01.png", -35.0F, 0.0F, 0, 0, 0);
@@ -1297,15 +1412,25 @@ public final class DevShot
 			shotYaw = v.yaw;
 			if (v.groundAtTarget && !v.groundResolved)
 			{
-				double top = terrainTop(mc, (int) Math.floor(v.x), (int) Math.floor(v.z));
-				if (top >= 0)
+				// Step 3: a merely-present chunk has an uncomputed WORLD_SURFACE heightmap
+				// (it defaults to the min build height), which on the y=-60 superflat pinned
+				// the camera underground (S2 / U-01). A height-based guard (top >= 0) also
+				// fails (the flat surface is negative), and the client does not load a column
+				// 800 blocks out to FULL in 90 s. So: accept the column only once its
+				// heightmap is computed, i.e. reads ABOVE the min build height.
+				int ix = (int) Math.floor(v.x), iz = (int) Math.floor(v.z);
+				if (mc.level.hasChunk(ix >> 4, iz >> 4))
 				{
-					v.y = top + 1.0;
-					v.groundResolved = true;
-					syncViewToServer(mc, v);
-					terrainStableFrames = 0;
-					LOGGER.info("[DEVSHOT] {}: terrain at the target column {}x{} is Y {}; camera pinned at Y {}",
-							v.file1, (int) Math.floor(v.x), (int) Math.floor(v.z), (int) top, v.y);
+					double top = terrainTop(mc, ix, iz);
+					if (top > mc.level.getMinY()) // heightmap computed (not the min-height default)
+					{
+						v.y = top + 1.0;
+						v.groundResolved = true;
+						syncViewToServer(mc, v);
+						terrainStableFrames = 0;
+						LOGGER.info("[DEVSHOT] {}: terrain at the target column {}x{} is Y {}; camera pinned at Y {}",
+								v.file1, ix, iz, (int) top, v.y);
+					}
 				}
 			}
 			if (v.pin)

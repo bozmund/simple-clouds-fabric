@@ -7,6 +7,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import dev.nonamecrackers2.simpleclouds.SimpleCloudsMod;
+import dev.nonamecrackers2.simpleclouds.client.DevShot;
 import dev.nonamecrackers2.simpleclouds.client.cloud.ClientSideCloudTypeManager;
 import dev.nonamecrackers2.simpleclouds.client.dh.SimpleCloudsDhCompatHandler;
 import dev.nonamecrackers2.simpleclouds.common.world.CloudManager;
@@ -147,6 +148,12 @@ public class SimpleCloudsClientEvents
 		{
 			// Load client + common configs once (guarded by isLoaded inside the loader).
 			SimpleCloudsConfigLoader.loadClientConfigs();
+
+			// Step 3 (superflat reference scenes): on the title screen (no level yet),
+			// create + load the superflat world if the devshot request carries
+			// CREATEFLAT (dev-only automation; guarded to run once).
+			if (client.level == null)
+				DevShot.maybeCreateFlatWorld(client);
 
 			// Distant Horizons compat: one-shot on the first client tick (by then every
 			// mod is initialized and DhApi.Delayed is populated). Disables DH's own
