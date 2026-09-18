@@ -1,5 +1,7 @@
 package dev.nonamecrackers2.simpleclouds.common.packet.impl;
 
+import dev.nonamecrackers2.simpleclouds.common.packet.BufferLists;
+
 import java.util.List;
 
 import dev.nonamecrackers2.simpleclouds.SimpleCloudsMod;
@@ -16,8 +18,8 @@ public record SendCloudRegionsPacket(List<CloudRegion> cloudRegions) implements 
 	public static final Type<SendCloudRegionsPacket> TYPE = new Type<>(SimpleCloudsMod.id("send_cloud_regions"));
 
 	public static final StreamCodec<FriendlyByteBuf, SendCloudRegionsPacket> CODEC = StreamCodec.of(
-			(buffer, packet) -> buffer.writeCollection(packet.cloudRegions(), (b, c) -> c.toPacket(b)),
-			buffer -> new SendCloudRegionsPacket(buffer.readList(CloudRegion::new)));
+			(buffer, packet) -> BufferLists.writeCollection(buffer, packet.cloudRegions(), (b, c) -> c.toPacket(b)),
+			buffer -> new SendCloudRegionsPacket(BufferLists.readList(buffer, CloudRegion::new)));
 
 	@Override
 	public Type<? extends CustomPacketPayload> type()

@@ -1,4 +1,5 @@
 #version 330
+#extension GL_ARB_separate_shader_objects : require
 
 // Custom rain fragment: the vanilla rain streak texture (white on transparent),
 // alpha-blended. A narrow center u-strip per drop (as in the 1.20.1 quad: the
@@ -9,8 +10,8 @@ layout(std140) uniform RainPass {
 	float RainAlpha;
 };
 
-in vec2 uv;
-out vec4 fragColor;
+layout(location = 0) in vec2 uv;
+layout(location = 0) out vec4 fragColor;
 
 void main()
 {

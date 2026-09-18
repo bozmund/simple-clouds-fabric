@@ -35,7 +35,7 @@ public class MixinLevelRenderer
 	 * skipped for the frame.
 	 */
 	@Inject(
-			method = "render(Lcom/mojang/blaze3d/resource/GraphicsResourceAllocator;Lnet/minecraft/client/DeltaTracker;ZLnet/minecraft/client/renderer/state/level/CameraRenderState;Lorg/joml/Matrix4fc;Lcom/mojang/blaze3d/buffers/GpuBufferSlice;Lorg/joml/Vector4f;Z)V",
+			method = "render(Lcom/mojang/blaze3d/resource/GraphicsResourceAllocator;ZLnet/minecraft/client/renderer/state/level/CameraRenderState;Lcom/mojang/renderpearl/api/buffers/GpuBufferSlice;Lorg/joml/Vector4f;ZZ)V",
 			at = @At("TAIL"))
 	public void simpleclouds$renderClouds_render(CallbackInfo ci)
 	{
@@ -65,23 +65,4 @@ public class MixinLevelRenderer
 		}
 	}
 
-	/**
-	 * 26.2: the vanilla cloud layer is a frame-graph pass added by the private
-	 * {@code addCloudsPass} (CloudStatus = the game's cloud quality option).
-	 * The 1.20.1 original cancelled {@code LevelRenderer.renderClouds} instead —
-	 * same intent: when Simple Clouds renders, the vanilla sheet is double clouds.
-	 */
-	@Inject(method = "addCloudsPass", at = @At("HEAD"), cancellable = true)
-	public void simpleclouds$disableVanillaClouds_addCloudsPass(
-			com.mojang.blaze3d.framegraph.FrameGraphBuilder builder,
-			net.minecraft.client.CloudStatus status,
-			net.minecraft.world.phys.Vec3 camPos,
-			long tick, float partialTick, int skyFlash, float time, int tickTime,
-			CallbackInfo ci)
-	{
-		Minecraft mc = Minecraft.getInstance();
-		if (mc.level != null && SimpleCloudsRenderer.getOptionalInstance().isPresent()
-				&& SimpleCloudsRenderer.canRenderInDimension(mc.level))
-				ci.cancel();
-	}
 }

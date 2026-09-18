@@ -1,14 +1,15 @@
 #version 430
+#extension GL_ARB_separate_shader_objects : require
 
-in vec3 Position;
+layout(location = 0) in vec3 Position;
 
-#moj_import <simpleclouds:opaque.glsl>
+#include <simpleclouds:opaque.glsl>
 
 uniform mat4 ModelViewMat;
 uniform mat4 ProjMat;
 
-out vec4 vertexColor;
-out float height;
+layout(location = 0) out vec4 vertexColor;
+layout(location = 1) out float height;
 
 void main() 
 {

@@ -1,7 +1,7 @@
 package dev.nonamecrackers2.simpleclouds.client.renderer.v2;
 
-import com.mojang.blaze3d.GpuFormat;
-import com.mojang.blaze3d.vertex.VertexFormat;
+import com.mojang.renderpearl.api.GpuFormat;
+import com.mojang.renderpearl.api.vertex.VertexFormat;
 
 /**
  * Vertical-slice (26.2) cloud vertex formats.

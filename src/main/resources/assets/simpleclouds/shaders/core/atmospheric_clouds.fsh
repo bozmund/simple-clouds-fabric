@@ -1,4 +1,5 @@
 #version 330
+#extension GL_ARB_separate_shader_objects : require
 
 // Atmospheric clouds (26.2 port of the 1.20.1 post/program/atmospheric_clouds.fsh):
 // a purely visual high cloud layer. Each fragment casts a ray up to a plane
@@ -10,8 +11,8 @@
 // while the original drew the layer right after the sky, under terrain and
 // clouds -- without the test the streaks were painted over every block and
 // cloud above the horizon.
-in vec2 texCoord;
-out vec4 fragColor;
+layout(location = 0) in vec2 texCoord;
+layout(location = 0) out vec4 fragColor;
 
 uniform sampler2D DiffuseSampler;
 uniform sampler2D DepthSampler;

@@ -1,19 +1,20 @@
 #version 330
+#extension GL_ARB_separate_shader_objects : require
 
-#moj_import <minecraft:dynamictransforms.glsl>
-#moj_import <minecraft:projection.glsl>
+#include <minecraft:dynamictransforms.glsl>
+#include <minecraft:projection.glsl>
 
 // Custom rain (26.2 slice of the 1.20.1 PrecipitationQuad renderer): one
 // camera-facing quad per drop. Each vertex carries the drop data inline
 // (no instancing) so a single dynamic buffer + index buffer draws everything.
-in vec3 DropPos;      // drop anchor (world space, top of the drop)
-in float Corner;      // -0.5 or +0.5 (quad x)
-in float QuadV;       // 0 (top) .. 1 (bottom of the drop)
-in float Length;      // drop length in blocks (raycast/heightmap clamped to 32)
-in float Width;       // drop width in blocks (rain intensity * 2, with fade ramp)
-in float UVOffset;    // scrolling v offset (texture scroll = falling motion)
+layout(location = 0) in vec3 DropPos;      // drop anchor (world space, top of the drop)
+layout(location = 1) in float Corner;      // -0.5 or +0.5 (quad x)
+layout(location = 2) in float QuadV;       // 0 (top) .. 1 (bottom of the drop)
+layout(location = 3) in float Length;      // drop length in blocks (raycast/heightmap clamped to 32)
+layout(location = 4) in float Width;       // drop width in blocks (rain intensity * 2, with fade ramp)
+layout(location = 5) in float UVOffset;    // scrolling v offset (texture scroll = falling motion)
 
-out vec2 uv;
+layout(location = 0) out vec2 uv;
 
 void main()
 {

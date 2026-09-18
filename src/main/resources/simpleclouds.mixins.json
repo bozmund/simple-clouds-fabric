@@ -11,6 +11,7 @@
   "client": [
     "MixinClientLevel",
     "MixinClientLevelAccessor",
+    "MixinCloudRenderer",
     "MixinLevelRenderer",
     "MixinMinecraft",
     "MixinOptionsScreen",

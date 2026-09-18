@@ -15,7 +15,7 @@ import org.lwjgl.system.MemoryUtil;
 import com.mojang.blaze3d.opengl.MemoryTracker;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
-import com.mojang.blaze3d.vertex.VertexFormat;
+import com.mojang.renderpearl.api.vertex.VertexFormat;
 
 public class InstanceableMesh
 {

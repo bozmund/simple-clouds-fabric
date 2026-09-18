@@ -26,9 +26,9 @@ public class AdjustableAttenuationSoundInstance extends SimpleSoundInstance
 	}
 
 	@Override
-	public WeighedSoundEvents resolve(SoundManager manager)
+	public WeighedSoundEvents getOrResolve(SoundManager manager)
 	{
-		WeighedSoundEvents events = super.resolve(manager);
+		WeighedSoundEvents events = super.getOrResolve(manager);
 		this.sound = wrap(this.sound, this.attenuationDistance);
 		return events;
 	}

@@ -53,7 +53,9 @@ dependencies {
     implementation "org.apache.maven:maven-artifact:3.9.9"
     include "org.apache.maven:maven-artifact:3.9.9"
     // Distant Horizons API: used by the DH compat handler.
-    compileOnly "maven.modrinth:DistantHorizonsApi:3.0.0"
+    // Distant Horizons API 7.1.0, built from DH main for 26.3 by the step 7 plan
+    // (Modrinth's DistantHorizonsApi maven stops at 3.0.0, which is far behind DH).
+    compileOnly files("${System.getProperty('user.home')}/src/distant-horizons/coreSubProjects/api/build/libs/DistantHorizonsApi-7.1.0.jar")
 }
 
 processResources {

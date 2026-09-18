@@ -1,5 +1,7 @@
 package dev.nonamecrackers2.simpleclouds.common.packet.impl;
 
+import dev.nonamecrackers2.simpleclouds.common.packet.BufferLists;
+
 import java.util.List;
 
 import dev.nonamecrackers2.simpleclouds.SimpleCloudsMod;
@@ -34,7 +36,7 @@ public record SendCloudManagerPacket(float speed, float scrollAngle, int cloudHe
 		buffer.writeFloat(packet.speed());
 		buffer.writeFloat(packet.scrollAngle());
 		buffer.writeVarInt(packet.cloudHeight());
-		buffer.writeCollection(packet.cloudRegions(), (b, c) -> c.toPacket(b));
+		BufferLists.writeCollection(buffer, packet.cloudRegions(), (b, c) -> c.toPacket(b));
 		buffer.writeLong(packet.seed());
 	}
 
@@ -43,7 +45,7 @@ public record SendCloudManagerPacket(float speed, float scrollAngle, int cloudHe
 		float speed = buffer.readFloat();
 		float scrollAngle = buffer.readFloat();
 		int cloudHeight = buffer.readVarInt();
-		List<CloudRegion> cloudRegions = buffer.readList(CloudRegion::new);
+		List<CloudRegion> cloudRegions = BufferLists.readList(buffer, CloudRegion::new);
 		long seed = buffer.readLong();
 		return new SendCloudManagerPacket(speed, scrollAngle, cloudHeight, cloudRegions, seed);
 	}

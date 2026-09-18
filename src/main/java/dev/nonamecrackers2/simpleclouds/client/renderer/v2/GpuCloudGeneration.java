@@ -86,7 +86,7 @@ public final class GpuCloudGeneration implements AutoCloseable
 		{
 			try
 			{
-				java.lang.reflect.Field f = com.mojang.blaze3d.systems.GpuDevice.class.getDeclaredField("backend");
+				java.lang.reflect.Field f = com.mojang.renderpearl.api.device.GpuDevice.class.getDeclaredField("backend");
 				f.setAccessible(true);
 				Object backend = f.get(RenderSystem.getDevice());
 				GpuCloudGeneration.cachedBackendClassName = backend == null ? "null" : backend.getClass().getName();
@@ -102,7 +102,7 @@ public final class GpuCloudGeneration implements AutoCloseable
 
 	public static boolean isOpenGLBackend()
 	{
-		return GpuCloudGeneration.backendClassName().equals("com.mojang.blaze3d.opengl.GlDevice");
+		return GpuCloudGeneration.backendClassName().equals("com.mojang.renderpearl.backend.opengl.GlDevice");
 	}
 
 	/**
@@ -453,7 +453,7 @@ public final class GpuCloudGeneration implements AutoCloseable
 	{
 		try
 		{
-			com.mojang.blaze3d.opengl.GlStateManager._glUseProgram(program);
+			com.mojang.renderpearl.backend.opengl.GlStateManager._glUseProgram(program);
 		}
 		catch (Throwable ignored)
 		{

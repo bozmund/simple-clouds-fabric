@@ -11,6 +11,6 @@ public class GUIUtils
 	public static void openLink(String link)
 	{
 		Minecraft mc = Minecraft.getInstance();
-		ConfirmLinkScreen.confirmLinkNow(mc.gui.screen(), link, true);
+		ConfirmLinkScreen.confirmLinkNow(mc.gui.screen(), java.net.URI.create(link), true);
 	}
 }

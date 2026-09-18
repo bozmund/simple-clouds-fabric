@@ -2,7 +2,7 @@ package net.minecraft.client.renderer;
 
 import java.io.IOException;
 
-import com.mojang.blaze3d.vertex.VertexFormat;
+import com.mojang.renderpearl.api.vertex.VertexFormat;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.resources.Identifier;

@@ -1,4 +1,5 @@
 #version 150
+#extension GL_ARB_separate_shader_objects : require
 
 uniform sampler2DShadow ShadowMap;
 uniform sampler2D DepthSampler;
@@ -13,9 +14,9 @@ uniform float ShadowSpan;
 uniform float MinimumRadius;
 uniform float FadeDistance;
 
-in vec2 texCoord;
-in vec2 oneTexel;
-out vec4 fragColor;
+layout(location = 0) in vec2 texCoord;
+layout(location = 1) in vec2 oneTexel;
+layout(location = 0) out vec4 fragColor;
 
 vec3 screenToWorldPos(vec2 coord, float depth)
 {

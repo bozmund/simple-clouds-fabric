@@ -1,15 +1,16 @@
 #version 330
+#extension GL_ARB_separate_shader_objects : require
 
-#moj_import <minecraft:dynamictransforms.glsl>
-#moj_import <minecraft:projection.glsl>
+#include <minecraft:dynamictransforms.glsl>
+#include <minecraft:projection.glsl>
 
 // Per-vertex: base quad corner.
-in vec3 Position;
+layout(location = 0) in vec3 Position;
 // Per-instance (step rate 1): one cloud face.
-in float Side;
-in vec3 SidePos;
-in float Radius;
-in float Brightness;
+layout(location = 1) in float Side;
+layout(location = 2) in vec3 SidePos;
+layout(location = 3) in float Radius;
+layout(location = 4) in float Brightness;
 
 layout(std140) uniform CloudLighting {
 	vec3 Light0_Direction;
@@ -35,8 +36,8 @@ layout(std140) uniform CloudOffset {
 	float _pad;
 };
 
-out vec4 vertexColor;
-out float fogDistance;
+layout(location = 0) out vec4 vertexColor;
+layout(location = 1) out float fogDistance;
 
 // 26.2 (GLSL ES 3.0 / Vulkan): no C-style array initialization of constructors,
 // so face normals and face transforms are provided by functions.
@@ -50,7 +51,7 @@ vec3 sideNormal(int side)
 	return vec3(0.0, 0.0, 1.0);
 }
 
-#moj_import <simpleclouds:cloud_faces.glsl>
+#include <simpleclouds:cloud_faces.glsl>
 
 vec4 mixLight(vec3 lightDir0, vec3 lightDir1, vec3 normal, vec4 color)
 {

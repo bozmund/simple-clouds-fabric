@@ -1,12 +1,13 @@
 #version 150
+#extension GL_ARB_separate_shader_objects : require
 
 uniform vec4 ColorModulator;
 uniform float HeightCutoff;
 
-in vec4 vertexColor;
-in float height;
+layout(location = 0) in vec4 vertexColor;
+layout(location = 1) in float height;
 
-out vec4 fragColor;
+layout(location = 0) out vec4 fragColor;
 
 void main() 
 {

@@ -1,12 +1,13 @@
 #version 330
+#extension GL_ARB_separate_shader_objects : require
 
 // 26.2 storm fog vertex shader: a single screen-covering triangle in clip space.
 // (The 1.20.1 storm fog was a 200-step raymarch over the cloud shadow map; that
 // requires the shadow-map subsystem. This slice version is a fullscreen blend pass
 // driven by CPU-measured storm coverage -- see storm_fog.fsh and PORTING.md.)
-in vec2 Position;
+layout(location = 0) in vec2 Position;
 
-out vec2 texCoord;
+layout(location = 0) out vec2 texCoord;
 
 void main()
 {

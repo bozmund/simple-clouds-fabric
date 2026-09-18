@@ -1,6 +1,7 @@
 #version 330
+#extension GL_ARB_separate_shader_objects : require
 
-#moj_import <minecraft:dynamictransforms.glsl>
+#include <minecraft:dynamictransforms.glsl>
 
 // Declared here (the device does NOT inject sampler declarations from the bind group
 // layout -- 26.2 GlProgram compiles the source as written; the BGL entry only makes the
@@ -14,10 +15,10 @@ uniform sampler2D BayerMatrixSampler;
 // BayerMatrixSampler is declared on the bind group layout AND bound in draw() with the
 // 16x16 bayer_matrix.png -- an unbound sampler would be undefined behavior.
 
-in vec4 vertexColor;
-in float fogDistance;
+layout(location = 0) in vec4 vertexColor;
+layout(location = 1) in float fogDistance;
 
-out vec4 fragColor;
+layout(location = 0) out vec4 fragColor;
 
 layout(std140) uniform CloudFog {
 	vec4 FogColor;

@@ -1,7 +1,8 @@
 #version 330
+#extension GL_ARB_separate_shader_objects : require
 
-#moj_import <minecraft:dynamictransforms.glsl>
-#moj_import <minecraft:projection.glsl>
+#include <minecraft:dynamictransforms.glsl>
+#include <minecraft:projection.glsl>
 
 // Spatial storm fog (Fabric 26.2 port, plan item 3). The previous slice darkened the whole
 // screen by one camera-wide scalar and lifted it for every strike. Now:
@@ -29,8 +30,8 @@ layout(std140) uniform StormFog {
 	vec4 Coverage[256];
 };
 
-in vec2 texCoord;
-out vec4 fragColor;
+layout(location = 0) in vec2 texCoord;
+layout(location = 0) out vec4 fragColor;
 
 const int STEPS = 24;
 

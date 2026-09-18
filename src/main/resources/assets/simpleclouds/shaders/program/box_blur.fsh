@@ -1,14 +1,15 @@
 #version 150
+#extension GL_ARB_separate_shader_objects : require
 
 uniform sampler2D DiffuseSampler;
 
-in vec2 texCoord;
-in vec2 sampleStep;
+layout(location = 0) in vec2 texCoord;
+layout(location = 1) in vec2 sampleStep;
 
 uniform float Radius;
 uniform float RadiusMultiplier;
 
-out vec4 fragColor;
+layout(location = 0) out vec4 fragColor;
 
 void main() 
 {

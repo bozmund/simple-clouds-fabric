@@ -1,6 +1,6 @@
 package dev.nonamecrackers2.simpleclouds.client.framebuffer;
 
-import com.mojang.blaze3d.GpuFormat;
+import com.mojang.renderpearl.api.GpuFormat;
 import com.mojang.blaze3d.pipeline.RenderTarget;
 
 /**
@@ -11,6 +11,6 @@ public class CloudRenderTarget extends RenderTarget
 {
 	public CloudRenderTarget(int width, int height, boolean clearError, boolean highPrecisionDepth)
 	{
-		super("simpleclouds.cloud", true, GpuFormat.RGBA8_UNORM);
+		super("simpleclouds.cloud", GpuFormat.RGBA8_UNORM, GpuFormat.D32_FLOAT);
 	}
 }

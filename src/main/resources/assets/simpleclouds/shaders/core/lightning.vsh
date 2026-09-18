@@ -1,12 +1,13 @@
 #version 330
+#extension GL_ARB_separate_shader_objects : require
 
-#moj_import <minecraft:dynamictransforms.glsl>
+#include <minecraft:dynamictransforms.glsl>
 
 // Lightning bolt section corner: world position + vertex color.
-in vec3 Position;
-in vec4 Color;
+layout(location = 0) in vec3 Position;
+layout(location = 1) in vec4 Color;
 
-out vec4 vColor;
+layout(location = 0) out vec4 vColor;
 
 void main()
 {

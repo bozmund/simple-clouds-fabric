@@ -1,6 +1,7 @@
 #version 330
+#extension GL_ARB_separate_shader_objects : require
 
-#moj_import <minecraft:dynamictransforms.glsl>
+#include <minecraft:dynamictransforms.glsl>
 
 // 26.2 port of clouds_transparency.fsh. The 1.20.1 original wrote weighted-blended
 // order-independent transparency into two color attachments (accumColor/revealage,
@@ -14,10 +15,10 @@
 // CloudsDrawPipeline.drawTransparency().
 uniform sampler2D BayerMatrixSampler;
 
-in vec4 vertexColor;
-in float fogDistance;
+layout(location = 0) in vec4 vertexColor;
+layout(location = 1) in float fogDistance;
 
-out vec4 fragColor;
+layout(location = 0) out vec4 fragColor;
 
 layout(std140) uniform CloudFog {
 	vec4 FogColor;

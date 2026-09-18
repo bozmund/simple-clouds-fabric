@@ -1,18 +1,19 @@
 #version 330
+#extension GL_ARB_separate_shader_objects : require
 
-#moj_import <minecraft:dynamictransforms.glsl>
-#moj_import <minecraft:projection.glsl>
+#include <minecraft:dynamictransforms.glsl>
+#include <minecraft:projection.glsl>
 
 // 26.2 port of clouds_transparency.vsh (1.20.1 used an SSBO of TransparentCubeInfo;
 // here the per-instance attributes replace sides.data[gl_InstanceID], exactly as in
 // the opaque clouds.vsh port). Transparent voxels emit all six faces (no neighbor
 // culling, as in the original createTransparentCube).
-in vec3 Position;
-in float Side;
-in vec3 SidePos;
-in float Radius;
-in float Brightness;
-in float Alpha;
+layout(location = 0) in vec3 Position;
+layout(location = 1) in float Side;
+layout(location = 2) in vec3 SidePos;
+layout(location = 3) in float Radius;
+layout(location = 4) in float Brightness;
+layout(location = 5) in float Alpha;
 
 layout(std140) uniform CloudShading {
 	vec3 DarknessColorModifier;
@@ -25,11 +26,11 @@ layout(std140) uniform CloudOffset {
 	float _pad;
 };
 
-out vec4 vertexColor;
-out float fogDistance;
+layout(location = 0) out vec4 vertexColor;
+layout(location = 1) out float fogDistance;
 
 // GLSL ES 3.0: no C-style array init of the per-face transforms (see clouds.vsh).
-#moj_import <simpleclouds:cloud_faces.glsl>
+#include <simpleclouds:cloud_faces.glsl>
 
 void main()
 {

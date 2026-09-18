@@ -1,4 +1,5 @@
 #version 330
+#extension GL_ARB_separate_shader_objects : require
 
 // 26.2 sky flash (storm plan step 1, plan item 3): the vanilla lightmap sky flash is dead in
 // 26.2 -- nothing consumes ClientLevel.getSkyFlashTime() anymore (verified in the jar: only
@@ -9,9 +10,9 @@
 // 26.2 clears the main depth to 0.0: sky samples ~0, geometry (0, 1] (terrain_shadows.fsh).
 uniform sampler2D DepthSampler;
 
-in vec2 texCoord;
+layout(location = 0) in vec2 texCoord;
 
-out vec4 fragColor;
+layout(location = 0) out vec4 fragColor;
 
 layout(std140) uniform SkyFlash {
 	float Strength;

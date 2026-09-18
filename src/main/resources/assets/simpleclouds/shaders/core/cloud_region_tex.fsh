@@ -1,4 +1,5 @@
 #version 330
+#extension GL_ARB_separate_shader_objects : require
 
 uniform sampler2DArray TexRegionSampler;
 uniform vec4 ColorModulator;
@@ -6,9 +7,9 @@ uniform int LodLevel;
 uniform int TotalCloudTypes;
 uniform vec2 Align;
 
-in vec2 texCoord0;
+layout(location = 0) in vec2 texCoord0;
 
-out vec4 fragColor;
+layout(location = 0) out vec4 fragColor;
 
 // https://gist.github.com/983/e170a24ae8eba2cd174f
 vec3 hsv2rgb(vec3 c)

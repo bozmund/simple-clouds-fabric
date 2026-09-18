@@ -1,5 +1,7 @@
 package nonamecrackers2.crackerslib.common.command.argument;
 
+import dev.nonamecrackers2.simpleclouds.common.packet.BufferLists;
+
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -80,13 +82,13 @@ public class ConfigArgument implements ArgumentType<String>
 		@Override
 		public void serializeToNetwork(Template template, FriendlyByteBuf buffer)
 		{
-			buffer.writeCollection(template.availableOptions, FriendlyByteBuf::writeUtf);
+			BufferLists.writeCollection(buffer, template.availableOptions, FriendlyByteBuf::writeUtf);
 		}
 
 		@Override
 		public Template deserializeFromNetwork(FriendlyByteBuf buffer)
 		{
-			return new Template(buffer.readList(FriendlyByteBuf::readUtf));
+			return new Template(BufferLists.readList(buffer, FriendlyByteBuf::readUtf));
 		}
 
 		@Override

@@ -1,6 +1,6 @@
 package dev.nonamecrackers2.simpleclouds.client.keybind;
 
-import org.lwjgl.glfw.GLFW;
+import com.mojang.blaze3d.platform.InputConstants;
 
 import net.minecraft.client.KeyMapping;
 import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
@@ -12,7 +12,7 @@ import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
  */
 public class SimpleCloudsKeybinds
 {
-	public static final KeyMapping OPEN_GEN_PREVIEWER = new KeyMapping("simpleclouds.key.openGenPreviewer", GLFW.GLFW_KEY_F12, KeyMapping.Category.MISC);
+	public static final KeyMapping OPEN_GEN_PREVIEWER = new KeyMapping("simpleclouds.key.openGenPreviewer", InputConstants.KEY_F12, KeyMapping.Category.MISC);
 
 	public static void register()
 	{

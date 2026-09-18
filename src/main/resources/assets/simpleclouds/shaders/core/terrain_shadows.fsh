@@ -1,7 +1,8 @@
 #version 330
+#extension GL_ARB_separate_shader_objects : require
 
-#moj_import <minecraft:dynamictransforms.glsl>
-#moj_import <minecraft:projection.glsl>
+#include <minecraft:dynamictransforms.glsl>
+#include <minecraft:projection.glsl>
 
 // Terrain cloud shadows — 26.2 port of the 1.20.1 cloud_shadows post program
 // (shaders/program/cloud_shadows.fsh). Reconstructs each fragment's view/world
@@ -40,8 +41,8 @@ layout(std140) uniform ShadowPass {
 	vec3 CameraPos;      // step 6 diagnostic: world-space camera position
 };
 
-in vec2 texCoord;
-out vec4 fragColor;
+layout(location = 0) in vec2 texCoord;
+layout(location = 0) out vec4 fragColor;
 
 // The original's shadowStrengthAt: 1.0 when a cloud is above the point.
 float shadowStrengthAt(vec3 pos)

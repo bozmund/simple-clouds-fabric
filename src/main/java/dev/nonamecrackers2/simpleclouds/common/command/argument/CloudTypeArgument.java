@@ -1,5 +1,7 @@
 package dev.nonamecrackers2.simpleclouds.common.command.argument;
 
+import dev.nonamecrackers2.simpleclouds.common.packet.BufferLists;
+
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -70,13 +72,13 @@ public class CloudTypeArgument extends IdentifierArgument
 		@Override
 		public void serializeToNetwork(CloudTypeArgument.Info.Template template, FriendlyByteBuf buffer)
 		{
-			buffer.writeCollection(template.types, FriendlyByteBuf::writeIdentifier);
+			BufferLists.writeCollection(buffer, template.types, FriendlyByteBuf::writeIdentifier);
 		}
 		
 		@Override
 		public CloudTypeArgument.Info.Template deserializeFromNetwork(FriendlyByteBuf buffer)
 		{
-			return new CloudTypeArgument.Info.Template(buffer.readList(FriendlyByteBuf::readIdentifier));
+			return new CloudTypeArgument.Info.Template(BufferLists.readList(buffer, FriendlyByteBuf::readIdentifier));
 		}
 		
 		@Override

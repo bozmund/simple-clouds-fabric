@@ -1,10 +1,11 @@
 #version 330
+#extension GL_ARB_separate_shader_objects : require
 
 // Fullscreen triangle for the terrain cloud-shadow pass (same geometry as the
 // storm fog pass).
-in vec2 Position;
+layout(location = 0) in vec2 Position;
 
-out vec2 texCoord;
+layout(location = 0) out vec2 texCoord;
 
 void main()
 {

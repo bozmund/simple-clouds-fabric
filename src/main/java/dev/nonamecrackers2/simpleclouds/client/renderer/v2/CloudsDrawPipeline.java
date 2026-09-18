@@ -6,28 +6,28 @@ import java.util.List;
 import java.util.Optional;
 import java.util.OptionalDouble;
 
-import com.mojang.blaze3d.GpuFormat;
-import com.mojang.blaze3d.IndexType;
-import com.mojang.blaze3d.PrimitiveTopology;
-import com.mojang.blaze3d.buffers.GpuBuffer;
-import com.mojang.blaze3d.buffers.GpuBufferSlice;
-import com.mojang.blaze3d.pipeline.BlendFunction;
-import com.mojang.blaze3d.pipeline.BindGroupLayout;
-import com.mojang.blaze3d.pipeline.ColorTargetState;
-import com.mojang.blaze3d.pipeline.DepthStencilState;
-import com.mojang.blaze3d.pipeline.RenderPipeline;
+import com.mojang.renderpearl.api.GpuFormat;
+import com.mojang.renderpearl.api.pipeline.IndexType;
+import com.mojang.renderpearl.api.pipeline.PrimitiveTopology;
+import com.mojang.renderpearl.api.buffers.GpuBuffer;
+import com.mojang.renderpearl.api.buffers.GpuBufferSlice;
+import com.mojang.renderpearl.api.pipeline.BlendFunction;
+import com.mojang.renderpearl.api.pipeline.BindGroupLayout;
+import com.mojang.renderpearl.api.pipeline.ColorTargetState;
+import com.mojang.renderpearl.api.pipeline.DepthStencilState;
+import com.mojang.renderpearl.api.pipeline.RenderPipeline;
 import com.mojang.blaze3d.pipeline.RenderTarget;
-import com.mojang.blaze3d.platform.CompareOp;
-import com.mojang.blaze3d.shaders.UniformType;
-import com.mojang.blaze3d.systems.CommandEncoder;
-import com.mojang.blaze3d.systems.GpuDevice;
-import com.mojang.blaze3d.systems.RenderPass;
+import com.mojang.renderpearl.api.pipeline.CompareOp;
+import com.mojang.renderpearl.api.pipeline.UniformType;
+import com.mojang.renderpearl.api.commands.CommandEncoder;
+import com.mojang.renderpearl.api.device.GpuDevice;
+import com.mojang.renderpearl.api.commands.RenderPass;
 import com.mojang.blaze3d.systems.RenderSystem;
-import com.mojang.blaze3d.textures.AddressMode;
-import com.mojang.blaze3d.textures.FilterMode;
-import com.mojang.blaze3d.textures.GpuSampler;
-import com.mojang.blaze3d.textures.GpuTextureView;
-import com.mojang.blaze3d.vertex.VertexFormat;
+import com.mojang.renderpearl.api.textures.AddressMode;
+import com.mojang.renderpearl.api.textures.FilterMode;
+import com.mojang.renderpearl.api.textures.GpuSampler;
+import com.mojang.renderpearl.api.textures.GpuTextureView;
+import com.mojang.renderpearl.api.vertex.VertexFormat;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -87,7 +87,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 
 	// Lightning bolts (1.20.1 port): world-space quads, additive blend, depth
 	// tested against terrain, no depth write. One dynamic vertex upload per frame.
-	private static final com.mojang.blaze3d.vertex.VertexFormat LIGHTNING_FORMAT = com.mojang.blaze3d.vertex.VertexFormat.builder(0)
+	private static final com.mojang.renderpearl.api.vertex.VertexFormat LIGHTNING_FORMAT = com.mojang.renderpearl.api.vertex.VertexFormat.builder(0)
 			.addAttribute("Position", GpuFormat.RGB32_FLOAT)
 			.addAttribute("Color", GpuFormat.RGBA32_FLOAT)
 			.build();
@@ -146,7 +146,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 	{
 		SimpleRenderTarget(String label, boolean useDepth, GpuFormat format)
 		{
-			super(label, useDepth, format);
+			super(label, format, useDepth ? GpuFormat.D32_FLOAT : null);
 		}
 	}
 
@@ -195,7 +195,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 				.withUniform("CloudShading", UniformType.UNIFORM_BUFFER)
 				.withUniform("CloudFog", UniformType.UNIFORM_BUFFER)
 				.withUniform("CloudOffset", UniformType.UNIFORM_BUFFER)
-				.withSampler("BayerMatrixSampler")
+				.withUniform("BayerMatrixSampler", UniformType.COMBINED_IMAGE_SAMPLER)
 				.build();
 
 		// clouds.vsh/.fsh #moj_import vanilla's dynamictransforms.glsl (ModelViewMat,
@@ -221,6 +221,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 				// the main target, so without an explicit state the pipeline defaults to
 				// NULL depth state and GlCommandEncoder _disableDepthTest()s -- clouds
 				// rendered through all terrain (Jan's 2026-09-12 screenshot).
+				.withColorTargetState(new ColorTargetState(java.util.Optional.empty(), GpuFormat.RGBA8_UNORM, ColorTargetState.WRITE_ALL))
 				.withDepthStencilState(DepthStencilState.DEFAULT)
 				.build();
 
@@ -252,7 +253,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 				.withUniform("CloudShading", UniformType.UNIFORM_BUFFER)
 				.withUniform("CloudFog", UniformType.UNIFORM_BUFFER)
 				.withUniform("CloudOffset", UniformType.UNIFORM_BUFFER)
-				.withSampler("BayerMatrixSampler")
+				.withUniform("BayerMatrixSampler", UniformType.COMBINED_IMAGE_SAMPLER)
 				.build();
 		this.transparencyPipeline = RenderPipeline.builder(RenderPipelines.MATRICES_FOG_SNIPPET)
 				.withLocation(CLOUDS_TRANSPARENCY_LOCATION)
@@ -276,7 +277,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 		// terrain shadows) and reconstructs world positions with the frame's matrices.
 		BindGroupLayout stormFogBgl = BindGroupLayout.builder()
 				.withUniform("StormFog", UniformType.UNIFORM_BUFFER)
-				.withSampler("DepthSampler")
+				.withUniform("DepthSampler", UniformType.COMBINED_IMAGE_SAMPLER)
 				.build();
 		VertexFormat triangleFormat = VertexFormat.builder(0)
 				.addAttribute(CloudVertexFormat.POSITION, GpuFormat.RG32_FLOAT)
@@ -286,9 +287,11 @@ public class CloudsDrawPipeline implements AutoCloseable
 				.withLocation(transitionId).withVertexShader(transitionId).withFragmentShader(transitionId)
 				.withBindGroupLayout(BindGroupLayout.builder()
 						.withUniform("DynamicTransforms", UniformType.UNIFORM_BUFFER)
-						.withSampler("OldScene").withSampler("NewScene").build())
+						.withUniform("OldScene", UniformType.COMBINED_IMAGE_SAMPLER).withUniform("NewScene", UniformType.COMBINED_IMAGE_SAMPLER).build())
 				.withVertexBinding(0, triangleFormat).withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
-				.withCull(false).withDepthStencilState(Optional.empty()).build();
+				.withCull(false).withDepthStencilState(Optional.empty())
+				.withColorTargetState(new ColorTargetState(java.util.Optional.empty(), GpuFormat.RGBA8_UNORM, ColorTargetState.WRITE_ALL))
+				.build();
 		this.stormFogPipeline = RenderPipeline.builder(RenderPipelines.MATRICES_FOG_SNIPPET)
 				.withLocation(STORM_FOG_LOCATION)
 				.withVertexShader(STORM_FOG_LOCATION)
@@ -314,7 +317,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 		// core/sky_flash.fsh for why the port draws this itself).
 		BindGroupLayout skyFlashBgl = BindGroupLayout.builder()
 				.withUniform("SkyFlash", UniformType.UNIFORM_BUFFER)
-				.withSampler("DepthSampler") // plan item 3: sky pixels only
+				.withUniform("DepthSampler", UniformType.COMBINED_IMAGE_SAMPLER) // plan item 3: sky pixels only
 				.build();
 		this.skyFlashPipeline = RenderPipeline.builder()
 				.withLocation(SKY_FLASH_LOCATION)
@@ -354,9 +357,9 @@ public class CloudsDrawPipeline implements AutoCloseable
 
 		BindGroupLayout terrainBgl = BindGroupLayout.builder()
 				.withUniform("ShadowPass", UniformType.UNIFORM_BUFFER)
-				.withSampler("DepthSampler")
-				.withSampler("DiffuseSampler")
-				.withSampler("ShadowMap")
+				.withUniform("DepthSampler", UniformType.COMBINED_IMAGE_SAMPLER)
+				.withUniform("DiffuseSampler", UniformType.COMBINED_IMAGE_SAMPLER)
+				.withUniform("ShadowMap", UniformType.COMBINED_IMAGE_SAMPLER)
 				.build();
 		this.terrainPipeline = RenderPipeline.builder(RenderPipelines.MATRICES_FOG_SNIPPET)
 				.withLocation(TERRAIN_SHADOWS_LOCATION)
@@ -372,8 +375,8 @@ public class CloudsDrawPipeline implements AutoCloseable
 
 		BindGroupLayout atmosphericBgl = BindGroupLayout.builder()
 				.withUniform("AtmosphericPass", UniformType.UNIFORM_BUFFER)
-				.withSampler("DiffuseSampler")
-				.withSampler("DepthSampler") // sky pixels only (the pass runs after the level)
+				.withUniform("DiffuseSampler", UniformType.COMBINED_IMAGE_SAMPLER)
+				.withUniform("DepthSampler", UniformType.COMBINED_IMAGE_SAMPLER) // sky pixels only (the pass runs after the level)
 				.build();
 		// The shader composites a separate scene copy; write its complete result.
 		this.atmosphericPipeline = RenderPipeline.builder()
@@ -572,14 +575,16 @@ public class CloudsDrawPipeline implements AutoCloseable
 			return;
 
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
+		var compiledPipeline = RenderSystem.getCompiledPipeline(this.pipeline);
+		AbstractTexture bayer = Minecraft.getInstance().getTextureManager().getTexture(BAYER_TEXTURE);
 		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds", colorView, Optional.empty(), depthView, OptionalDouble.empty());
-		pass.setPipeline(this.pipeline);
+		pass.setPipeline(compiledPipeline);
 		RenderSystem.bindDefaultUniforms(pass);
 		// Dither matrix: TextureManager.getTexture auto-loads simpleclouds:textures/shader/bayer_matrix.png
 		// as a SimpleTexture (same resource the 1.20.1 mod sampled). Declared on the bind group layout
 		// AND bound here -- rule 3: an unbound/undeclared sampler is a hard failure.
-		AbstractTexture bayer = Minecraft.getInstance().getTextureManager().getTexture(BAYER_TEXTURE);
-		pass.bindTexture("BayerMatrixSampler", bayer.getTextureView(), bayer.getSampler());
+		// (hoisted above the render pass: 26.3 forbids texture uploads inside one)
+		pass.setUniform("BayerMatrixSampler", bayer.getTextureView(), bayer.getSampler());
 		pass.setUniform("DynamicTransforms", transforms);
 		pass.setUniform("CloudLighting", this.lightingUbo);
 		// UseNormals follows the live config (cubeNormals, default off): write the
@@ -632,12 +637,13 @@ public class CloudsDrawPipeline implements AutoCloseable
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
 		// COLOR-ONLY pass: the depth is sampled as a texture (attaching and sampling it in one
 		// pass reads back 0, see drawTerrainShadows).
+		var compiledStormFogPipeline = RenderSystem.getCompiledPipeline(this.stormFogPipeline);
 		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.stormFog", colorView, Optional.empty());
-		pass.setPipeline(this.stormFogPipeline);
+		pass.setPipeline(compiledStormFogPipeline);
 		RenderSystem.bindDefaultUniforms(pass);
 		pass.setUniform("DynamicTransforms", transform);
 		pass.setUniform("StormFog", this.stormFogUbo);
-		pass.bindTexture("DepthSampler", depthView, this.nearestSampler);
+		pass.setUniform("DepthSampler", depthView, this.nearestSampler);
 		pass.setVertexBuffer(0, this.triangleBuffer.slice());
 		pass.draw(3, 1, 0, 0);
 		pass.close();
@@ -663,10 +669,11 @@ public class CloudsDrawPipeline implements AutoCloseable
 
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
 		// Plan item 3: colour-only pass that samples the depth, so only sky pixels brighten.
+		var compiledSkyFlashPipeline = RenderSystem.getCompiledPipeline(this.skyFlashPipeline);
 		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.skyFlash", colorView, Optional.empty());
-		pass.setPipeline(this.skyFlashPipeline);
+		pass.setPipeline(compiledSkyFlashPipeline);
 		pass.setUniform("SkyFlash", this.skyFlashUbo);
-		pass.bindTexture("DepthSampler", depthView, this.nearestSampler);
+		pass.setUniform("DepthSampler", depthView, this.nearestSampler);
 		pass.setVertexBuffer(0, this.triangleBuffer.slice());
 		pass.draw(3, 1, 0, 0);
 		pass.close();
@@ -699,11 +706,13 @@ public class CloudsDrawPipeline implements AutoCloseable
 			return;
 
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
-		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.transparency", colorView, Optional.empty(), depthView, OptionalDouble.empty());
-		pass.setPipeline(this.transparencyPipeline);
-		RenderSystem.bindDefaultUniforms(pass);
+		var compiledTransparencyPipeline = RenderSystem.getCompiledPipeline(this.transparencyPipeline);
 		AbstractTexture bayer = Minecraft.getInstance().getTextureManager().getTexture(BAYER_TEXTURE);
-		pass.bindTexture("BayerMatrixSampler", bayer.getTextureView(), bayer.getSampler());
+		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.transparency", colorView, Optional.empty(), depthView, OptionalDouble.empty());
+		pass.setPipeline(compiledTransparencyPipeline);
+		RenderSystem.bindDefaultUniforms(pass);
+		// (hoisted above the render pass: 26.3 forbids texture uploads inside one)
+		pass.setUniform("BayerMatrixSampler", bayer.getTextureView(), bayer.getSampler());
 		pass.setUniform("DynamicTransforms", transforms);
 		pass.setUniform("CloudShading", this.shadingUbo);
 		pass.setUniform("CloudFog", this.fogUbo);
@@ -731,12 +740,14 @@ public class CloudsDrawPipeline implements AutoCloseable
 			return;
 		RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
+		var compiledPreviewPipeline = RenderSystem.getCompiledPipeline(this.previewPipeline);
+		AbstractTexture bayer = Minecraft.getInstance().getTextureManager().getTexture(BAYER_TEXTURE);
 		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.preview", main.getColorTextureView(),
 				Optional.empty(), main.getDepthTextureView(), OptionalDouble.empty());
-		pass.setPipeline(this.previewPipeline);
+		pass.setPipeline(compiledPreviewPipeline);
 		RenderSystem.bindDefaultUniforms(pass);
-		AbstractTexture bayer = Minecraft.getInstance().getTextureManager().getTexture(BAYER_TEXTURE);
-		pass.bindTexture("BayerMatrixSampler", bayer.getTextureView(), bayer.getSampler());
+		// (hoisted above the render pass: 26.3 forbids texture uploads inside one)
+		pass.setUniform("BayerMatrixSampler", bayer.getTextureView(), bayer.getSampler());
 		pass.setUniform("DynamicTransforms", transforms);
 		pass.setUniform("CloudLighting", this.lightingUbo);
 		pass.setUniform("CloudShading", this.shadingUbo);
@@ -803,8 +814,9 @@ public class CloudsDrawPipeline implements AutoCloseable
 		GpuTextureView colorView = this.shadowTarget.getColorTextureView();
 		GpuTextureView depthView = this.shadowTarget.getDepthTextureView();
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
+		var compiledShadowPipeline = RenderSystem.getCompiledPipeline(this.shadowPipeline);
 		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.shadowMap", colorView, Optional.empty(), depthView, OptionalDouble.of(1.0));
-		pass.setPipeline(this.shadowPipeline);
+		pass.setPipeline(compiledShadowPipeline);
 		pass.setUniform("ShadowMatrices", matricesBuf);
 		pass.setVertexBuffer(0, this.quadVertexBuffer.slice());
 		for (InstanceSource source : sources)
@@ -870,16 +882,17 @@ public class CloudsDrawPipeline implements AutoCloseable
 		// attachment AND sampling it as a texture in the same pass is undefined
 		// (reads back garbage) — the atmospheric pass (line below) uses this 2-arg
 		// overload for exactly this reason.
+		var compiledTerrainPipeline = RenderSystem.getCompiledPipeline(this.terrainPipeline);
 		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.terrainShadows", colorView, Optional.empty());
-		pass.setPipeline(this.terrainPipeline);
+		pass.setPipeline(compiledTerrainPipeline);
 		RenderSystem.bindDefaultUniforms(pass);
 		pass.setUniform("DynamicTransforms", terrainTransform);
 		pass.setUniform("ShadowPass", terrainBuf);
-		pass.bindTexture("DepthSampler", depthView, this.nearestSampler);
+		pass.setUniform("DepthSampler", depthView, this.nearestSampler);
 		// Step 6: the original multiplies the shadowed scene color by
 		// ShadowColorMultiplier, so the pass samples the scene color itself.
-		pass.bindTexture("DiffuseSampler", colorView, this.nearestSampler);
-		pass.bindTexture("ShadowMap", this.shadowTarget.getDepthTextureView(), this.nearestSampler);
+		pass.setUniform("DiffuseSampler", colorView, this.nearestSampler);
+		pass.setUniform("ShadowMap", this.shadowTarget.getDepthTextureView(), this.nearestSampler);
 		pass.setVertexBuffer(0, this.triangleBuffer.slice());
 		pass.draw(3, 1, 0, 0);
 		pass.close();
@@ -911,8 +924,9 @@ public class CloudsDrawPipeline implements AutoCloseable
 		GpuTextureView colorView = main.getColorTextureView();
 		GpuTextureView depthView = main.getDepthTextureView();
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
+		var compiledLightningPipeline = RenderSystem.getCompiledPipeline(this.lightningPipeline);
 		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.lightning", colorView, Optional.empty(), depthView, OptionalDouble.empty());
-		pass.setPipeline(this.lightningPipeline);
+		pass.setPipeline(compiledLightningPipeline);
 		RenderSystem.bindDefaultUniforms(pass);
 		pass.setUniform("DynamicTransforms", transforms);
 		pass.setVertexBuffer(0, this.lightningVertexBuffer.slice());
@@ -975,7 +989,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
 		if (this.atmosphericSource == null || this.atmosphericSource.width != main.width || this.atmosphericSource.height != main.height)
 		{
-			var replacement = new com.mojang.blaze3d.pipeline.TextureTarget("simpleclouds.atmosphericSource", main.width, main.height, false, main.getColorTexture().getFormat());
+			var replacement = new com.mojang.blaze3d.pipeline.TextureTarget("simpleclouds.atmosphericSource", main.width, main.height, main.getColorTexture().getFormat(), null);
 			if (this.atmosphericSource != null) this.atmosphericSource.destroyBuffers();
 			this.atmosphericSource = replacement;
 		}
@@ -984,11 +998,12 @@ public class CloudsDrawPipeline implements AutoCloseable
 		// DepthStencilState). The depth is SAMPLED instead: this runs after the whole
 		// level, so only sky pixels may get the layer -- the original drew it right
 		// after the sky, under terrain and clouds (Jan saw the streaks over blocks).
+		var compiledAtmosphericPipeline = RenderSystem.getCompiledPipeline(this.atmosphericPipeline);
 		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.atmosphericClouds", colorView, Optional.empty());
-		pass.setPipeline(this.atmosphericPipeline);
+		pass.setPipeline(compiledAtmosphericPipeline);
 		pass.setUniform("AtmosphericPass", buf);
-		pass.bindTexture("DiffuseSampler", this.atmosphericSource.getColorTextureView(), this.nearestSampler);
-		pass.bindTexture("DepthSampler", main.getDepthTextureView(), this.nearestSampler);
+		pass.setUniform("DiffuseSampler", this.atmosphericSource.getColorTextureView(), this.nearestSampler);
+		pass.setUniform("DepthSampler", main.getDepthTextureView(), this.nearestSampler);
 		pass.setVertexBuffer(0, this.triangleBuffer.slice());
 		pass.draw(3, 1, 0, 0);
 		pass.close();
@@ -1003,8 +1018,8 @@ public class CloudsDrawPipeline implements AutoCloseable
 		{
 			if (this.transitionOld != null) this.transitionOld.destroyBuffers();
 			if (this.transitionNew != null) this.transitionNew.destroyBuffers();
-			this.transitionOld = new com.mojang.blaze3d.pipeline.TextureTarget("simpleclouds.oldScene", main.width, main.height, true, main.getColorTexture().getFormat());
-			this.transitionNew = new com.mojang.blaze3d.pipeline.TextureTarget("simpleclouds.newScene", main.width, main.height, true, main.getColorTexture().getFormat());
+			this.transitionOld = new com.mojang.blaze3d.pipeline.TextureTarget("simpleclouds.oldScene", main.width, main.height, main.getColorTexture().getFormat(), GpuFormat.D32_FLOAT);
+			this.transitionNew = new com.mojang.blaze3d.pipeline.TextureTarget("simpleclouds.newScene", main.width, main.height, main.getColorTexture().getFormat(), GpuFormat.D32_FLOAT);
 		}
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
 		encoder.copyTextureToTexture(main.getColorTexture(), this.transitionOld.getColorTexture(), 0,0,0,0,0, main.width,main.height);
@@ -1025,13 +1040,14 @@ public class CloudsDrawPipeline implements AutoCloseable
 		var transform = this.frameTransform(new Matrix4f(), new org.joml.Vector4f(1,1,1,progress));
 		if (transform == null)
 			return;
+		var compiledTransitionPipeline = RenderSystem.getCompiledPipeline(this.transitionPipeline);
 		try (RenderPass pass = RenderSystem.getDevice().createCommandEncoder().createRenderPass(
 				() -> "simpleclouds.transition", main.getColorTextureView(), Optional.empty()))
 		{
-			pass.setPipeline(this.transitionPipeline);
+			pass.setPipeline(compiledTransitionPipeline);
 			pass.setUniform("DynamicTransforms", transform);
-			pass.bindTexture("OldScene", this.transitionOld.getColorTextureView(), this.nearestSampler);
-			pass.bindTexture("NewScene", this.transitionNew.getColorTextureView(), this.nearestSampler);
+			pass.setUniform("OldScene", this.transitionOld.getColorTextureView(), this.nearestSampler);
+			pass.setUniform("NewScene", this.transitionNew.getColorTextureView(), this.nearestSampler);
 			pass.setVertexBuffer(0, this.triangleBuffer.slice());
 			pass.draw(3,1,0,0);
 		}
@@ -1060,7 +1076,9 @@ public class CloudsDrawPipeline implements AutoCloseable
 	// tail of the level render but execute later in the frame, and the shared ring can be
 	// re-written by vanilla passes in between (zeroing ModelViewMat / ColorModulator, which
 	// made every cloud fragment vanish). A private ring with fences is safe across the gap.
-	private final net.minecraft.client.renderer.DynamicUniforms ownTransforms = new net.minecraft.client.renderer.DynamicUniforms();
+	// 26.3 removed net.minecraft.client.renderer.DynamicUniforms; CloudTransformRing is the
+	// part of it we used (same DynamicTransforms block, own fenced ring).
+	private final CloudTransformRing ownTransforms = new CloudTransformRing("simpleclouds.cloudTransforms", TRANSFORM_SLOT_CAP);
 
 	// Vanilla resets its shared DynamicUniforms once per frame; this private one was never
 	// reset, so every frame appended to the same storage and it doubled without end (65536

@@ -1,6 +1,7 @@
 // https://jcgt.org/published/0002/02/09/paper.pdf and http://casual-effects.blogspot.com/2015/03/implemented-weighted-blended-order.html
 
 #version 430
+#extension GL_ARB_separate_shader_objects : require
 
 #define EPSILON 0.00001
 
@@ -8,9 +9,9 @@ uniform sampler2D DiffuseSampler;
 uniform sampler2D AccumTexture;
 uniform sampler2D RevealageTexture;
 
-in vec2 texCoord;
-in vec2 oneTexel;
-out vec4 fragColor;
+layout(location = 0) in vec2 texCoord;
+layout(location = 1) in vec2 oneTexel;
+layout(location = 0) out vec4 fragColor;
 
 float max4(vec4 col)
 {

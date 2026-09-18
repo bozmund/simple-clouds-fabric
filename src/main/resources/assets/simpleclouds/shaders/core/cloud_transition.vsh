@@ -1,6 +1,7 @@
 #version 330
-in vec2 Position;
-out vec2 texCoord;
+#extension GL_ARB_separate_shader_objects : require
+layout(location = 0) in vec2 Position;
+layout(location = 0) out vec2 texCoord;
 void main() {
     gl_Position = vec4(Position, 0.0, 1.0);
     texCoord = Position * 0.5 + 0.5;

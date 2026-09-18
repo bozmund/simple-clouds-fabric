@@ -1,14 +1,15 @@
 #version 150
+#extension GL_ARB_separate_shader_objects : require
 
-in vec4 Position;
+layout(location = 0) in vec4 Position;
 
 uniform mat4 ProjMat;
 uniform vec2 InSize;
 uniform vec2 OutSize;
 uniform vec2 BlurDir;
 
-out vec2 texCoord;
-out vec2 sampleStep;
+layout(location = 0) out vec2 texCoord;
+layout(location = 1) out vec2 sampleStep;
 
 void main() 
 {

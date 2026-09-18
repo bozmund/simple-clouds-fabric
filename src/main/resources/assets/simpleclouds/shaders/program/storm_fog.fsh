@@ -1,6 +1,7 @@
 //Portions of this file are licensed under MIT
 
 #version 430
+#extension GL_ARB_separate_shader_objects : require
 
 // -- Lightning Flashes --
 
@@ -43,9 +44,9 @@ uniform vec4 ColorModulator;
 //to still be somewhat visible 
 uniform float LightTransmittenceDistance;
 
-in vec2 texCoord;
-in vec2 oneTexel;
-out vec4 fragColor;
+layout(location = 0) in vec2 texCoord;
+layout(location = 1) in vec2 oneTexel;
+layout(location = 0) out vec4 fragColor;
 
 #define FOG 0 // 0 for no fog, 1 for fog
 #define STEPS 200 //Total ray steps. More smaller steps means better accuracy and less artifacts

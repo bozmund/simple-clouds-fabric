@@ -1,12 +1,13 @@
 #version 430
+#extension GL_ARB_separate_shader_objects : require
 
 uniform sampler2D DiffuseSampler;
 uniform sampler2D CloudsTexture;
 uniform sampler2D CloudsDepthTexture;
 
-in vec2 texCoord;
-in vec2 oneTexel;
-out vec4 fragColor;
+layout(location = 0) in vec2 texCoord;
+layout(location = 1) in vec2 oneTexel;
+layout(location = 0) out vec4 fragColor;
 
 void main() 
 {

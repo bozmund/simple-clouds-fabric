@@ -11,11 +11,11 @@ public class MultiBufferSource
 		return new MultiBufferSource();
 	}
 
-	public com.mojang.blaze3d.vertex.VertexConsumer getBuffer(com.mojang.blaze3d.pipeline.RenderPipeline pipeline)
+	public com.mojang.blaze3d.vertex.VertexConsumer getBuffer(com.mojang.renderpearl.api.pipeline.RenderPipeline pipeline)
 	{
 		return new com.mojang.blaze3d.vertex.BufferBuilder(
 			new com.mojang.blaze3d.vertex.ByteBufferBuilder(1024),
-			com.mojang.blaze3d.PrimitiveTopology.QUADS,
+			com.mojang.renderpearl.api.pipeline.PrimitiveTopology.QUADS,
 			com.mojang.blaze3d.vertex.DefaultVertexFormat.POSITION
 		);
 	}

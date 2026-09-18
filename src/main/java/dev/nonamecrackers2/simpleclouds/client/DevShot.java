@@ -225,7 +225,7 @@ public final class DevShot
 		{
 			net.minecraft.core.Holder<net.minecraft.world.clock.WorldClock> holder =
 					server.registryAccess().lookupOrThrow(Registries.WORLD_CLOCK).getOrThrow(WorldClocks.OVERWORLD);
-			if (!clock.moveToTimeMarker(holder, ClockTimeMarkers.NOON))
+			if (clock.moveToTimeMarker(holder, ClockTimeMarkers.NOON) != net.minecraft.world.clock.ServerClockManager.MoveResult.MOVED)
 				clock.setTotalTicks(holder, 6000L);
 			LOGGER.info("[DEVSHOT] moved the overworld clock to NOON for the screenshot");
 		}
@@ -1170,7 +1170,7 @@ public final class DevShot
 						// Probe: open the 26.2 options screen right after the
 						// screenshot is taken (the MixinOptionsScreen TAIL inject
 						// logs every widget position).
-						mc.setScreenAndShow(new net.minecraft.client.gui.screens.options.OptionsScreen(null, mc.options, false));
+						mc.setScreenAndShow(new net.minecraft.client.gui.screens.options.OptionsScreen(null, mc.options));
 						continue;
 					}
 					if (part.equalsIgnoreCase("OVL0"))
@@ -1665,7 +1665,7 @@ public final class DevShot
 			// section fades in over the chunk-section fade-in time; shooting mid-fade would
 			// capture translucent (ghosted) terrain.
 			if (rs.getSectionMesh() == net.minecraft.client.renderer.chunk.CompiledSectionMesh.UNCOMPILED
-					|| rs.getVisibility(nowMs) < 0.95F)
+					|| rs.getVisibility(nowMs, terrainFadeMillis()) < 0.95F)
 				notSettled++;
 		}
 		boolean terrainInView = loaded && notSettled == 0;
@@ -1766,5 +1766,18 @@ public final class DevShot
 				(int) mc.player.xRotO, (int) mc.player.getViewXRot(0.5F), sx, sy, sz);
 		Screenshot.grab(mc.gameDirectory, name, mc.gameRenderer.mainRenderTarget(), 1,
 				message -> LOGGER.info("[DEVSHOT] saved screenshots/{} ({})", name, message.getString()));
+	}
+
+	/**
+	 * The chunk-section fade-in length in milliseconds. 26.3 removed {@code RenderSection}'s own
+	 * {@code fadeDuration} field and made {@code getVisibility(now, fadeMs)} take it from the
+	 * caller; vanilla passes the {@code chunkSectionFadeInTime} option, so the settle gate uses
+	 * the same value. Never 0 — the visibility maths divides by it.
+	 */
+	private static long terrainFadeMillis()
+	{
+		Minecraft mc = Minecraft.getInstance();
+		double seconds = mc.options.chunkSectionFadeInTime().get();
+		return Math.max(1L, (long) (seconds * 1000.0D));
 	}
 }

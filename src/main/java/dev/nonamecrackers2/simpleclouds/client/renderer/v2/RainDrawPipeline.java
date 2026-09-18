@@ -9,25 +9,25 @@ import java.util.OptionalDouble;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import com.mojang.blaze3d.GpuFormat;
-import com.mojang.blaze3d.IndexType;
-import com.mojang.blaze3d.PrimitiveTopology;
-import com.mojang.blaze3d.buffers.GpuBuffer;
-import com.mojang.blaze3d.buffers.GpuBufferSlice;
-import com.mojang.blaze3d.pipeline.BindGroupLayout;
-import com.mojang.blaze3d.pipeline.BlendFunction;
-import com.mojang.blaze3d.pipeline.ColorTargetState;
-import com.mojang.blaze3d.pipeline.DepthStencilState;
-import com.mojang.blaze3d.pipeline.RenderPipeline;
+import com.mojang.renderpearl.api.GpuFormat;
+import com.mojang.renderpearl.api.pipeline.IndexType;
+import com.mojang.renderpearl.api.pipeline.PrimitiveTopology;
+import com.mojang.renderpearl.api.buffers.GpuBuffer;
+import com.mojang.renderpearl.api.buffers.GpuBufferSlice;
+import com.mojang.renderpearl.api.pipeline.BindGroupLayout;
+import com.mojang.renderpearl.api.pipeline.BlendFunction;
+import com.mojang.renderpearl.api.pipeline.ColorTargetState;
+import com.mojang.renderpearl.api.pipeline.DepthStencilState;
+import com.mojang.renderpearl.api.pipeline.RenderPipeline;
 import com.mojang.blaze3d.pipeline.RenderTarget;
-import com.mojang.blaze3d.platform.CompareOp;
-import com.mojang.blaze3d.shaders.UniformType;
-import com.mojang.blaze3d.systems.CommandEncoder;
-import com.mojang.blaze3d.systems.GpuDevice;
-import com.mojang.blaze3d.systems.RenderPass;
+import com.mojang.renderpearl.api.pipeline.CompareOp;
+import com.mojang.renderpearl.api.pipeline.UniformType;
+import com.mojang.renderpearl.api.commands.CommandEncoder;
+import com.mojang.renderpearl.api.device.GpuDevice;
+import com.mojang.renderpearl.api.commands.RenderPass;
 import com.mojang.blaze3d.systems.RenderSystem;
-import com.mojang.blaze3d.textures.GpuTextureView;
-import com.mojang.blaze3d.vertex.VertexFormat;
+import com.mojang.renderpearl.api.textures.GpuTextureView;
+import com.mojang.renderpearl.api.vertex.VertexFormat;
 import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.client.renderer.texture.AbstractTexture;
 import net.minecraft.client.renderer.texture.TextureManager;
@@ -65,7 +65,8 @@ public final class RainDrawPipeline implements AutoCloseable
 	// LevelRenderer.render TAIL hook, and vanilla resets its shared DynamicUniforms once
 	// per frame, which left the rain's ModelViewMat invalid (drops never rendered). The
 	// cloud pipeline uses the same private one for the same reason.
-	private final net.minecraft.client.renderer.DynamicUniforms ownTransforms = new net.minecraft.client.renderer.DynamicUniforms();
+	// 26.3 removed net.minecraft.client.renderer.DynamicUniforms (see CloudTransformRing).
+	private final CloudTransformRing ownTransforms = new CloudTransformRing("simpleclouds.rainTransforms", 256);
 	private GpuBuffer vertexBuffer;
 	private GpuBuffer indexBuffer;
 	private int dropCount;
@@ -77,7 +78,7 @@ public final class RainDrawPipeline implements AutoCloseable
 
 		BindGroupLayout bgl = BindGroupLayout.builder()
 				.withUniform("RainPass", UniformType.UNIFORM_BUFFER)
-				.withSampler("RainTexture")
+				.withUniform("RainTexture", UniformType.COMBINED_IMAGE_SAMPLER)
 				.build();
 		this.pipeline = RenderPipeline.builder(RenderPipelines.MATRICES_FOG_SNIPPET)
 				.withLocation(RAIN_LOCATION)
@@ -179,14 +180,15 @@ public final class RainDrawPipeline implements AutoCloseable
 		GpuBufferSlice transforms = this.ownTransforms.writeTransform(viewMatrix);
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
 		// Color-only pass (the scene depth is only tested against, never read).
+		var compiledPipeline = RenderSystem.getCompiledPipeline(this.pipeline);
+		AbstractTexture rainTexture = Minecraft.getInstance().getTextureManager().getTexture(RAIN_TEXTURE_ID);
 		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.rain", colorView, Optional.empty(), depthView, OptionalDouble.empty());
-		pass.setPipeline(this.pipeline);
+		pass.setPipeline(compiledPipeline);
 		RenderSystem.bindDefaultUniforms(pass);
 		pass.setUniform("DynamicTransforms", transforms);
 		pass.setUniform("RainPass", this.alphaUbo);
-		TextureManager textureManager = Minecraft.getInstance().getTextureManager();
-		AbstractTexture rainTexture = textureManager.getTexture(RAIN_TEXTURE_ID);
-		pass.bindTexture("RainTexture", rainTexture.getTextureView(), rainTexture.getSampler());
+		// (hoisted above the render pass: 26.3 forbids texture uploads inside one)
+		pass.setUniform("RainTexture", rainTexture.getTextureView(), rainTexture.getSampler());
 		pass.setVertexBuffer(0, this.vertexBuffer.slice());
 		pass.setIndexBuffer(this.indexBuffer, IndexType.SHORT);
 		pass.drawIndexed(this.dropCount * 6, 1, 0, 0, 0);

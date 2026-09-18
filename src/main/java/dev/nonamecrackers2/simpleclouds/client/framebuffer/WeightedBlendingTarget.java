@@ -1,6 +1,6 @@
 package dev.nonamecrackers2.simpleclouds.client.framebuffer;
 
-import com.mojang.blaze3d.GpuFormat;
+import com.mojang.renderpearl.api.GpuFormat;
 import com.mojang.blaze3d.pipeline.RenderTarget;
 
 /**
@@ -14,7 +14,7 @@ public class WeightedBlendingTarget extends RenderTarget
 
 	public WeightedBlendingTarget(int width, int height, boolean clearError, boolean highPrecisionDepth)
 	{
-		super("simpleclouds.weightedBlending", true, GpuFormat.RGBA8_UNORM);
+		super("simpleclouds.weightedBlending", GpuFormat.RGBA8_UNORM, GpuFormat.D32_FLOAT);
 	}
 
 	public boolean isStencilEnabled()
