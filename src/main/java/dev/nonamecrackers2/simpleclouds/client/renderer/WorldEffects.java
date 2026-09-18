@@ -409,8 +409,10 @@ public class WorldEffects
 					long key = BlockPos.asLong(x, y, z);
 					if (this.drops.containsKey(key))
 						continue;
-					// Same 2% deterministic occupancy as the original (position-seeded).
-					if ((int) (RandomSource.create(key).nextLong() % 100) > 2)
+					// Same deterministic occupancy as the original (position-seeded):
+					// nextInt(100) <= 2, i.e. 3% of the columns. (nextLong() % 100 is
+					// negative for about half the seeds, so it used to pass ~51%.)
+					if (RandomSource.create(key).nextInt(100) > 2)
 						continue;
 					int ground = level.getHeight(Heightmap.Types.MOTION_BLOCKING, x, z);
 					float length = (float) Math.min(MAX_LENGTH, Math.max(1.0, y - ground));
