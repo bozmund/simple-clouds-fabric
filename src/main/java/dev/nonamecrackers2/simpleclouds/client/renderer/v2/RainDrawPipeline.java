@@ -88,7 +88,11 @@ public final class RainDrawPipeline implements AutoCloseable
 				.withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
 				.withCull(false)
 				.withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT))
-				.withDepthStencilState(new DepthStencilState(CompareOp.LESS_THAN, false))
+				// Step 5 (original parity): no depth test (ALWAYS_PASS) so the rain is drawn
+				// on top of the scene (the storm base / sky), like the reference's rain curtain.
+				// The LESS_THAN test occluded the sky drops (they sit behind the storm base from
+				// the camera's view), leaving only the ground-level drops visible.
+				.withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, false))
 				.build();
 
 		this.alphaUbo = device.createBuffer(() -> "simpleclouds.rainAlpha", GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, 4L);
