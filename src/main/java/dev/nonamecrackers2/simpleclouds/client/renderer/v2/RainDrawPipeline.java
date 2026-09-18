@@ -61,6 +61,11 @@ public final class RainDrawPipeline implements AutoCloseable
 
 	private final RenderPipeline pipeline;
 	private final GpuBuffer alphaUbo;
+	// Own DynamicUniforms (not the shared per-frame one): the rain pass is encoded at the
+	// LevelRenderer.render TAIL hook, and vanilla resets its shared DynamicUniforms once
+	// per frame, which left the rain's ModelViewMat invalid (drops never rendered). The
+	// cloud pipeline uses the same private one for the same reason.
+	private final net.minecraft.client.renderer.DynamicUniforms ownTransforms = new net.minecraft.client.renderer.DynamicUniforms();
 	private GpuBuffer vertexBuffer;
 	private GpuBuffer indexBuffer;
 	private int dropCount;
@@ -166,7 +171,8 @@ public final class RainDrawPipeline implements AutoCloseable
 		GpuTextureView colorView = main.getColorTextureView();
 		GpuTextureView depthView = main.getDepthTextureView();
 
-		GpuBufferSlice transforms = RenderSystem.getDynamicUniforms().writeTransform(viewMatrix);
+		this.ownTransforms.reset();
+		GpuBufferSlice transforms = this.ownTransforms.writeTransform(viewMatrix);
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
 		// Color-only pass (the scene depth is only tested against, never read).
 		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.rain", colorView, Optional.empty(), depthView, OptionalDouble.empty());
@@ -187,6 +193,7 @@ public final class RainDrawPipeline implements AutoCloseable
 	public void close()
 	{
 		this.alphaUbo.close();
+		this.ownTransforms.close();
 		if (this.vertexBuffer != null)
 			this.vertexBuffer.close();
 		if (this.indexBuffer != null)
