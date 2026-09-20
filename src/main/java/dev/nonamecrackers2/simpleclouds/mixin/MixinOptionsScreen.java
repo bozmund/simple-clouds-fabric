@@ -32,19 +32,24 @@ public class MixinOptionsScreen
 	private void simpleclouds$addConfigButton(CallbackInfo ci)
 	{
 		OptionsScreen self = (OptionsScreen) (Object) this;
-		int maxBottom = 0;
+		// Sit next to vanilla's bottom row ("Done"), not on it. The old code took the
+		// bottom of ALL children - which includes Done - and then clamped to
+		// height - 24, so it always landed exactly where Done is and covered it.
+		int bottomRowY = 0;
 		for (var child : self.children())
 		{
 			if (child instanceof AbstractWidget aw)
-				maxBottom = Math.max(maxBottom, aw.getY() + aw.getHeight());
+				bottomRowY = Math.max(bottomRowY, aw.getY());
 		}
-		int x = (self.width - 200) / 2;
-		int y = Math.min(maxBottom + 8, self.height - 24);
+		if (bottomRowY <= 0)
+			bottomRowY = self.height - 27;
+		int x = Math.max(5, (self.width - 200) / 2 - 105);
+		int y = bottomRowY;
 		Button button = Button.builder(Component.literal("Simple Clouds"), b ->
 		{
 			Minecraft mc = Minecraft.getInstance();
-			mc.setScreenAndShow(SimpleCloudsClientEvents.createConfigScreen(self));
-		}).bounds(x, y, 200, 20).build();
+			mc.gui.setScreen(SimpleCloudsClientEvents.createConfigScreen(self));
+		}).bounds(x, y, 100, 20).build();
 		@SuppressWarnings("unchecked")
 		java.util.List<net.minecraft.client.gui.components.events.GuiEventListener> widgets =
 				(java.util.List<net.minecraft.client.gui.components.events.GuiEventListener>) (java.util.List<?>) self.children();

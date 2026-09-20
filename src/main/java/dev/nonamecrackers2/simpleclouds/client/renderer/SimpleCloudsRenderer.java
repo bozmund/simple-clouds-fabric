@@ -703,6 +703,60 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 
 	/** Fade-in alpha for one band (step 3): 0 -> 1 at CHUNK_FADE_IN_ALPHA_PER_TICK
 	 *  per tick after its data was published; 1.0 once settled. */
+	// View bobbing lives only in the pose stack GameRenderer builds for the world, never in
+	// camera.getViewRotationMatrix(); MixinGameRenderer hands it over at the tail of bobView so
+	// the clouds bob with the terrain instead of swimming against it. Cleared after every use:
+	// vanilla does not call bobView when bobbing is off or the camera is not first person, and a
+	// stale matrix would bob the clouds on its own.
+	private static org.joml.Matrix4f bobbedViewRotation;
+
+	public static void setBobbedViewRotation(org.joml.Matrix4f pose)
+	{
+		bobbedViewRotation = pose;
+	}
+
+	private static org.joml.Matrix4f takeViewRotation(net.minecraft.client.Camera camera)
+	{
+		org.joml.Matrix4f bobbed = bobbedViewRotation;
+		bobbedViewRotation = null;
+		return bobbed != null ? bobbed : camera.getViewRotationMatrix(new org.joml.Matrix4f());
+	}
+
+	/**
+	 * Disabled: re-drawing vanilla's weather after the clouds does not work this way.
+	 *
+	 * <p>The clouds are drawn at the level render tail, after vanilla's weather slot, and being
+	 * opaque they paint over the rain - rain is visible on the ground and between clouds but
+	 * stops dead at every cloud edge. The obvious answer was to cancel vanilla's slot and call
+	 * {@code WeatherEffectRenderer.render(state, pass)} ourselves afterwards. It draws nothing:
+	 * measured at that point, the state is already empty
+	 * ({@code rainColumns=0 snowColumns=0 intensity=0.0 radius=0}), because vanilla resets it
+	 * once its own pass is done.
+	 *
+	 * <p>To finish this, the mixin would have to capture a copy of the columns while cancelling,
+	 * then call {@code prepare(cameraPos, copy)} outside a pass and {@code render(copy, pass)}
+	 * inside ours. The alternative is the bigger job: draw the clouds in vanilla's cloud slot,
+	 * which needs the per-draw transform slices computed before the pass opens, since 26.3
+	 * forbids mapping a buffer while one is open.
+	 */
+	public static boolean redrawsVanillaWeather()
+	{
+		return false;
+	}
+
+	private void drawVanillaWeatherAfterClouds(org.joml.Matrix4f view)
+	{
+		var mc = Minecraft.getInstance();
+		var levelRenderer = mc.levelRenderer;
+		if (levelRenderer == null)
+			return;
+		var state = ((dev.nonamecrackers2.simpleclouds.mixin.MixinLevelRendererStateAccessor) (Object) levelRenderer)
+				.simpleclouds$levelRenderState();
+		if (state == null || state.weatherRenderState == null)
+			return;
+		this.drawPipeline.drawVanillaWeather(levelRenderer.weatherEffectRenderer(), state.weatherRenderState, view);
+	}
+
 	private float chunkAlpha(ChunkData d, long nowTick, float partialTick)
 	{
 		double age = nowTick + partialTick - d.lastGenTick;
@@ -724,7 +778,7 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		// model-view stack is already popped at our TAIL hook, so build it explicitly.
 		var camera = Minecraft.getInstance().gameRenderer.mainCamera();
 		org.joml.Matrix4f view = new org.joml.Matrix4f();
-		view.mul(camera.getViewRotationMatrix(new org.joml.Matrix4f()));
+		view.mul(takeViewRotation(camera));
 		view.mul(new org.joml.Matrix4f().translate((float)-camX, (float)-camY, (float)-camZ));
 
 		// A2 (VISUAL-PARITY-PLAN addendum): NO global view translation anymore — the
@@ -1094,10 +1148,14 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		// World effects: custom rain (1.20.1 PrecipitationQuads; slice without
 		// wind tilt / snow) into the scene, before the overlays.
 		if (SimpleCloudsConfig.CLIENT.renderCustomRain.get())
+		{
 			this.getWorldEffectsManager().renderRain(view, partialTick, camX, camY, camZ);
-			// 1.20.1 lightning bolts (server-spawned; additive world-space quads).
-			if (this.getWorldEffectsManager().hasLightningToRender())
-				this.getWorldEffectsManager().renderLightning(view, partialTick, camX, camY, camZ, this.drawPipeline);
+		}
+
+		// Lightning is NOT gated on custom rain - a bolt is not precipitation. The braces
+		// are here because the old indentation said otherwise while the code did this.
+		if (this.getWorldEffectsManager().hasLightningToRender())
+			this.getWorldEffectsManager().renderLightning(view, partialTick, camX, camY, camZ, this.drawPipeline);
 
 		// Storm fog (plan item 3): ray-marched through the spatial coverage map, so only view
 		// rays under storm cover darken, and lit locally by nearby bolts (no global lift: the

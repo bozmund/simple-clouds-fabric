@@ -679,6 +679,42 @@ public class CloudsDrawPipeline implements AutoCloseable
 		pass.close();
 	}
 
+	/**
+	 * Lets vanilla draw its rain and snow AFTER the clouds, in a pass of ours on the main target.
+	 *
+	 * <p>Vanilla's weather slot runs before the cloud pass. Weather is translucent and writes no
+	 * depth, so the mod's opaque clouds - drawn later, at the level render tail - simply painted
+	 * over it: rain was visible on the ground and in the gaps between clouds and stopped dead at
+	 * every cloud edge. Cancelling vanilla's slot ({@code MixinWeatherEffectRenderer}) and calling
+	 * its own renderer here puts the rain back on top, using vanilla's code, textures, lighting
+	 * and snow handling rather than a second implementation of them.
+	 */
+	private boolean loggedWeatherState = false;
+
+	public void drawVanillaWeather(net.minecraft.client.renderer.WeatherEffectRenderer weather,
+			net.minecraft.client.renderer.state.level.WeatherRenderState state, Matrix4f viewMatrix)
+	{
+		GpuBufferSlice transform = this.frameTransform(viewMatrix, null);
+		if (transform == null)
+			return;
+		if (!loggedWeatherState)
+		{
+			loggedWeatherState = true;
+			LOGGER.info("[WEATHER-DIAG] rainColumns={} snowColumns={} intensity={} radius={}",
+					state.rainColumns.size(), state.snowColumns.size(), state.intensity, state.radius);
+		}
+		RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
+		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
+		try (RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.vanillaWeather",
+				main.getColorTextureView(), Optional.empty(),
+				main.getDepthTextureView(), OptionalDouble.empty()))
+		{
+			RenderSystem.bindDefaultUniforms(pass);
+			pass.setUniform("DynamicTransforms", transform);
+			weather.render(state, pass);
+		}
+	}
+
 	/** Draws the transparent cloud edges after the opaque pass (no depth write, blended). */
 	private boolean loggedFirstTransparencyDraw = false;
 

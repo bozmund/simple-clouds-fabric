@@ -113,7 +113,7 @@ public class SimpleCloudsConfig
 			
 			this.customRainSounds = this.createValue(true, "customRainSounds", false, "Specifies if new rain sounds should replace the vanilla ones");
 			
-			this.renderCustomRain = this.createValue(true, "renderCustomRain", false, "Specifies if custom rain rendering should be used. Automatically disabled when using Pretty/Particle Rain");
+			this.renderCustomRain = this.createValue(false, "renderCustomRain", false, "Specifies if custom rain rendering should be used. Off by default since the 26.3 port: the vanilla weather renderer draws lit rain AND snow, follows the storm through the local rain level the mod already sets, and needs no shader of our own. Automatically disabled when using Pretty/Particle Rain");
 			
 			builder.pop();
 			

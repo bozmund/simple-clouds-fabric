@@ -18,14 +18,22 @@ layout(location = 0) out vec2 uv;
 
 void main()
 {
-	// Camera right/up in world space = rows 0 and 1 of the view matrix.
+	// Camera right in world space = row 0 of the view matrix (horizontal: the camera never rolls).
 	vec3 camRight = vec3(ModelViewMat[0][0], ModelViewMat[1][0], ModelViewMat[2][0]);
-	vec3 camUp = vec3(ModelViewMat[0][1], ModelViewMat[1][1], ModelViewMat[2][1]);
 
+	// A rain streak is vertical in the WORLD and only turns about the vertical axis to face
+	// the camera - the 1.20.1 original billboards yaw-only (its quad's long axis is -Y in a
+	// pose stack rotated about Y). Extending it along the camera's up axis instead made the
+	// rain fall sideways as soon as the player looked up. camRight is horizontal for any
+	// unrolled camera, so it stays the width axis.
 	vec3 worldPos = DropPos
 			+ camRight * (Corner * Width)
-			+ camUp * (-QuadV * Length);
+			+ vec3(0.0, -1.0, 0.0) * (QuadV * Length);
 
 	gl_Position = ProjMat * ModelViewMat * vec4(worldPos, 1.0);
-	uv = vec2(Corner + 0.5, QuadV);
+	// The falling motion IS the texture scrolling down the streak: the drop itself never
+	// moves (as in the 1.20.1 PrecipitationQuad, whose bottom vertex is uv.y = length/10 +
+	// vOffset). UVOffset already carries vOffset + QuadV * Length * 0.1 from the Java side,
+	// so using QuadV here instead left every streak frozen - rain that hung in the air.
+	uv = vec2(Corner + 0.5, UVOffset);
 }

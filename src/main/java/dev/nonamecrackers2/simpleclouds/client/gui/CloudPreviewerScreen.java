@@ -49,9 +49,9 @@ public class CloudPreviewerScreen extends Screen3D
 	public void onClose()
 	{
 		if (this.prev != null)
-			this.minecraft.setScreenAndShow(this.prev);
+			this.minecraft.gui.setScreen(this.prev);
 		else
-			this.minecraft.setScreenAndShow(null);
+			this.minecraft.gui.setScreen(null);
 		destroyMeshGenerator();
 	}
 

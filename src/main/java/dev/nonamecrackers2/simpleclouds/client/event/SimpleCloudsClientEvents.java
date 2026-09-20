@@ -214,22 +214,22 @@ public class SimpleCloudsClientEvents
 			if (client.gui.screen() == null && client.level != null)
 			{
 				while (OPEN_CONFIG.consumeClick())
-					client.setScreenAndShow(createConfigScreen(null));
+					client.gui.setScreen(createConfigScreen(null));
 
 				// F12: open the 3D cloud generator previewer (1.20.1 keybind).
 				while (SimpleCloudsKeybinds.OPEN_GEN_PREVIEWER.consumeClick())
-					client.setScreenAndShow(new CloudPreviewerScreen(null));
+					client.gui.setScreen(new CloudPreviewerScreen(null));
 
 				if (DEBUG_AUTO_OPEN_PREVIEWER)
 				{
-					client.setScreenAndShow(new CloudPreviewerScreen(null)); // TEMP debug
+					client.gui.setScreen(new CloudPreviewerScreen(null)); // TEMP debug
 				}
 
 				if (DEBUG_AUTO_OPEN_CONFIG)
 				{
 					// Re-enable for headless GUI verification: opens the client tab
 					// ~40 ticks after the first tick in world.
-					client.setScreenAndShow(createClientConfigTab(null));
+					client.gui.setScreen(createClientConfigTab(null));
 				}
 			}
 		});

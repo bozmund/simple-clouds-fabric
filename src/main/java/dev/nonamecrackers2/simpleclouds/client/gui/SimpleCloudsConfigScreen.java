@@ -25,6 +25,6 @@ public class SimpleCloudsConfigScreen extends ConfigHomeScreen
 	{
 		super.init();
 		
-		this.addRenderableWidget(Button.builder(Component.translatable("gui.simpleclouds.cloud_previewer.button.title"), b -> this.minecraft.setScreenAndShow(new CloudPreviewerScreen(this))).pos(5, 5).width(100).build());
+		this.addRenderableWidget(Button.builder(Component.translatable("gui.simpleclouds.cloud_previewer.button.title"), b -> this.minecraft.gui.setScreen(new CloudPreviewerScreen(this))).pos(5, 5).width(100).build());
 	}
 }

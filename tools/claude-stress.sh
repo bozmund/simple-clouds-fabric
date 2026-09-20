@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Claude, 2026-09-15: handoff item 7 -- 30-minute LOOP stress test of the dev client.
-#   claude-stress.sh [seconds] [evidence-folder]   (defaults: 1800, evidence-claude-0915-40-stress)
+#   claude-stress.sh [seconds] [evidence-folder] [DEVSHOT tokens]
+#   (defaults: 1800, evidence-claude-0915-40-stress, "A B C D F LOOP")
+# The tokens let the same harness run a storm loop ("STORM LOOP") as well as the plain
+# scene loop, which step 8 of the 26.3 plan needs for its two comparable 30-minute runs.
 # The evidence folder must NOT exist: the script refuses instead of overwriting an
 # existing folder, so two runs can never mix their samples (step 1, 2026-09-17).
 # Starts "A B C D F LOOP" through ./dev-relaunch.sh (which returns after the first 5 shots and leaves
@@ -12,6 +15,8 @@ C=$(cd "$(dirname "$0")/.." && pwd)
 cd "$C" || exit 1
 DUR=${1:-1800}
 ENAME=${2:-evidence-claude-0915-40-stress}
+shift 2 2>/dev/null || true
+TOKENS=${*:-A B C D F LOOP}
 case "$ENAME" in
 	*/*|.*|'') echo "invalid evidence folder name: $ENAME"; exit 1 ;;
 esac
@@ -41,9 +46,9 @@ finish() {
 	log "stress: devclient $(systemctl --user is-active simpleclouds-devclient)"
 }
 
-echo "BATCH START $(date '+%F %T')  jar $(sha256sum build/libs/simple-clouds-0.7.3+26.2-fabric.jar | cut -c1-16)  stress ${DUR}s" >>"$L"
+echo "BATCH START $(date '+%F %T')  jar $(sha256sum "$(ls -t build/libs/simple-clouds-*-fabric.jar | head -1)" | cut -c1-16)  stress ${DUR}s" >>"$L"
 if [ -n "$(real_game)" ]; then log "stress: real game running - not starting"; echo "BATCH DONE $(date '+%F %T') (not started)" >>"$L"; exit 1; fi
-DEVSHOT_EXTRA="A B C D F LOOP" ./dev-relaunch.sh >"$E/dev-relaunch.out" 2>&1
+DEVSHOT_EXTRA="$TOKENS" ./dev-relaunch.sh >"$E/dev-relaunch.out" 2>&1
 rc=$?
 log "stress: dev-relaunch exit $rc ($(grep -c '^CAPTURED' "$E/dev-relaunch.out") captured)"
 if [ $rc -ne 0 ]; then finish; echo "BATCH DONE $(date '+%F %T') (dev-relaunch failed)" >>"$L"; exit 1; fi
