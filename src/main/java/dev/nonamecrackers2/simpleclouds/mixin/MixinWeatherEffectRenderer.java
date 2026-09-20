@@ -9,21 +9,26 @@ import dev.nonamecrackers2.simpleclouds.client.compat.SimpleCloudsCompatHelper;
 import dev.nonamecrackers2.simpleclouds.client.renderer.SimpleCloudsRenderer;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.WeatherEffectRenderer;
+import com.mojang.renderpearl.api.commands.RenderPass;
+import net.minecraft.client.renderer.state.level.WeatherRenderState;
 
 /**
- * Step 5 (original parity): when the mod owns the weather and renders its own rain
- * (renderCustomRain), cancel the vanilla rain/snow pass so it does not double up with the mod's
- * custom drops. This is the equivalent of the 1.20.1 original's
- * {@code MixinLevelRenderer#simpleclouds$overrideRainRendering_renderSnowAndRain}
- * (which cancelled {@code LevelRenderer.renderSnowAndRain}). Only the weather is cancelled; the
- * world border (a separate call in the same pass) is untouched.
+ * Holds vanilla's weather back so Simple Clouds can draw it after the clouds.
  *
- * <p>26.3 changed both entry points. The 26.2 method was
- * {@code render(Vec3, WeatherRenderState)}; it is now {@code render(WeatherRenderState,
- * RenderPass)} plus a separate {@code renderOit(...)} for the order-independent-transparency
- * pass. Against the old descriptor the injection matched nothing and **failed silently**, so
- * vanilla kept drawing its own weather on top of the mod's — Jan saw the mod's rain at the camera
- * and vanilla's snow through the clouds at the same time.
+ * <p>Vanilla's weather slot runs before the mod's cloud pass, and the clouds are opaque, so the
+ * rain was painted over wherever a cloud covered it — it was visible on the ground and in the
+ * gaps and stopped dead at every cloud edge.
+ *
+ * <p>Cancelling the slot and calling {@code render} later is not enough on its own: vanilla
+ * clears the state once its pass is done, and the mod measured
+ * {@code rainColumns=0 snowColumns=0 intensity=0.0 radius=0} by the time it got there. So the
+ * columns are copied out here, while they still exist, and
+ * {@link SimpleCloudsRenderer} draws from that copy.
+ *
+ * <p>26.3 also changed the method: the 26.2 descriptor was {@code render(Vec3,
+ * WeatherRenderState)} and it is now {@code render(WeatherRenderState, RenderPass)} with a
+ * separate {@code renderOit}. Against the old one the injection matched nothing and failed
+ * silently, which is how vanilla's snow ended up drawn on top of the mod's own rain.
  */
 @Mixin(WeatherEffectRenderer.class)
 public class MixinWeatherEffectRenderer
@@ -31,22 +36,20 @@ public class MixinWeatherEffectRenderer
 	private static boolean simpleclouds$modOwnsWeather()
 	{
 		Minecraft mc = Minecraft.getInstance();
-		if (mc.level == null || !SimpleCloudsRenderer.canRenderInDimension(mc.level))
-			return false;
-		// Either the mod draws its own drops instead, or it re-draws vanilla's weather itself
-		// after the clouds (SimpleCloudsRenderer.drawWeatherAfterClouds). Vanilla's own slot runs
-		// BEFORE the cloud pass, and the mod's clouds are opaque and drawn later, so weather left
-		// in that slot is simply painted over wherever a cloud covers it - rain that stopped dead
-		// at every cloud edge.
-		return SimpleCloudsCompatHelper.renderCustomRain();
+		return mc.level != null
+				&& SimpleCloudsRenderer.canRenderInDimension(mc.level)
+				&& (SimpleCloudsCompatHelper.renderCustomRain() || SimpleCloudsRenderer.redrawsVanillaWeather());
 	}
 
 	@Inject(method = "render(Lnet/minecraft/client/renderer/state/level/WeatherRenderState;Lcom/mojang/renderpearl/api/commands/RenderPass;)V",
 			at = @At("HEAD"), cancellable = true)
-	private void simpleclouds$cancelVanillaRain_render(CallbackInfo ci)
+	private void simpleclouds$cancelVanillaRain_render(WeatherRenderState state, RenderPass pass, CallbackInfo ci)
 	{
-		if (simpleclouds$modOwnsWeather())
-			ci.cancel();
+		if (!simpleclouds$modOwnsWeather())
+			return;
+		if (SimpleCloudsRenderer.redrawsVanillaWeather())
+			SimpleCloudsRenderer.captureWeatherState(state);
+		ci.cancel();
 	}
 
 	@Inject(method = "renderOit", at = @At("HEAD"), cancellable = true)

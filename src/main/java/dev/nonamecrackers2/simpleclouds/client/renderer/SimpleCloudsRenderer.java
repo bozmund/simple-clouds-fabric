@@ -723,39 +723,70 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	}
 
 	/**
-	 * Disabled: re-drawing vanilla's weather after the clouds does not work this way.
+	 * Vanilla's weather is drawn by the mod, after the clouds.
 	 *
-	 * <p>The clouds are drawn at the level render tail, after vanilla's weather slot, and being
-	 * opaque they paint over the rain - rain is visible on the ground and between clouds but
-	 * stops dead at every cloud edge. The obvious answer was to cancel vanilla's slot and call
-	 * {@code WeatherEffectRenderer.render(state, pass)} ourselves afterwards. It draws nothing:
-	 * measured at that point, the state is already empty
-	 * ({@code rainColumns=0 snowColumns=0 intensity=0.0 radius=0}), because vanilla resets it
-	 * once its own pass is done.
-	 *
-	 * <p>To finish this, the mixin would have to capture a copy of the columns while cancelling,
-	 * then call {@code prepare(cameraPos, copy)} outside a pass and {@code render(copy, pass)}
-	 * inside ours. The alternative is the bigger job: draw the clouds in vanilla's cloud slot,
-	 * which needs the per-draw transform slices computed before the pass opens, since 26.3
-	 * forbids mapping a buffer while one is open.
+	 * <p>The cloud pass runs at the level render tail, after vanilla's weather slot, and the
+	 * clouds are opaque - so rain left in that slot is painted over wherever a cloud covers it
+	 * and stops dead at every cloud edge. Cancelling the slot alone does not work either: by the
+	 * time the mod would draw, vanilla has cleared the state (measured:
+	 * {@code rainColumns=0 snowColumns=0 intensity=0.0 radius=0}). So the columns are copied out
+	 * while they exist ({@link #captureWeatherState}) and drawn from the copy here.
 	 */
 	public static boolean redrawsVanillaWeather()
 	{
+		// OFF: three attempts, none drew anything. Recorded so nobody repeats them.
+		//  - Vanilla's weather slot runs BEFORE the cloud pass and the clouds are opaque, so rain
+		//    left in that slot is painted over wherever a cloud covers it. That is the bug.
+		//  - Cancelling the slot and calling render(state, pass) later draws nothing: vanilla has
+		//    cleared the state by then (measured rainColumns=0 snowColumns=0 intensity=0 radius=0).
+		//  - Capturing the columns in the mixin and drawing from that copy also draws nothing,
+		//    even when only non-empty states are captured. Vanilla calls render several times per
+		//    frame and about half carry no columns (measured: 6050 non-empty of 12400 calls), so
+		//    an unconditional capture overwrote the good copy - but fixing that changed nothing,
+		//    so something besides the columns (the uploaded instance buffer, or state that
+		//    prepare depends on) does not survive to the mod draw point.
+		// The remaining route is the expensive one: draw the clouds in vanilla cloud slot, which
+		// needs every per-draw transform slice computed before the pass opens, because 26.3
+		// forbids mapping a buffer while a render pass is open.
 		return false;
+	}
+
+	/** Vanilla's weather columns for this frame, copied before vanilla clears them. */
+	private static final net.minecraft.client.renderer.state.level.WeatherRenderState CAPTURED_WEATHER =
+			new net.minecraft.client.renderer.state.level.WeatherRenderState();
+	private static boolean capturedWeatherThisFrame;
+
+	public static void captureWeatherState(net.minecraft.client.renderer.state.level.WeatherRenderState state)
+	{
+		// Vanilla calls render several times a frame and about half of those carry no columns
+		// (measured: 6050 of 12400 calls had any). Capturing every call overwrote the good copy
+		// with an empty one, so the mod drew nothing - the data was there the whole time.
+		if (state.rainColumns.isEmpty() && state.snowColumns.isEmpty())
+			return;
+		CAPTURED_WEATHER.reset();
+		CAPTURED_WEATHER.rainColumns.addAll(state.rainColumns);
+		CAPTURED_WEATHER.snowColumns.addAll(state.snowColumns);
+		CAPTURED_WEATHER.intensity = state.intensity;
+		CAPTURED_WEATHER.radius = state.radius;
+		capturedWeatherThisFrame = true;
 	}
 
 	private void drawVanillaWeatherAfterClouds(org.joml.Matrix4f view)
 	{
+		if (!capturedWeatherThisFrame)
+			return;
+		capturedWeatherThisFrame = false;
+		if (CAPTURED_WEATHER.rainColumns.isEmpty() && CAPTURED_WEATHER.snowColumns.isEmpty())
+			return;
 		var mc = Minecraft.getInstance();
-		var levelRenderer = mc.levelRenderer;
-		if (levelRenderer == null)
+		if (mc.levelRenderer == null || mc.gameRenderer == null)
 			return;
-		var state = ((dev.nonamecrackers2.simpleclouds.mixin.MixinLevelRendererStateAccessor) (Object) levelRenderer)
-				.simpleclouds$levelRenderState();
-		if (state == null || state.weatherRenderState == null)
-			return;
-		this.drawPipeline.drawVanillaWeather(levelRenderer.weatherEffectRenderer(), state.weatherRenderState, view);
+		var camera = mc.gameRenderer.mainCamera();
+		this.drawPipeline.drawVanillaWeather(mc.levelRenderer.weatherEffectRenderer(), CAPTURED_WEATHER,
+				camera.position(), view);
 	}
+
+
 
 	private float chunkAlpha(ChunkData d, long nowTick, float partialTick)
 	{
@@ -1178,7 +1209,9 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		// full-screen white brightening on the same gated strength — visible only
 		// while a rendered bolt is within 2000 blocks and bright, never for far
 		// strikes, and never with "Hide Sky Flashes" on.
-		this.drawPipeline.drawSkyFlash(this.getWorldEffectsManager().flashStrength(partialTick) * 0.5F);
+		// No full-screen sky flash: the original brightens the CLOUDS and nothing else (see
+		// CloudsDrawPipeline.setFlashBoost). Flashing every sky pixel lit up a clear sky when the
+		// only storm was over a kilometre away.
 
 		// Cloud shadows (26.2 slice): top-down ortho depth pass over the cloud
 		// instances, then a fullscreen terrain-shadow pass (see CloudShadowPass
@@ -1201,6 +1234,10 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 			if (devMinRadius >= 0.0F) // SHADNEAR diagnostic
 				minimumRadius = devMinRadius;
 			this.drawPipeline.drawTerrainShadows(terrainView, camX, camY, camZ, (float) cloudHeight, minimumRadius);
+
+		// LAST: vanilla's rain and snow, over the clouds and every overlay above them.
+		if (redrawsVanillaWeather())
+			this.drawVanillaWeatherAfterClouds(view);
 		}
 
 		// Atmospheric (high cirrus-type) clouds: biome-driven 2D layer over the
@@ -1528,6 +1565,10 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		// draw of this frame writes its slice after it.
 		if (this.drawPipeline != null)
 			this.drawPipeline.beginFrame();
+		// Lightning brightening for this frame, the original's "factor += skyFlashFactor".
+		if (this.drawPipeline != null)
+			this.drawPipeline.setFlashBoost(this.getWorldEffectsManager().flashStrength(partialTick)
+					* dev.nonamecrackers2.simpleclouds.common.cloud.SimpleCloudsConstants.LIGHTNING_FLASH_STRENGTH);
 		// 26.2 3D previewer: while the previewer screen is open, draw the preview
 		// box into the main frame (snippet pipeline, orbit camera, no depth test)
 		// instead of the normal cloud pass.

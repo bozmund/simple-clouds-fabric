@@ -570,7 +570,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 		// buffers every frame.
 // ColorModulator.a carries the fade alpha (the 1.20.1 chunk fade-in, step 3):
 		Matrix4f shiftedView = new Matrix4f(viewMatrix).translate(offX, offY, offZ);
-		GpuBufferSlice transforms = this.frameTransform(shiftedView, alpha >= 1.0F ? null : new org.joml.Vector4f(1.0F, 1.0F, 1.0F, alpha));
+		GpuBufferSlice transforms = this.frameTransform(shiftedView, this.cloudModulator(alpha));
 		if (transforms == null)
 			return;
 
@@ -692,17 +692,15 @@ public class CloudsDrawPipeline implements AutoCloseable
 	private boolean loggedWeatherState = false;
 
 	public void drawVanillaWeather(net.minecraft.client.renderer.WeatherEffectRenderer weather,
-			net.minecraft.client.renderer.state.level.WeatherRenderState state, Matrix4f viewMatrix)
+			net.minecraft.client.renderer.state.level.WeatherRenderState state,
+			net.minecraft.world.phys.Vec3 cameraPos, Matrix4f viewMatrix)
 	{
 		GpuBufferSlice transform = this.frameTransform(viewMatrix, null);
 		if (transform == null)
 			return;
-		if (!loggedWeatherState)
-		{
-			loggedWeatherState = true;
-			LOGGER.info("[WEATHER-DIAG] rainColumns={} snowColumns={} intensity={} radius={}",
-					state.rainColumns.size(), state.snowColumns.size(), state.intensity, state.radius);
-		}
+		// Uploads the instance buffer for those columns - device work, so it has to happen
+		// before a render pass is open (26.3 refuses any command while one is).
+		weather.prepare(cameraPos, state);
 		RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
 		try (RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.vanillaWeather",
@@ -737,7 +735,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 
 // ColorModulator.a carries the fade alpha (the 1.20.1 chunk fade-in, step 3):
 		Matrix4f shiftedView = new Matrix4f(viewMatrix).translate(offX, offY, offZ);
-		GpuBufferSlice transforms = this.frameTransform(shiftedView, alpha >= 1.0F ? null : new org.joml.Vector4f(1.0F, 1.0F, 1.0F, alpha));
+		GpuBufferSlice transforms = this.frameTransform(shiftedView, this.cloudModulator(alpha));
 		if (transforms == null)
 			return;
 
@@ -1126,6 +1124,31 @@ public class CloudsDrawPipeline implements AutoCloseable
 	private int frameTransforms;
 	private int peakFrameTransforms;
 	private boolean transformCapReported;
+
+	/**
+	 * Lightning brightening for this frame, applied to the clouds through ColorModulator.
+	 *
+	 * <p>The 1.20.1 original has no sky-flash shader at all: {@code getCloudColor} adds
+	 * {@code (skyFlashTime - partialTick) * LIGHTNING_FLASH_STRENGTH} to the factor the cloud
+	 * colour is multiplied by, so a bolt brightens the clouds and nothing else. The port drew a
+	 * full-screen pass over every sky pixel instead, which lit up the whole view even under a
+	 * clear sky with the storm kilometres away - visible to Jan during a fair-weather stress run.
+	 */
+	private float flashBoost;
+
+	public void setFlashBoost(float boost)
+	{
+		this.flashBoost = Math.max(0.0F, boost);
+	}
+
+	/** White, or brighter than white while a bolt flashes; null only when neither applies. */
+	private org.joml.Vector4f cloudModulator(float alpha)
+	{
+		if (this.flashBoost <= 0.0F && alpha >= 1.0F)
+			return null;
+		float rgb = 1.0F + this.flashBoost;
+		return new org.joml.Vector4f(rgb, rgb, rgb, alpha);
+	}
 
 	/** Once per rendered frame, before the first transform of that frame. */
 	public void beginFrame()
