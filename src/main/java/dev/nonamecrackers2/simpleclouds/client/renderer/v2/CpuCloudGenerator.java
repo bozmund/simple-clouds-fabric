@@ -45,12 +45,33 @@ public final class CpuCloudGenerator
 	private static final Logger LOGGER = LogManager.getLogger("simpleclouds/CpuGenerator");
 	private static long lastYRangeLog = 0L; // step-1/8 proof log (throttled ~every 5 s)
 
-	/** Step 5: the original's TransparencyDistance gate (cube_mesh.comp: default
-	 *  {@code maxRadius / 2} cloud units; the uniform is set from the mesh generator,
-	 *  whose default is exactly that). Transparent edge cubes are only generated
-	 *  inside this radius around the camera — the outer half of the field is fogged
-	 *  away by the 2560..10240 fog anyway, so this also saves work. */
+	/** Compatibility default for standalone fixtures. World jobs pass the radius
+	 * derived from the selected LOD layout and client percentage instead. */
 	public static final float TRANSPARENCY_DISTANCE = 640.0F; // HIGH: 1280/2 cloud units
+
+	/** CloudMeshGenerator.getCloudAreaMaxRadius and setTransparencyRenderDistance. */
+	public static int transparencyDistance(int effectiveChunkSpan, int chunkSize, int percentage)
+	{
+		if (effectiveChunkSpan <= 0 || chunkSize <= 0 || percentage < 1 || percentage > 100)
+			throw new IllegalArgumentException("Invalid transparency distance settings");
+		int maxRadius = effectiveChunkSpan * chunkSize / 2;
+		return (int) Math.floor((percentage / 100.0F) * maxRadius);
+	}
+
+	/** Match cube_mesh.comp: distance is measured from the voxel lattice origin,
+	 * not its center, and a cell exactly on the cutoff is excluded. */
+	public static boolean insideTransparencyDistance(int x, int z, float cameraX, float cameraZ, float radius)
+	{
+		float dx = x - cameraX;
+		float dz = z - cameraZ;
+		return dx * dx + dz * dz < radius * radius;
+	}
+
+	/** The original shader emits only the open interval (-fade, 0). */
+	public static boolean isTransparentEdge(float noise, float fade)
+	{
+		return fade > 0.01F && noise > -fade && noise < 0.0F;
+	}
 
 	/** A single noise layer (mirrors the GLSL NoiseLayer struct / AbstractNoiseSettings.Param). */
 	public record NoiseLayer(float height, float valueOffset, float scaleX, float scaleY, float scaleZ,
@@ -101,6 +122,11 @@ public final class CpuCloudGenerator
 	// Empty = infinite-field mode (previewer / no formations yet). Non-empty = region
 	// mode: the noise field is masked by the formations' footprints.
 	private List<RegionMask> regions = List.of();
+	private boolean regionMode;
+	// One worker owns this generator. Reset for each volume: one raw noise sample
+	// per selected column/Y cell, reused by its six neighbors during face culling.
+	// Includes the X/Z halo; Y outside the volume remains explicitly unoccupied.
+	private float[] regionNoise = new float[0];
 
 	public CpuCloudGenerator(List<CloudLayerGroup> groups)
 	{
@@ -116,7 +142,14 @@ public final class CpuCloudGenerator
 	/** Replace the active formation footprints (empty list = infinite field). */
 	public void setRegions(List<RegionMask> regions)
 	{
+		this.setRegions(regions, !regions.isEmpty());
+	}
+
+	/** Explicit world mode: an empty masked world is empty, not an infinite preview. */
+	public void setRegions(List<RegionMask> regions, boolean regionMode)
+	{
 		this.regions = List.copyOf(regions);
+		this.regionMode = regionMode;
 	}
 
 	/**
@@ -152,6 +185,17 @@ public final class CpuCloudGenerator
 	 */
 	public ByteBuffer[] generate(int x0, int y0, int z0, int x1, int y1, int z1, float scale, float scrollX, float scrollY, float scrollZ, float wiggle, int lodScale, float worldBaseY, ByteBuffer opaqueOut, ByteBuffer transparentOut, BufferGrower grower, float[] outOpaqueCount, float[] outTransparentCount, int cameraGridY, float[] camCloudXZ, float[] outStormCoverage)
 	{
+		return generate(x0, y0, z0, x1, y1, z1, scale, scrollX, scrollY, scrollZ, wiggle,
+				lodScale, worldBaseY, opaqueOut, transparentOut, grower, outOpaqueCount,
+				outTransparentCount, cameraGridY, camCloudXZ, outStormCoverage,
+				(int) TRANSPARENCY_DISTANCE);
+	}
+
+	/** World generation supplies the original LOD/config-derived transparency cutoff. */
+	public ByteBuffer[] generate(int x0, int y0, int z0, int x1, int y1, int z1, float scale, float scrollX, float scrollY, float scrollZ, float wiggle, int lodScale, float worldBaseY, ByteBuffer opaqueOut, ByteBuffer transparentOut, BufferGrower grower, float[] outOpaqueCount, float[] outTransparentCount, int cameraGridY, float[] camCloudXZ, float[] outStormCoverage, int transparencyDistance)
+	{
+		if (transparencyDistance < 0)
+			throw new IllegalArgumentException("Negative transparency distance");
 		// Parity with 1.20.1 (VISUAL-PARITY-PLAN step 1): the cloud volume is anchored
 		// at WORLD Y = cloudHeight (passed in as worldBaseY), NEVER relative to the
 		// camera. The grid spans y0..y1 cloud units above that base; layer heights
@@ -183,7 +227,7 @@ public final class CpuCloudGenerator
 
 		// Region mode: precompute the per-column formation mask (port of cloud_regions.comp).
 		// Regions are 2D, so this is xz-sized, not volume-sized.
-		boolean regionMode = !this.regions.isEmpty();
+		boolean regionMode = this.regionMode;
 		// Sample one column beyond every edge. Treating a neighboring chunk as
 		// empty emits interior walls along every 32-cell boundary.
 		int maskZCells = zCells + 2;
@@ -249,6 +293,13 @@ public final class CpuCloudGenerator
 			transparentOut.position(0).limit(0);
 			return new ByteBuffer[] { opaqueOut, transparentOut };
 		}
+		if (regionMode)
+		{
+			int sampleCount = Math.multiplyExact(columnGroup.length, yCells);
+			if (this.regionNoise.length < sampleCount)
+				this.regionNoise = new float[sampleCount];
+			Arrays.fill(this.regionNoise, 0, sampleCount, Float.NaN);
+		}
 
 		for (int x = x0; x < x1; x += lodScale)
 		{
@@ -267,7 +318,10 @@ public final class CpuCloudGenerator
 					{
 						if (regionMode && g != columnGroup[mi])
 							continue;
-						float noise = sampleGroup(this.groups.get(g), x, y, z, scale, scrollX, scrollY, scrollZ, wiggle, gradient);
+						float noise = regionMode
+								? this.sampleRegionNoise(mi * yCells + (y - y0) / lodScale, g,
+										x, y, z, scale, scrollX, scrollY, scrollZ, wiggle, gradient)
+								: sampleGroup(this.groups.get(g), x, y, z, scale, scrollX, scrollY, scrollZ, wiggle, gradient);
 						if (regionMode)
 							noise += columnFade[mi];
 						groupNoises[g] = noise;
@@ -332,9 +386,7 @@ public final class CpuCloudGenerator
 					// Step 5: the original's TransparencyDistance gate (cube_mesh.comp):
 					// transparent edge cubes are only generated within TransparencyDistance
 					// (default maxRadius/2) cloud units of the camera origin.
-					float tx = x + lodScale * 0.5F - camCloudXZ[0];
-					float tz = z + lodScale * 0.5F - camCloudXZ[1];
-					boolean inTranspDist = tx * tx + tz * tz <= TRANSPARENCY_DISTANCE * TRANSPARENCY_DISTANCE;
+					boolean inTranspDist = insideTransparencyDistance(x, z, camCloudXZ[0], camCloudXZ[1], transparencyDistance);
 					for (int g = 0; g < groupCount; g++)
 					{
 						if (regionMode && g != columnGroup[mi])
@@ -344,16 +396,16 @@ public final class CpuCloudGenerator
 						CloudLayerGroup group = this.groups.get(g);
 						float fade = group.transparencyFade();
 						float noise = groupNoises[g];
-						if (inTranspDist && fade > 0.01F && noise > -fade)
+						if (inTranspDist && isTransparentEdge(noise, fade))
 						{
 							float alpha = (noise + fade) / fade;
 							int needed = 6 * CloudVertexFormat.BYTES_PER_INSTANCE_ALPHA;
 							if (transparentWritten + needed > transparentOut.capacity())
 								transparentOut = grower.grow(transparentOut, transparentWritten + needed, transparentWritten);
 							transparentWritten += emitTransparentCube(transparentOut, transparentWritten, x, y, z, scale, lodScale, brightness, alpha);
-						}
 					}
 				}
+		}
 			}
 		}
 
@@ -435,6 +487,7 @@ public final class CpuCloudGenerator
 
 	/** Reused gradient scratch (A1: one generator per worker thread, no per-cell allocation). */
 	private final float[] gradient = new float[3];
+	private final PsrdNoise.Sampler noiseSampler = new PsrdNoise.Sampler();
 
 	/** Absolute grid Y of the current volume base; noise Y is sampled relative to it. */
 	private int yBase;
@@ -482,7 +535,7 @@ public final class CpuCloudGenerator
 		float py = sy + scrollY / layer.scaleY();
 		float pz = sz + scrollZ / layer.scaleZ();
 
-		float noise = PsrdNoise.noise(px, py, pz, TILE_PERIOD_X, TILE_PERIOD_Y, TILE_PERIOD_Z, wiggle, gradient)
+		float noise = this.noiseSampler.noise(px, py, pz, TILE_PERIOD_X, TILE_PERIOD_Y, TILE_PERIOD_Z, wiggle, gradient)
 				* layer.valueScale() + layer.valueOffset();
 
 		float heightDelta = ly - layer.heightOffset();
@@ -576,8 +629,21 @@ public final class CpuCloudGenerator
 		int i = ((x - x0) / lodScale + 1) * zCells + ((z - z0) / lodScale + 1);
 		if (columnGroup[i] != gi)
 			return false;
-		float noise = sampleGroup(this.groups.get(gi), x, y, z, scale, scrollX, scrollY, scrollZ, wiggle, gradient);
+		float noise = this.sampleRegionNoise(i * ((y1 - y0) / lodScale) + (y - y0) / lodScale,
+				gi, x, y, z, scale, scrollX, scrollY, scrollZ, wiggle, gradient);
 		return noise + columnFade[i] > 0.0F;
+	}
+
+	private float sampleRegionNoise(int index, int group, int x, int y, int z, float scale,
+			float scrollX, float scrollY, float scrollZ, float wiggle, float[] gradient)
+	{
+		float noise = this.regionNoise[index];
+		if (Float.isNaN(noise))
+		{
+			noise = this.sampleGroup(this.groups.get(group), x, y, z, scale, scrollX, scrollY, scrollZ, wiggle, gradient);
+			this.regionNoise[index] = noise;
+		}
+		return noise;
 	}
 
 	/** Emits all six faces of a transparent voxel (port of createTransparentCube), returning bytes written. */

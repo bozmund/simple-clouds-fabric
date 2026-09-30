@@ -26,6 +26,16 @@ public class MixinFogRenderer
 	{
 		FogData data = ci.getReturnValue();
 		if (data != null && data.color != null)
+		{
+			if (camera.getFluidInCamera() == net.minecraft.world.level.material.FogType.NONE
+					&& dev.nonamecrackers2.simpleclouds.common.config.SimpleCloudsConfig.CLIENT.fogMode.get()
+						!= dev.nonamecrackers2.simpleclouds.client.world.FogRenderMode.OFF)
+				dev.nonamecrackers2.simpleclouds.client.renderer.SimpleCloudsRenderer.getOptionalInstance().ifPresent(renderer -> {
+					var color = renderer.getWorldEffectsManager().calculateFogColor(data.color.x, data.color.y, data.color.z,
+						deltaTracker.getGameTimeDeltaPartialTick(false));
+					data.color.set(color.getRed()/255.0F, color.getGreen()/255.0F, color.getBlue()/255.0F, data.color.w);
+				});
 			FogColorCapturer.set(data.color.x, data.color.y, data.color.z);
+		}
 	}
 }

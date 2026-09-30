@@ -83,7 +83,37 @@ public final class PsrdNoiseTest {
         return new double[]{n,gradient[0],gradient[1],gradient[2]};
     }
     private static double[] doubles(float[] v){return new double[]{v[0],v[1],v[2]};}
-    public static void main(String[] args){
+    private static void workerCacheIsolation() throws Exception {
+        float[] alphas={0f,-0f,.7f,-2.3f,1.4f,12f};
+        double[][] expected=new double[alphas.length][];
+        float[] point={-3.21f,.37f,5.13f},period={256,256,256};
+        for(int i=0;i<alphas.length;i++)expected[i]=actual(point,period,alphas[i]);
+        var samplers=new PsrdNoise.Sampler[]{new PsrdNoise.Sampler(),new PsrdNoise.Sampler(),
+                new PsrdNoise.Sampler(),new PsrdNoise.Sampler()};
+        try(var executor=java.util.concurrent.Executors.newFixedThreadPool(4)) {
+            var workers=new java.util.ArrayList<java.util.concurrent.Future<?>>();
+            for(int worker=0;worker<4;worker++) {
+                final int offset=worker;
+                workers.add(executor.submit(()->{
+                    for(int repeat=0;repeat<256;repeat++) {
+                        int i=(repeat+offset)%alphas.length;
+                        double[] observed=actual(point,period,alphas[i]);
+                        float[] derivative=new float[3];
+                        float value=samplers[offset].noise(point[0],point[1],point[2],period[0],period[1],period[2],alphas[i],derivative);
+                        double[] owned={value,derivative[0],derivative[1],derivative[2]};
+                        for(int component=0;component<4;component++)
+                            if(Double.doubleToLongBits(observed[component])!=Double.doubleToLongBits(expected[i][component])
+                                    ||Double.doubleToLongBits(owned[component])!=Double.doubleToLongBits(expected[i][component]))
+                                throw new AssertionError("worker gradient cache changed alpha "+alphas[i]);
+                    }
+                }));
+            }
+            for(var worker:workers)worker.get();
+        }
+        checks+=8192;
+    }
+    public static void main(String[] args) throws Exception {
+        workerCacheIsolation();
         for(int k=0;k<GOLDEN.length;k++) {
             double[] row=GOLDEN[k];
             float[] p={(float)row[0],(float)row[1],(float)row[2]},period={(float)row[3],(float)row[4],(float)row[5]};

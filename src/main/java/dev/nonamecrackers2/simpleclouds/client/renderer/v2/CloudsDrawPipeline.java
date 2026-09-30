@@ -171,6 +171,8 @@ public class CloudsDrawPipeline implements AutoCloseable
 	private final GpuBuffer[] offsetRing = new GpuBuffer[3];
 	// Static zero offset for passes without scroll semantics (previewer box).
 	private final GpuBuffer offsetZero;
+	private final GpuBuffer clipDisabled;
+	private final CloudClipRing cellClips = new CloudClipRing(TRANSFORM_SLOT_CAP);
 	private int offsetSlotIdx = 0;
 
 	private final GpuBuffer[] shadowMatricesRing = new GpuBuffer[3];
@@ -195,6 +197,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 				.withUniform("CloudShading", UniformType.UNIFORM_BUFFER)
 				.withUniform("CloudFog", UniformType.UNIFORM_BUFFER)
 				.withUniform("CloudOffset", UniformType.UNIFORM_BUFFER)
+				.withUniform("CloudClip", UniformType.UNIFORM_BUFFER)
 				.withUniform("BayerMatrixSampler", UniformType.COMBINED_IMAGE_SAMPLER)
 				.build();
 
@@ -253,6 +256,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 				.withUniform("CloudShading", UniformType.UNIFORM_BUFFER)
 				.withUniform("CloudFog", UniformType.UNIFORM_BUFFER)
 				.withUniform("CloudOffset", UniformType.UNIFORM_BUFFER)
+				.withUniform("CloudClip", UniformType.UNIFORM_BUFFER)
 				.withUniform("BayerMatrixSampler", UniformType.COMBINED_IMAGE_SAMPLER)
 				.build();
 		this.transparencyPipeline = RenderPipeline.builder(RenderPipelines.MATRICES_FOG_SNIPPET)
@@ -338,6 +342,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 
 		BindGroupLayout shadowBgl = BindGroupLayout.builder()
 				.withUniform("ShadowMatrices", UniformType.UNIFORM_BUFFER)
+				.withUniform("CloudClip", UniformType.UNIFORM_BUFFER)
 				.build();
 		this.shadowPipeline = RenderPipeline.builder()
 				.withLocation(CLOUDS_SHADOW_LOCATION)
@@ -391,7 +396,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 				.withDepthStencilState(Optional.empty())
 				.build();
 
-		this.lightningPipeline = RenderPipeline.builder()
+		this.lightningPipeline = RenderPipeline.builder(RenderPipelines.MATRICES_FOG_SNIPPET)
 				.withLocation(LIGHTNING_LOCATION)
 				.withVertexShader(LIGHTNING_LOCATION)
 				.withFragmentShader(LIGHTNING_LOCATION)
@@ -469,6 +474,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 			this.offsetRing[slot] = device.createBuffer(() -> "simpleclouds.offset" + slot, GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(16));
 		}
 		this.offsetZero = device.createBuffer(() -> "simpleclouds.offsetZero", GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(16));
+		this.clipDisabled = device.createBuffer(() -> "simpleclouds.clipDisabled", GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(16));
 		this.writeLighting(0.2F, 1.0F, -0.7F, -0.2F, 1.0F, 0.7F, 0.4F, 0.9F);
 		this.writeShading(0.0F, 0.0F, 0.15F, 1.0F);
 		// Fog in world-block units: clouds start ~100 blocks from the camera. The fog
@@ -552,6 +558,12 @@ public class CloudsDrawPipeline implements AutoCloseable
 	public void drawClouds(Matrix4f viewMatrix, GpuBuffer instances, int count, float alpha,
 			float offX, float offY, float offZ)
 	{
+		this.drawClouds(viewMatrix, instances, count, alpha, offX, offY, offZ, null);
+	}
+
+	public void drawClouds(Matrix4f viewMatrix, GpuBuffer instances, int count, float alpha,
+			float offX, float offY, float offZ, CloudWorldCoverage.Rect clip)
+	{
 		if (instances == null || count == 0)
 			return;
 		if (!this.loggedFirstDraw)
@@ -571,7 +583,8 @@ public class CloudsDrawPipeline implements AutoCloseable
 // ColorModulator.a carries the fade alpha (the 1.20.1 chunk fade-in, step 3):
 		Matrix4f shiftedView = new Matrix4f(viewMatrix).translate(offX, offY, offZ);
 		GpuBufferSlice transforms = this.frameTransform(shiftedView, this.cloudModulator(alpha));
-		if (transforms == null)
+		GpuBufferSlice cellClip = this.cellClip(clip);
+		if (transforms == null || cellClip == null)
 			return;
 
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
@@ -603,6 +616,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 		// Rewriting a three-buffer offset ring hundreds of times in one frame
 		// either stalls the GPU or lets queued draws observe a later chunk's offset.
 		pass.setUniform("CloudOffset", this.offsetZero);
+		pass.setUniform("CloudClip", cellClip);
 		pass.setVertexBuffer(0, this.quadVertexBuffer.slice());
 		pass.setVertexBuffer(1, instances.slice());
 		pass.setIndexBuffer(this.quadIndexBuffer, IndexType.SHORT);
@@ -721,6 +735,12 @@ public class CloudsDrawPipeline implements AutoCloseable
 	public void drawTransparencyClouds(Matrix4f viewMatrix, GpuBuffer instances, int count, float alpha,
 			float offX, float offY, float offZ)
 	{
+		this.drawTransparencyClouds(viewMatrix, instances, count, alpha, offX, offY, offZ, null);
+	}
+
+	public void drawTransparencyClouds(Matrix4f viewMatrix, GpuBuffer instances, int count, float alpha,
+			float offX, float offY, float offZ, CloudWorldCoverage.Rect clip)
+	{
 		if (instances == null || count == 0)
 			return;
 		if (!this.loggedFirstTransparencyDraw)
@@ -736,7 +756,8 @@ public class CloudsDrawPipeline implements AutoCloseable
 // ColorModulator.a carries the fade alpha (the 1.20.1 chunk fade-in, step 3):
 		Matrix4f shiftedView = new Matrix4f(viewMatrix).translate(offX, offY, offZ);
 		GpuBufferSlice transforms = this.frameTransform(shiftedView, this.cloudModulator(alpha));
-		if (transforms == null)
+		GpuBufferSlice cellClip = this.cellClip(clip);
+		if (transforms == null || cellClip == null)
 			return;
 
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
@@ -751,6 +772,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 		pass.setUniform("CloudShading", this.shadingUbo);
 		pass.setUniform("CloudFog", this.fogUbo);
 		pass.setUniform("CloudOffset", this.offsetZero);
+		pass.setUniform("CloudClip", cellClip);
 		pass.setVertexBuffer(0, this.quadVertexBuffer.slice());
 		pass.setVertexBuffer(1, instances.slice());
 		pass.setIndexBuffer(this.quadIndexBuffer, IndexType.SHORT);
@@ -788,6 +810,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 		pass.setUniform("CloudFog", this.fogUbo);
 		// The preview box lives in box space (no world scroll) — zero offset.
 		pass.setUniform("CloudOffset", this.offsetZero);
+		pass.setUniform("CloudClip", this.clipDisabled);
 		pass.setVertexBuffer(0, this.quadVertexBuffer.slice());
 		pass.setVertexBuffer(1, instances.slice());
 		pass.setIndexBuffer(this.quadIndexBuffer, IndexType.SHORT);
@@ -801,8 +824,9 @@ public class CloudsDrawPipeline implements AutoCloseable
 	 */
 	/** One per-chunk instance source (A1: the shadow pass draws the persistent
 	 *  per-chunk GPU buffers, one drawIndexed per chunk inside a single pass). */
-	public record InstanceSource(GpuBuffer buffer, int count)
+	public record InstanceSource(GpuBuffer buffer, int count, CloudWorldCoverage.Rect clip)
 	{
+		public InstanceSource(GpuBuffer buffer, int count) { this(buffer, count, null); }
 	}
 
 	public void renderCloudShadowMap(double camX, double camY, double camZ, float cloudHeight, List<InstanceSource> sources)
@@ -849,12 +873,20 @@ public class CloudsDrawPipeline implements AutoCloseable
 		GpuTextureView depthView = this.shadowTarget.getDepthTextureView();
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
 		var compiledShadowPipeline = RenderSystem.getCompiledPipeline(this.shadowPipeline);
+		// Mapping/uploading inside an open 26.3 pass is forbidden. Prepare all
+		// distinct slices before encoding that pass, not in its draw loop.
+		java.util.List<GpuBufferSlice> clips = new java.util.ArrayList<>(sources.size());
+		for (InstanceSource source : sources) clips.add(this.cellClip(source.clip()));
 		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.shadowMap", colorView, Optional.empty(), depthView, OptionalDouble.of(1.0));
 		pass.setPipeline(compiledShadowPipeline);
 		pass.setUniform("ShadowMatrices", matricesBuf);
 		pass.setVertexBuffer(0, this.quadVertexBuffer.slice());
-		for (InstanceSource source : sources)
+		for (int i = 0; i < sources.size(); i++)
 		{
+			InstanceSource source = sources.get(i);
+			GpuBufferSlice clip = clips.get(i);
+			if (clip == null) continue;
+			pass.setUniform("CloudClip", clip);
 			pass.setVertexBuffer(1, source.buffer().slice());
 			pass.setIndexBuffer(this.quadIndexBuffer, IndexType.SHORT);
 			pass.drawIndexed(QUAD_INDICES.length, source.count(), 0, 0, 0);
@@ -945,7 +977,9 @@ public class CloudsDrawPipeline implements AutoCloseable
 	{
 		if (vertexCount <= 0)
 			return;
-		int sections = Math.min(vertexCount / 24, 4096 / 24); // the index buffer covers this many sections
+		if (vertexCount % 24 != 0)
+			throw new IllegalArgumentException("Lightning requires complete 24-vertex sections");
+		int sections = vertexCount / 24;
 		// Recreation (not resize — the 26.2 GlBuffer has no resize): bolts live at
 		// most a couple of seconds, so the churn is bounded and infrequent.
 		if (this.lightningVertexBuffer != null)
@@ -959,14 +993,20 @@ public class CloudsDrawPipeline implements AutoCloseable
 		GpuTextureView depthView = main.getDepthTextureView();
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
 		var compiledLightningPipeline = RenderSystem.getCompiledPipeline(this.lightningPipeline);
-		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.lightning", colorView, Optional.empty(), depthView, OptionalDouble.empty());
+		try (RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.lightning", colorView, Optional.empty(), depthView, OptionalDouble.empty())) {
 		pass.setPipeline(compiledLightningPipeline);
 		RenderSystem.bindDefaultUniforms(pass);
 		pass.setUniform("DynamicTransforms", transforms);
-		pass.setVertexBuffer(0, this.lightningVertexBuffer.slice());
 		pass.setIndexBuffer(this.lightningIndexBuffer, IndexType.SHORT);
-		pass.drawIndexed(sections * 36, 1, 0, 0, 0);
-		pass.close();
+		// Reuse the fixed index window for every section; never truncate a large bolt.
+		for (int first = 0; first < sections; first += 4096 / 24)
+		{
+			int count = Math.min(sections - first, 4096 / 24);
+			pass.setVertexBuffer(0, this.lightningVertexBuffer.slice((long)first * 24 * 7 * Float.BYTES,
+				(long)count * 24 * 7 * Float.BYTES));
+			pass.drawIndexed(count * 36, 1, 0, 0, 0);
+		}
+		}
 	}
 
 /**
@@ -1125,35 +1165,29 @@ public class CloudsDrawPipeline implements AutoCloseable
 	private int peakFrameTransforms;
 	private boolean transformCapReported;
 
-	/**
-	 * Lightning brightening for this frame, applied to the clouds through ColorModulator.
-	 *
-	 * <p>The 1.20.1 original has no sky-flash shader at all: {@code getCloudColor} adds
-	 * {@code (skyFlashTime - partialTick) * LIGHTNING_FLASH_STRENGTH} to the factor the cloud
-	 * colour is multiplied by, so a bolt brightens the clouds and nothing else. The port drew a
-	 * full-screen pass over every sky pixel instead, which lit up the whole view even under a
-	 * clear sky with the storm kilometres away - visible to Jan during a fair-weather stress run.
-	 */
-	private float flashBoost;
+	/** The original multiplies each cloud pass by the vanilla cloud colour,
+	 * locally darkened by storms and briefly brightened by nearby lightning. */
+	private float cloudR = 1.0F, cloudG = 1.0F, cloudB = 1.0F;
 
-	public void setFlashBoost(float boost)
+	public void setCloudColor(float r, float g, float b)
 	{
-		this.flashBoost = Math.max(0.0F, boost);
+		this.cloudR = r;
+		this.cloudG = g;
+		this.cloudB = b;
 	}
 
-	/** White, or brighter than white while a bolt flashes; null only when neither applies. */
 	private org.joml.Vector4f cloudModulator(float alpha)
 	{
-		if (this.flashBoost <= 0.0F && alpha >= 1.0F)
+		if (this.cloudR == 1.0F && this.cloudG == 1.0F && this.cloudB == 1.0F && alpha >= 1.0F)
 			return null;
-		float rgb = 1.0F + this.flashBoost;
-		return new org.joml.Vector4f(rgb, rgb, rgb, alpha);
+		return new org.joml.Vector4f(this.cloudR, this.cloudG, this.cloudB, alpha);
 	}
 
 	/** Once per rendered frame, before the first transform of that frame. */
 	public void beginFrame()
 	{
 		this.ownTransforms.reset();
+		this.cellClips.reset();
 		this.peakFrameTransforms = Math.max(this.peakFrameTransforms, this.frameTransforms);
 		this.frameTransforms = 0;
 	}
@@ -1187,6 +1221,19 @@ public class CloudsDrawPipeline implements AutoCloseable
 		return color == null ? this.ownTransforms.writeTransform(modelView) : this.ownTransforms.writeTransform(modelView, color);
 	}
 
+	private boolean clipCapReported;
+	private GpuBufferSlice cellClip(CloudWorldCoverage.Rect bounds)
+	{
+		if (bounds == null) return this.clipDisabled.slice();
+		GpuBufferSlice slice = this.cellClips.write(bounds);
+		if (slice == null && !this.clipCapReported)
+		{
+			this.clipCapReported = true;
+			LOGGER.error("Simple Clouds ERROR: world-cell clip cap exceeded ({} per frame); further clipped draws skipped", TRANSFORM_SLOT_CAP);
+		}
+		return slice;
+	}
+
 
 	@Override
 
@@ -1218,5 +1265,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 		this.shadingUbo.close();
 		this.fogUbo.close();
 		this.ownTransforms.close();
+		this.cellClips.close();
+		this.clipDisabled.close();
 	}
 }

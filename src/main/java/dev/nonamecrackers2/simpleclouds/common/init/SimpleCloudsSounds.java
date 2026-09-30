@@ -1,20 +1,21 @@
 package dev.nonamecrackers2.simpleclouds.common.init;
 
 import dev.nonamecrackers2.simpleclouds.SimpleCloudsMod;
+import net.minecraft.core.Registry;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.sounds.SoundEvent;
 
 /**
- * 26.2 vertical-slice: the custom thunder sound events are created directly (the Forge
- * DeferredRegister/registry-object pattern is gone). They are not yet wired to a sound
- * registry for the new sound system; kept for API compatibility.
+ * Custom thunder sound events used by the weather renderer and sounds.json.
  */
 public class SimpleCloudsSounds
 {
 	public static final SoundEvent DISTANT_THUNDER = SoundEvent.createVariableRangeEvent(SimpleCloudsMod.id("distant_thunder"));
 	public static final SoundEvent CLOSE_THUNDER = SoundEvent.createVariableRangeEvent(SimpleCloudsMod.id("close_thunder"));
 
-	public static void register(net.minecraftforge.eventbus.api.IEventBus modBus)
+	public static void register()
 	{
-		// TODO(26.2): register the thunder sound events with the new sound system.
+		Registry.register(BuiltInRegistries.SOUND_EVENT, SimpleCloudsMod.id("distant_thunder"), DISTANT_THUNDER);
+		Registry.register(BuiltInRegistries.SOUND_EVENT, SimpleCloudsMod.id("close_thunder"), CLOSE_THUNDER);
 	}
 }

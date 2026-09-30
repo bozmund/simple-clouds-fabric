@@ -1,5 +1,24 @@
 # SPIKE-GPU result (26.2 / Fabric)
 
+> **Verified correction, 2026-09-23 (Minecraft 26.3).** Real compute dispatch and
+> readback now work on Mony's OpenGL backend. In
+> `evidence-codex-20260923-gpu-bringup-05/latest.log`, the opt-in GPUCHECK test
+> produced 512 solid-field faces, zero empty-field faces, 512 after reuse, and
+> 1653 noise-field faces, each matching CPU output exactly. The old failure was
+> not proof of a Mesa defect. Fixed: explicit shader-storage block binding
+> assignments (declaration order does not assign bindings), packed scalar
+> SideInfo (24 bytes; the old float+vec3 layout was 48 bytes in std430), valid
+> indexed binding queries, DSA object creation/allocation, and native readback
+> semantics (LWJGL leaves buffer position unchanged; flipping discarded data).
+> Backend detection now uses 26.3's public DeviceInfo.backendName instead of
+> reflection into a field that no longer exists on the GpuDevice interface.
+> This is a bounded opaque TYPE=1 test, **not** full world GPU integration,
+> transparency, multi-region parity or an end-to-end performance claim.
+> The historical recommendations/timings below are superseded where contradicted.
+>
+> API references: [LWJGL buffer contract](https://javadoc.lwjgl.org/org/lwjgl/BufferUtils.html),
+> [OpenGL shader-storage bindings](https://wikis.khronos.org/opengl/GLAPI/glShaderStorageBlockBinding).
+
 > **Correction (2026-09-12, added at Jan's request after review).** The conclusion
 > below that Mesa 26.2.1 on Intel ARL is broken for compute is **not supported by the
 > evidence**. Several of the listed "driver bugs" are correct OpenGL behaviour:

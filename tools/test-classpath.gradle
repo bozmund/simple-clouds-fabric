@@ -1,0 +1,12 @@
+// Resolve the same dependency versions as this build, not arbitrary cached jars.
+allprojects {
+    afterEvaluate {
+        tasks.register('writeParityClasspath') {
+            doLast {
+                def output = layout.buildDirectory.file('parity-classpath.txt').get().asFile
+                output.parentFile.mkdirs()
+                output.text = sourceSets.main.runtimeClasspath.asPath
+            }
+        }
+    }
+}

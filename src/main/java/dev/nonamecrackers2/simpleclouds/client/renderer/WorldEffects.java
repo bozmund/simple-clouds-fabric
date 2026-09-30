@@ -18,13 +18,17 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import dev.nonamecrackers2.simpleclouds.common.config.SimpleCloudsConfig;
 
 import dev.nonamecrackers2.simpleclouds.client.renderer.lightning.LightningBolt;
-import dev.nonamecrackers2.simpleclouds.client.renderer.v2.WorldEffectsDrop;
+import dev.nonamecrackers2.simpleclouds.client.renderer.rain.PrecipitationQuad;
+import net.minecraft.world.level.biome.Biome;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.util.Mth;
 import dev.nonamecrackers2.simpleclouds.common.cloud.CloudType;
 import dev.nonamecrackers2.simpleclouds.common.cloud.SimpleCloudsConstants;
 import dev.nonamecrackers2.simpleclouds.common.world.CloudManager;
 import net.minecraft.sounds.SoundEvent;
 import dev.nonamecrackers2.simpleclouds.common.init.SimpleCloudsSounds;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.GraphicsPreset;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.LightTexture;
 import net.minecraft.core.BlockPos;
@@ -35,22 +39,9 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.levelgen.Heightmap;
 
 /**
- * 26.2 vertical-slice world effects.
- *
- * Ported for real: custom rain (per-drop camera-facing quads around the camera,
- * deterministic 2% occupancy per block column like the 1.20.1 PrecipitationQuad
- * scan, heightmap-measured drop length, scrolling texture = falling motion) and
- * lightning FLASHES (spawnLightning triggers a decaying flash that drives the
- * storm-fog LightningMul hook, plus the mod's thunder sounds).
- *
- * Slice deviations (documented):
- * - No lightning bolt MESH (the 1.20.1 jagged branch geometry + lightmap glow
- *   are not ported; the flash + sound carry the effect).
- * - No wind tilt on rain (the original tilted drops with the weather direction;
- *   this slice drops straight down).
- * - 26.2's Level API exposes no snow level, so only rain.png is used.
- * - Sky/fog coloring: the fog gets a small storm tint; the original's per-biome
- *   storm sky tint is not ported.
+ * World precipitation, lightning geometry and thunder for the 26.3 backend.
+ * Precipitation uses the original wind/collision/animation equations. Remaining
+ * weather/render parity work is tracked in plans/2026-09-20-PARITY-PROGRESS.md.
  */
 public class WorldEffects
 {
@@ -61,8 +52,6 @@ public class WorldEffects
 	private static final int SCAN_RADIUS = 16;
 	private static final int RAIN_Y_MIN = 8; // RAIN_HEIGHT_OFFSET above the camera
 	private static final int RAIN_Y_SPAN = 8; // RAIN_SCAN_HEIGHT
-	private static final float MAX_LENGTH = 32.0F;
-	private static final float UV_SCROLL_PER_TICK = 0.1F; // original rain texture scroll
 
 	// Verification flag: force rain + thunder regardless of the world's weather.
 	// Verified working 2026-09-11 (rain streaks + storm scene, see PORTING.md);
@@ -78,52 +67,16 @@ public class WorldEffects
 	/** Live lightning bolts (server-packet spawned; ticked here, rendered by the pipeline). */
 	private final java.util.List<LightningBolt> lightningBolts = new java.util.ArrayList<>();
 
-	/** One rain drop (the 1.20.1 PrecipitationQuad's mutable state). */
-	private static final class Drop
-	{
-		final int x;
-		final int y;
-		final int z;
-		final float baseWidth;
-		final int life;
-		float length;
-		float uvOffset;
-		int tick;
-
-		Drop(int x, int y, int z, float length, float baseWidth, int life)
-		{
-			this.x = x;
-			this.y = y;
-			this.z = z;
-			this.length = length;
-			this.baseWidth = baseWidth;
-			this.life = life;
-		}
-
-		boolean isDead()
-		{
-			return this.tick > this.life;
-		}
-
-		void age()
-		{
-			this.tick++;
-			this.uvOffset -= UV_SCROLL_PER_TICK;
-		}
-
-		/** 20-tick fade in/out ramp (as in PrecipitationQuad.tick). */
-		float rampedWidth()
-		{
-			float in = Math.min(1.0F, this.tick / 20.0F);
-			float out = Math.min(1.0F, (this.life - this.tick) / 20.0F);
-			return Math.max(0.1F, this.baseWidth * Math.min(in, out));
-		}
-	}
-
 	private final Minecraft mc;
 	private final SimpleCloudsRenderer renderer;
 	private final Random random = new Random();
-	private final Map<Long, Drop> drops = new HashMap<>();
+	private final Map<Long, PrecipitationQuad> drops = new HashMap<>();
+	private int rainDelay = 20;
+	private @Nullable CloudType typeAtCamera;
+	private float fadeAtCamera;
+	private float storminessAtCamera;
+	private float storminessSmoothed;
+	private float storminessSmoothedO;
 
 	public WorldEffects(Minecraft mc, SimpleCloudsRenderer renderer)
 	{
@@ -133,6 +86,30 @@ public class WorldEffects
 
 	public void renderPost(PoseStack stack, float partialTick, double camX, double camY, double camZ, float scale)
 	{
+		this.updateCameraWeather(camX, camY, camZ);
+	}
+
+	private void updateCameraWeather(double camX, double camY, double camZ)
+	{
+		if (this.mc.level == null) return;
+		CloudManager<ClientLevel> manager = CloudManager.get(this.mc.level);
+		if (manager == null) return;
+		var result = manager.getCloudTypeAtWorldPos((float)camX, (float)camZ);
+		this.typeAtCamera = result == null ? null : result.getLeft();
+		this.fadeAtCamera = result == null ? 1.0F : result.getRight();
+		this.storminessAtCamera = 0.0F;
+		if (!manager.shouldUseVanillaWeather())
+		{
+			if (this.typeAtCamera != null && this.typeAtCamera.weatherType().causesDarkening())
+			{
+				float verticalFade = 1.0F - Mth.clamp(((float)camY -
+					(this.typeAtCamera.stormStart() * SimpleCloudsConstants.CLOUD_SCALE + manager.getCloudHeight())) /
+					SimpleCloudsConstants.RAIN_VERTICAL_FADE, 0.0F, 1.0F);
+				float factor = Mth.clamp((1.0F - this.fadeAtCamera) * 3.0F, 0.0F, 1.0F);
+				this.storminessAtCamera = this.typeAtCamera.storminess() * factor * verticalFade;
+			}
+			this.mc.level.setRainLevel(manager.getRainLevel((float)camX, (float)camY, (float)camZ));
+		}
 	}
 
 	/** Draws the custom rain quads into the scene (called from the renderer's frame flow). */
@@ -141,17 +118,17 @@ public class WorldEffects
 		var rainPipeline = this.renderer.getRainPipeline();
 		if (rainPipeline == null || this.drops.isEmpty())
 			return;
+		rainPipeline.captureBackdrop();
 
-		List<WorldEffectsDrop> out = new ArrayList<>(this.drops.size());
-		for (Drop drop : this.drops.values())
+		for (Biome.Precipitation type : new Biome.Precipitation[] {Biome.Precipitation.RAIN, Biome.Precipitation.SNOW})
 		{
-			out.add(new WorldEffectsDrop(
-					drop.x + 0.5F, drop.y + 0.5F, drop.z + 0.5F,
-					drop.length, drop.rampedWidth(),
-					drop.uvOffset - partialTick * UV_SCROLL_PER_TICK));
+			List<float[]> out = new ArrayList<>();
+			for (PrecipitationQuad drop : this.drops.values())
+				if (drop.getPrecipitation() == type)
+					out.add(drop.vertices(partialTick, camX, camY, camZ));
+			rainPipeline.setDrops(out, 1.0F);
+			rainPipeline.draw(viewMatrix, PrecipitationQuad.TEXTURE_BY_PRECIPITATION.get(type));
 		}
-		rainPipeline.setDrops(out, 1.0F);
-		rainPipeline.draw(viewMatrix);
 	}
 
 	public boolean hasLightningToRender()
@@ -196,16 +173,16 @@ public class WorldEffects
 			float fogStart = this.renderer.getFogStart();
 			float fogEnd = this.renderer.getFogEnd();
 			float alpha = net.minecraft.util.Mth.clamp(1.0F - (dist - fogStart) / (fogEnd - fogStart), 0.0F, 1.0F);
-			int needed = written + 4096 * 7;
+			int needed = Math.addExact(written, bolt.renderFloatCount(partialTick));
 			if (needed > out.length)
 				out = java.util.Arrays.copyOf(out, Math.max(needed, out.length * 2));
-			written = Math.max(written, bolt.renderInto(out, partialTick, 1.0F, 1.0F, 1.0F, alpha));
+			written += bolt.renderInto(out, written, partialTick, 1.0F, 1.0F, 1.0F, alpha);
 		}
 		if (written <= 0)
 			return;
 		java.nio.ByteBuffer buffer = java.nio.ByteBuffer.allocateDirect(written * 4).order(java.nio.ByteOrder.nativeOrder());
 		for (int i = 0; i < written; i++)
-			buffer.putFloat(i, out[i]);
+			buffer.putFloat(out[i]);
 		buffer.flip();
 		pipeline.drawLightning(viewMatrix, buffer, written / 7);
 	}
@@ -217,14 +194,16 @@ public class WorldEffects
 	public void spawnLightning(BlockPos pos, boolean onlySound, int seed, int depth, int branchCount, float maxBranchLength, float maxWidth, float minimumPitch, float maximumPitch)
 	{
 		ClientLevel level = this.mc.level;
-		Player player = this.mc.player;
-		if (level == null || player == null)
+		if (level == null || this.mc.player == null)
 		{
 			return;
 		}
-		double dx = player.getX() - (pos.getX() + 0.5);
-		double dy = player.getY() - (pos.getY() + 0.5);
-		double dz = player.getZ() - (pos.getZ() + 0.5);
+		// The original measures thunder and flash range from the camera, not the
+		// player entity; they differ in third-person and detached-camera views.
+		var cameraPos = this.mc.gameRenderer.mainCamera().position();
+		double dx = cameraPos.x - (pos.getX() + 0.5);
+		double dy = cameraPos.y - (pos.getY() + 0.5);
+		double dz = cameraPos.z - (pos.getZ() + 0.5);
 		double distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
 		// Storm plan step 0/1: every strike (server-spawned, client-spawned or
 		// DevShot-forced) logs its distance to the camera and the flash it is
@@ -301,7 +280,7 @@ public class WorldEffects
 	/** 0..1: how much storm-type cloud is above the camera (drives fog/sky tinting). */
 	public float getStorminessAtCamera()
 	{
-		return this.renderer.getStormCoverage();
+		return this.storminessAtCamera;
 	}
 
 	/**
@@ -334,11 +313,13 @@ public class WorldEffects
 	 * Advances the rain drops and the flash. Runs on the client tick (see
 	 * SimpleCloudsClientEvents). The drop scan mirrors the 1.20.1 original:
 	 * per block position in the scan box a position-seeded hash decides
-	 * occupancy (2%), drops live 60-120 ticks with a 20-tick width fade
-	 * in/out, and the length is the heightmap distance straight down.
+	 * occupancy (3%), drops live 60-119 ticks with a 20-tick width fade
+	 * in/out, and length comes from a collision ray along the wind angle.
 	 */
 	public void tick()
 	{
+		if (this.rainDelay > 0)
+			this.rainDelay--;
 		// Advance + reap bolts regardless of the weather state.
 		var lightning = this.lightningBolts.iterator();
 		while (lightning.hasNext())
@@ -352,57 +333,56 @@ public class WorldEffects
 		Player player = this.mc.player;
 		if (level == null || player == null)
 		{
-			this.drops.clear();
+			this.reset();
 			return;
 		}
+		var camera = this.mc.gameRenderer.mainCamera().position();
+		this.updateCameraWeather(camera.x, camera.y, camera.z);
+		this.storminessSmoothedO = this.storminessSmoothed;
+		this.storminessSmoothed += (this.storminessAtCamera - this.storminessSmoothed) / 25.0F;
 		if (DEBUG_FORCE_WEATHER)
 		{
 			level.setRainLevel(1.0F);
 			level.setThunderLevel(1.0F);
 		}
-		else
-		{
-			// Step 5 (original parity): push the storm's LOCAL rain level to the
-			// vanilla level, exactly like the 1.20.1 original's WorldEffects.renderPost
-			// (setRainLevel(manager.getRainLevel(camX, camY, camZ))). Without this the
-			// cloud managers keep the vanilla rain at 0, so the read below returns 0 and
-			// we get no rain drops, no vanilla sky darkening, and no rain sound under
-			// storms. Only when the mod owns the weather (not vanilla).
-			CloudManager<ClientLevel> manager = CloudManager.get(level);
-			if (manager != null && !manager.shouldUseVanillaWeather())
-				level.setRainLevel(manager.getRainLevel(
-						(float) player.getX(), (float) player.getY(), (float) player.getZ()));
-		}
-		float rain = level.getRainLevel(0.0F);
-		if (rain <= 0.02F)
-		{
-			this.drops.clear();
-			return;
-		}
-
-		int camX = (int) Math.floor(player.getX());
-		int camY = (int) Math.floor(player.getY());
-		int camZ = (int) Math.floor(player.getZ());
+		float rain = level.getRainLevel(1.0F);
+		BlockPos camPos = this.mc.gameRenderer.mainCamera().blockPosition();
+		int camX = camPos.getX(), camY = camPos.getY(), camZ = camPos.getZ();
+		float xRot = SimpleCloudsConfig.CLIENT.rainAngle.get().floatValue() * ((float)Math.PI / 180.0F);
+		var direction = CloudManager.get(level).calculateWindDirection();
+		float yRot = (float)-Mth.atan2(direction.x, direction.y);
+		float pitchCos = Mth.cos(xRot - (float)Math.PI / 2.0F);
+		int xOffset = Mth.floor(Mth.sin(-yRot) * pitchCos * SCAN_RADIUS);
+		int zOffset = Mth.floor(Mth.cos(-yRot) * pitchCos * SCAN_RADIUS);
+		// Original 1.20.1 halves the precipitation scan radius on Fast graphics.
+		// 26.3 exposes this through the graphics preset instead of useFancyGraphics().
+		int radius = this.mc.options.graphicsPreset().get() == GraphicsPreset.FAST ? SCAN_RADIUS / 2 : SCAN_RADIUS;
+		int minX = camX-radius-xOffset, maxX = camX+radius-xOffset;
+		int minZ = camZ-radius-zOffset, maxZ = camZ+radius-zOffset;
+		AABB box = new AABB(minX, camY+RAIN_Y_MIN, minZ, maxX, camY+RAIN_Y_MIN+RAIN_Y_SPAN, maxZ);
 
 		// Age the surviving drops; drop the dead ones and the ones that left the
 		// camera-following scan box.
-		Iterator<Map.Entry<Long, Drop>> it = this.drops.entrySet().iterator();
+		Iterator<Map.Entry<Long, PrecipitationQuad>> it = this.drops.entrySet().iterator();
 		while (it.hasNext())
 		{
-			Map.Entry<Long, Drop> entry = it.next();
-			Drop drop = entry.getValue();
-			boolean inBox = Math.abs(drop.x - camX) <= SCAN_RADIUS
-					&& drop.y >= camY + RAIN_Y_MIN - 4 && drop.y < camY + RAIN_Y_MIN + RAIN_Y_SPAN + 4
-					&& Math.abs(drop.z - camZ) <= SCAN_RADIUS;
-			drop.age();
+			Map.Entry<Long, PrecipitationQuad> entry = it.next();
+			PrecipitationQuad drop = entry.getValue();
+			var pos = drop.getPos();
+			// Match the original's center-of-block containment at scan boundaries.
+			boolean inBox = box.contains(pos.x + 0.5D, pos.y + 0.5D, pos.z + 0.5D);
 			if (drop.isDead() || !inBox)
 				it.remove();
+			else
+				drop.tick();
 		}
 
 		// Spawn drops in the scan box (the original's per-position scan).
-		for (int x = camX - SCAN_RADIUS; x <= camX + SCAN_RADIUS; x++)
+		if (rain <= 0.0F || this.rainDelay != 0 || !level.getBiome(camPos).value().hasPrecipitation())
+			return;
+		for (int x = minX; x < maxX; x++)
 		{
-			for (int z = camZ - SCAN_RADIUS; z <= camZ + SCAN_RADIUS; z++)
+			for (int z = minZ; z < maxZ; z++)
 			{
 				for (int y = camY + RAIN_Y_MIN; y < camY + RAIN_Y_MIN + RAIN_Y_SPAN; y++)
 				{
@@ -415,8 +395,17 @@ public class WorldEffects
 					if (RandomSource.create(key).nextInt(100) > 2)
 						continue;
 					int ground = level.getHeight(Heightmap.Types.MOTION_BLOCKING, x, z);
-					float length = (float) Math.min(MAX_LENGTH, Math.max(1.0, y - ground));
-					this.drops.put(key, new Drop(x, y, z, length, rain * 2.0F, 60 + this.random.nextInt(60)));
+					if (ground > y)
+						continue;
+					BlockPos pos = new BlockPos(x, y, z);
+					Biome.Precipitation type = level.getBiome(pos).value().getPrecipitationAt(pos, level.getSeaLevel());
+					if (type == Biome.Precipitation.NONE)
+						continue;
+					PrecipitationQuad drop = new PrecipitationQuad(type, level::clip, pos,
+						xRot + this.random.nextFloat()*.1F, yRot + this.random.nextFloat()*.1F,
+						60 + this.random.nextInt(60), rain * (type == Biome.Precipitation.SNOW ? 4.0F : 2.0F));
+					drop.tick(); // Original also advances newly spawned quads this tick.
+					this.drops.put(key, drop);
 				}
 			}
 		}
@@ -424,51 +413,61 @@ public class WorldEffects
 
 	public Color calculateFogColor(float defaultR, float defaultG, float defaultB, float partialTick)
 	{
-		// Slice: nudge the fog toward the storm fog color with storminess.
-		float s = this.getStorminessSmoothed(partialTick);
-		return new Color(
-				Math.round((defaultR + (0.04F - defaultR) * s * 0.5F) * 255.0F),
-				Math.round((defaultG + (0.045F - defaultG) * s * 0.5F) * 255.0F),
-				Math.round((defaultB + (0.06F - defaultB) * s * 0.5F) * 255.0F));
+		return hsbLerp(defaultR, defaultG, defaultB, 0.68F, 0.2F, -0.05F, this.getDarkenFactor(partialTick));
 	}
 
 	public Color calculateSkyColor(float defaultR, float defaultG, float defaultB, float partialTick)
 	{
-		return new Color(Math.round(defaultR * 255.0F), Math.round(defaultG * 255.0F), Math.round(defaultB * 255.0F));
+		return hsbLerp(defaultR, defaultG, defaultB, 0.63F, 0.1F, 0.05F, this.getDarkenFactor(partialTick));
+	}
+
+	private static Color hsbLerp(float r, float g, float b, float targetHue, float targetSaturation, float targetBrightness, float lerp)
+	{
+		float[] hsb = Color.RGBtoHSB((int)(r * 255.0F), (int)(g * 255.0F), (int)(b * 255.0F), null);
+		if (targetHue < hsb[0]) targetHue += 1.0F;
+		float hue = Mth.lerp(lerp, targetHue, hsb[0]);
+		float sat = Mth.clamp(Mth.lerp(lerp, targetSaturation, hsb[1]), 0.0F, 1.0F);
+		float bright = Mth.clamp(Mth.lerp(lerp, targetBrightness, hsb[2]), 0.0F, 1.0F);
+		return Color.getHSBColor(hue, sat, bright);
 	}
 
 	public void reset()
 	{
 		this.drops.clear();
+		this.rainDelay = 20;
+		this.typeAtCamera = null;
+		this.fadeAtCamera = 1.0F;
+		this.storminessAtCamera = this.storminessSmoothed = this.storminessSmoothedO = 0.0F;
+		this.lightningBolts.clear();
 	}
 
 	public @Nullable CloudType getCloudTypeAtCamera()
 	{
-		return null;
+		return this.typeAtCamera;
 	}
 
 	public float getFadeRegionAtCamera()
 	{
-		return 1.0F;
+		return this.fadeAtCamera;
 	}
 
 	public float getStorminessSmoothed(float partialTick)
 	{
-		return this.getStorminessAtCamera();
+		return Mth.lerp(partialTick, this.storminessSmoothedO, this.storminessSmoothed);
 	}
 
 	public float getDarkenFactor(float partialTick, float strength)
 	{
-		return 1.0F - this.flashStrength(partialTick) * 0.9F * strength;
+		return Mth.clamp(1.0F - this.getStorminessSmoothed(partialTick) * strength, 0.1F, 1.0F);
 	}
 
 	public float getDarkenFactor(float partialTick)
 	{
-		return this.getDarkenFactor(partialTick, 1.0F);
+		return this.getDarkenFactor(partialTick, 1.2F);
 	}
 
 	public List<LightningBolt> getLightningBolts()
 	{
-		return List.of();
+		return List.copyOf(this.lightningBolts);
 	}
 }

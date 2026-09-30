@@ -92,7 +92,8 @@ public class CloudTypeArgument extends IdentifierArgument
 		@Override
 		public CloudTypeArgument.Info.Template unpack(CloudTypeArgument argument)
 		{
-			return new CloudTypeArgument.Info.Template(Arrays.stream(argument.source.getIndexedCloudTypes()).map(CloudType::id).collect(Collectors.toList()));
+			return new CloudTypeArgument.Info.Template(argument.source == null ? argument.cloudTypes
+					: Arrays.stream(argument.source.getIndexedCloudTypes()).map(CloudType::id).collect(Collectors.toList()));
 		}
 		
 		public final class Template implements ArgumentTypeInfo.Template<CloudTypeArgument>
@@ -101,7 +102,7 @@ public class CloudTypeArgument extends IdentifierArgument
 			
 			public Template(List<Identifier> types)
 			{
-				this.types = types;
+				this.types = List.copyOf(types);
 			}
 			
 			@Override

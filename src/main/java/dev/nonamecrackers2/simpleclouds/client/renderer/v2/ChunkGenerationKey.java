@@ -17,16 +17,7 @@ public final class ChunkGenerationKey
         double step = lod * 0.5;
         for (Mask m : masks)
         {
-            double det = (double)m.m00 * m.m11 - (double)m.m01 * m.m10;
-            double extent = Math.max(0, m.radius) + 200 + lod;
-            // Conservative inverse-transform ellipse bounds, including the mask's
-            // outer fade and one neighbor sample for face culling.
-            double ex = Math.abs(det) < 1e-12 ? Double.POSITIVE_INFINITY
-                    : extent * Math.hypot(m.m11, m.m01) / Math.abs(det);
-            double ez = Math.abs(det) < 1e-12 ? Double.POSITIVE_INFINITY
-                    : extent * Math.hypot(m.m10, m.m00) / Math.abs(det);
-            if (m.x + ex < x || m.x - ex > x + span
-                    || m.z + ez < z || m.z - ez > z + span) continue;
+            if (!overlaps(x,z,span,lod,m)) continue;
             hash = 31 * hash + m.group;
             double maxDistance = 0;
             double maxTransformed = 0;
@@ -57,6 +48,37 @@ public final class ChunkGenerationKey
             hash = 31 * hash + quantize(m.m11, transformStep);
         }
         return hash;
+    }
+
+    /** Conservative Y extent for formations that can affect this XZ chunk.
+     * The global maximum would dispatch the tallest type's entire voxel volume
+     * even in empty chunks and chunks occupied only by short formations. */
+    public static int localMaxY(int x, int z, int span, int lod, List<Mask> masks,
+                                int[] groupMaxY, int minimumY)
+    {
+        int maxY = minimumY;
+        for (Mask mask : masks)
+        {
+            if (!overlaps(x,z,span,lod,mask)) continue;
+            if (mask.group < 0 || mask.group >= groupMaxY.length)
+                throw new IllegalArgumentException("Mask group outside height table: " + mask.group);
+            maxY = Math.max(maxY,groupMaxY[mask.group]);
+        }
+        return maxY;
+    }
+
+    private static boolean overlaps(int x, int z, int span, int lod, Mask m)
+    {
+        double det = (double)m.m00 * m.m11 - (double)m.m01 * m.m10;
+        double extent = Math.max(0, m.radius) + 200 + lod;
+        // Conservative inverse-transform ellipse bounds, including the mask's
+        // outer fade and one neighbor sample for face culling.
+        double ex = Math.abs(det) < 1e-12 ? Double.POSITIVE_INFINITY
+                : extent * Math.hypot(m.m11, m.m01) / Math.abs(det);
+        double ez = Math.abs(det) < 1e-12 ? Double.POSITIVE_INFINITY
+                : extent * Math.hypot(m.m10, m.m00) / Math.abs(det);
+        return !(m.x + ex < x || m.x - ex > x + span
+                || m.z + ez < z || m.z - ez > z + span);
     }
 
     private static long quantize(double value, double step)

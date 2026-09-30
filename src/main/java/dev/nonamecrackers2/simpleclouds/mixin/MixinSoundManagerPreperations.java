@@ -20,7 +20,7 @@ public class MixinSoundManagerPreperations
 	@Shadow
 	private Map<Identifier, Resource> soundCache;
 	
-	@ModifyVariable(method = "handleRegistration", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/sounds/WeighedSoundEvents;addSound(Lnet/minecraft/client/sounds/Weighted;)V", shift = At.Shift.BEFORE))
+	@ModifyVariable(method = "handleRegistration", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/sounds/WeighedSoundEvents;addSound(Lnet/minecraft/client/sounds/Weighted;)V", shift = At.Shift.BEFORE), require = 1)
 	public Weighted<Sound> simpleclouds$overrideVanillaRainSounds_handleRegistration(Weighted<Sound> weighted, Identifier loc, SoundEventRegistration soundReg)
 	{
 		return SimpleCloudsSoundReplacements.applyReplacement(weighted, loc, soundReg, this.soundCache);

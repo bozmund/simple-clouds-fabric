@@ -12,9 +12,11 @@ import nonamecrackers2.crackerslib.common.config.listener.ConfigListener;
 
 public class SimpleCloudsConfigListeners
 {
+	private static ConfigListener listener;
+
 	public static void registerListener()
 	{
-		ConfigListener.builder(ModConfig.Type.SERVER, SimpleCloudsMod.MODID)
+		listener = ConfigListener.builder(ModConfig.Type.SERVER, SimpleCloudsMod.MODID)
 				.addListener(SimpleCloudsConfig.SERVER.cloudMode, (o, n) -> onCloudModeChanged(n))
 				.addListener(SimpleCloudsConfig.SERVER.singleModeCloudType, (o, n) -> onSingleModeCloudTypeChanged(n))
 				.buildAndRegister();
@@ -30,14 +32,25 @@ public class SimpleCloudsConfigListeners
 		executeOnServerThread(() -> sendToAll(new NotifySingleModeCloudTypeUpdatedPacket(newType)));
 	}
 	
-	// 26.2: MinecraftServer.getServer() static accessor was removed. Server config sync
-	// (notify all players) is deferred for the vertical slice; the client renders clouds
-	// by default, so this is not required for the core render path.
+	// Bound only for the running server; polling occurs on its tick thread.
 	private static volatile MinecraftServer currentServer;
 
 	public static void setCurrentServer(MinecraftServer server)
 	{
 		currentServer = server;
+		if (listener != null)
+		{
+			if (server == null)
+				listener.clearCache();
+			else
+				listener.resetCache();
+		}
+	}
+
+	public static void tick(MinecraftServer server)
+	{
+		if (currentServer == server && listener != null)
+			listener.poll();
 	}
 
 	private static void sendToAll(net.minecraft.network.protocol.common.custom.CustomPacketPayload payload)

@@ -31,6 +31,12 @@ public record SendCloudManagerPacket(float speed, float scrollAngle, int cloudHe
 				manager.getClouds(), manager.getSeed());
 	}
 
+	public SendCloudManagerPacket(CloudManager<ServerLevel> manager, List<CloudRegion> cloudRegions)
+	{
+		this(manager.getCloudSpeed(), manager.getScrollAngle(), manager.getCloudHeight(),
+				cloudRegions, manager.getSeed());
+	}
+
 	private static void encode(FriendlyByteBuf buffer, SendCloudManagerPacket packet)
 	{
 		buffer.writeFloat(packet.speed());

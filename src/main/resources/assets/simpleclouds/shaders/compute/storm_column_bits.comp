@@ -1,0 +1,32 @@
+#version 430
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) readonly buffer OpaqueFaceIds { uint faceIds[]; };
+layout(std430, binding = 1) buffer ColumnBits { uint words[]; };
+layout(std430, binding = 2) buffer InvalidCount { uint invalidCount; };
+
+uniform uint FaceCount;
+uniform uint XCells;
+uniform uint YCells;
+uniform uint ZCells;
+uniform int Y0;
+uniform int Lod;
+uniform int CameraGridY;
+
+void main() {
+    uint at = gl_GlobalInvocationID.x;
+    if (at >= FaceCount) return;
+    uint id = faceIds[at];
+    uint cell = id / 6u;
+    if (cell >= XCells * YCells * ZCells) {
+        atomicAdd(invalidCount, 1u);
+        return;
+    }
+    if (id % 6u != 3u) return; // +Y: uppermost occupied voxel of this column.
+    uint x = cell % XCells;
+    uint y = (cell / XCells) % YCells;
+    uint z = cell / (XCells * YCells);
+    if (Y0 + int(y) * Lod <= CameraGridY) return;
+    uint index = x * ZCells + z;
+    atomicOr(words[index >> 5u],1u << (index & 31u));
+}

@@ -62,6 +62,16 @@ public abstract class MixinServerLevel implements CloudManagerHolder<ServerLevel
 	
 	@Shadow
 	protected abstract void resetWeatherCycle();
+
+	// Only the successful collective sleep branch calls wakeUpAllPlayers from tick.
+	// Do not clear storms when one player leaves a bed or disconnects.
+	@Inject(method = "tick", at = @At(value = "INVOKE",
+			target = "Lnet/minecraft/server/level/ServerLevel;wakeUpAllPlayers()V"), require = 1)
+	private void simpleclouds$clearStormsAfterSleep(CallbackInfo ci)
+	{
+		dev.nonamecrackers2.simpleclouds.common.event.SimpleCloudsEvents
+				.removeStormsAfterSleeping((ServerLevel)(Object)this);
+	}
 	
 	@Override
 	public ServerCloudManager getCloudManager()

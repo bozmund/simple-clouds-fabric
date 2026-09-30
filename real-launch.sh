@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Launch Jan's REAL "Fabric 26.2" profile (full 327-mod modpack incl. Distant
+# Launch Jan's REAL "Fabric 26.3" profile (full modpack incl. Distant
 # Horizons) outside ModrinthApp, replicating Modrinth's own launch, so an agent
 # can drive the in-game DevShot (a devshot.request in the profile dir) and then
 # stop the game precisely by its unit name.
@@ -18,34 +18,52 @@
 #    game log stays in the profile's logs/latest.log as usual.
 set -u
 cd "$(dirname "$0")"
-PROFILE="$HOME/.local/share/ModrinthApp/profiles/Fabric 26.2"
+# The host does not keep Python on the interactive PATH, but the classpath
+# manifest parser below needs it. Re-enter through the system's Nix shell once
+# so direct launches work exactly like launches from a prepared shell.
+if ! command -v python3 >/dev/null 2>&1; then
+	if ! command -v nix-shell >/dev/null 2>&1; then
+		echo "FAIL (preflight): python3 and nix-shell are unavailable" >&2
+		exit 1
+	fi
+	printf -v relaunch '%q ' "$(readlink -f "$0")" "$@"
+	exec nix-shell -p python3 --run "$relaunch"
+fi
+PROFILE="$HOME/.local/share/ModrinthApp/profiles/Fabric 26.3"
 META="$HOME/.local/share/ModrinthApp/meta"
 ENVF="$HOME/.cache/simpleclouds/launch.env"   # session env of a known-good launch (display, Vulkan, libs)
 OUT="$HOME/.cache/simpleclouds/realgame.out"
 UNIT=simpleclouds-realgame
-MCID="26.2-0.19.5"
-# Step 7 used the lightweight test world: the main "New World" (Jan's play world)
-# worldgen OOMs and takes ~8 min to join; "New World (1)" has the identical modpack
-# and the STORM scene is self-contained (spawns its own formation 2000 blocks north
-# of the camera), so the world does not change the cloud-cost / playability result.
-WORLD="New World (1)"
+MCID="26.3-0.19.5"
+# This isolated test world is a copy of the development flat-weather fixture.
+# Never default to Jan's play world, and refuse a missing Quick Play identifier:
+# Minecraft otherwise parks on a GUI error while the log appears to stall.
+WORLD="${SC_WORLD:-CodexFullPackTest}"
 WIDTH=1920
 HEIGHT=1080
 XMX="${SC_XMX:-6144m}"   # Modrinth global mc_memory_max=6144 MB (no instance override)
+MEMORY_HIGH="${SC_MEMORY_HIGH:-12G}"
+MEMORY_MAX="${SC_MEMORY_MAX:-14G}"
 LOADER="0.19.5"
+
+if [[ "$WORLD" == */* || "$WORLD" == *\\* || "$WORLD" == "." || "$WORLD" == ".." || ! -f "$PROFILE/saves/$WORLD/level.dat" ]]; then
+	echo "FAIL (preflight): Quick Play world '$WORLD' has no level.dat in this profile's saves directory" >&2
+	exit 1
+fi
 
 if systemctl --user is-active --quiet "$UNIT"; then
 	echo "real game already running as unit $UNIT — refusing to launch a second one"; exit 1
 fi
 # (Match real java processes only, not any command line that happens to
 # contain the string — a pgrep -f here matches our own tooling.)
-for p in $(pgrep -x java 2>/dev/null); do
+for p in $(pgrep -x 'java|\.java-wrapped' 2>/dev/null); do
 	if tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q "net.fabricmc.loader.impl.launch.knot.KnotClient"; then
 		echo "a KnotClient game (pid $p) is running that is not our unit — refusing (it may be Jan's Modrinth game)"; exit 1
 	fi
 done
 
 # devshot request for this run (optional first argument).
+bash tools/test-memory-budget.sh check || exit 1
 rm -f "$PROFILE/devshot.request"
 if [ -n "${1:-}" ]; then
 	printf '%s\n' "$1" > "$PROFILE/devshot.request"
@@ -90,7 +108,8 @@ EOF
 ) || { echo "FAIL: could not build the classpath"; exit 1; }
 echo "classpath: $(echo "$CP" | tr ':' '\n' | wc -l) jars"
 
-NAT="$META/natives/$MCID/lwjgl/3.4.1-snapshot/x64"
+NAT="$META/natives/$MCID/lwjgl/3.4.3-snapshot/x64"
+ASSET_INDEX=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["assetIndex"]["id"])' "$META/versions/$MCID/$MCID.json") || exit 1
 ASSETS="$META/assets"
 JAVA="$META/java_versions/zulu25.36.205-ca-jre25.0.4.1-linux_x64/bin/java"
 
@@ -105,17 +124,33 @@ RAINARG=""
 # silently turned --quickPlaySingleplayer into "$ENVF1" on 2026-09-13).
 systemd-run --user --unit="$UNIT" --collect --quiet \
   --property=WorkingDirectory="$PROFILE" \
-  --property=MemoryHigh=12G --property=MemoryMax=14G \
-  bash -c 'while IFS= read -r -d "" kv; do export "$kv"; done < "$1"
+  --property=MemoryHigh="$MEMORY_HIGH" --property=MemoryMax="$MEMORY_MAX" \
+  --property=TimeoutStopSec=8s --property=KillMode=control-group \
+  --property=Environment=SIMPLECLOUDS_GPU_WORLD=${SIMPLECLOUDS_GPU_WORLD:-0} \
+  --property=Environment=SIMPLECLOUDS_GPU_TEST_CPU_FALLBACK=${SIMPLECLOUDS_GPU_TEST_CPU_FALLBACK:-0} \
+  --property=Environment=SIMPLECLOUDS_GPU_DIRECT_OPAQUE=${SIMPLECLOUDS_GPU_DIRECT_OPAQUE:-0} \
+  --property=Environment=SIMPLECLOUDS_GPU_DIRECT_TRANSPARENT=${SIMPLECLOUDS_GPU_DIRECT_TRANSPARENT:-0} \
+  --property=Environment=SIMPLECLOUDS_GPU_STORM_BITS=${SIMPLECLOUDS_GPU_STORM_BITS:-0} \
+  --property=Environment=SIMPLECLOUDS_GPU_NO_READBACK=${SIMPLECLOUDS_GPU_NO_READBACK:-0} \
+  --property=Environment=SIMPLECLOUDS_GPU_MAPPED_COUNTERS=${SIMPLECLOUDS_GPU_MAPPED_COUNTERS:-0} \
+  --property=Environment=SIMPLECLOUDS_TRACE_VISUAL_CHURN=${SIMPLECLOUDS_TRACE_VISUAL_CHURN:-0} \
+  --property=Environment=SIMPLECLOUDS_DEV=${SIMPLECLOUDS_DEV:-0} \
+  --expand-environment=no \
+  bash -c 'live_display=${DISPLAY-}; live_auth=${XAUTHORITY-}
+  live_wayland=${WAYLAND_DISPLAY-}; live_runtime=${XDG_RUNTIME_DIR-}
+  while IFS= read -r -d "" kv; do export "$kv"; done < "$1"
+  export DISPLAY="$live_display" XAUTHORITY="$live_auth"
+  export WAYLAND_DISPLAY="$live_wayland" XDG_RUNTIME_DIR="$live_runtime"
+  bash "$HOME/simple-clouds-fabric/tools/test-memory-budget.sh" watch simpleclouds-realgame &
   exec "$2" -Xmx"$3" -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=50 \
     -Djava.library.path="$4" \
     -cp "$5" net.fabricmc.loader.impl.launch.knot.KnotClient \
-    --gameDir "$6" --assetsDir "$7" --assetIndex 32 \
+    --gameDir "$6" --assetsDir "$7" --assetIndex "$9" \
     --username Bozmund --uuid 90d6544a-1f2d-4f6f-a0ab-209215c4207e \
-    --userType mojang --version 26.2-0.19.5 --versionType release --gameVersion 26.2 \
+    --userType mojang --version 26.3-0.19.5 --versionType release --gameVersion 26.3 \
     --accessToken offline --clientId "" \
     --width 1920 --height 1080 --quickPlaySingleplayer "$8"'"$RAINARG"\
-  _ "$ENVF" "$JAVA" "$XMX" "$NAT" "$CP" "$PROFILE" "$ASSETS" "$WORLD" \
+  _ "$ENVF" "$JAVA" "$XMX" "$NAT" "$CP" "$PROFILE" "$ASSETS" "$WORLD" "$ASSET_INDEX" \
   > "$OUT" 2>&1 \
   || { echo "FAIL (launch): could not start user unit $UNIT"; exit 1; }
 echo "launched the real profile as user unit $UNIT (java log: $OUT, game log: $PROFILE/logs/latest.log)"

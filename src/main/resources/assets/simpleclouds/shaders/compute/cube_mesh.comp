@@ -10,12 +10,18 @@
 #define STYLE ${STYLE}     //0 for default, 1 for shaded
 #define TRANSPARENCY ${TRANSPARENCY}     //0 for no transparency, 1 for transparency
 #define FIXED_SECTION_SIZE ${FIXED_SECTION_SIZE}     //0 for false, 1 for true
+// The adapter opts into voxel-face IDs for future GPU-side local transitions.
+// Keep the original/legacy shader layout unchanged unless explicitly enabled.
+#define FACE_IDS 0
+// Opt-in experiment: reuse occupancy inside each compute workgroup.
+#define SHARED_OCCUPANCY 0
 
 #define SHADE_DIRECTION normalize(vec3(0.5, 0.5, 0.5))
 
 #define TILE_PERIOD vec3(32.0, 64.0, 32.0)
 
 #define LOCAL_SIZE vec3(${LOCAL_SIZE_X}, ${LOCAL_SIZE_Y}, ${LOCAL_SIZE_Z})
+#define LOCAL_SIZE_I ivec3(${LOCAL_SIZE_X}, ${LOCAL_SIZE_Y}, ${LOCAL_SIZE_Z})
 layout(local_size_x = ${LOCAL_SIZE_X}, local_size_y = ${LOCAL_SIZE_Y}, local_size_z = ${LOCAL_SIZE_Z}) in;
 
 #moj_import <simpleclouds:psrdnoise.glsl>
@@ -42,11 +48,13 @@ struct NoiseLayer {
 
 // ----- Opaque -----
 
-// SPIKE (26.2): re-ordered to the 24-byte per-instance layout the 26.2 render
-// pipeline already uses: Side(float) + SidePos(vec3) + Radius(float) + Brightness(float).
+// Six scalars are tightly packed to 24 bytes in std430. A vec3 after side
+// would align to offset 16 and make this struct 48 bytes, NOT 24.
 struct SideInfo {
 	float side;
-	vec3 pos;
+	float x;
+	float y;
+	float z;
 	float radius;
 	float brightness;
 };
@@ -106,6 +114,13 @@ layout(std430) restrict writeonly buffer SideInfoBuffer {
 }
 sides;
 
+#if FACE_IDS == 1
+layout(std430) restrict writeonly buffer FaceIds {
+    uint data[];
+}
+faceIds;
+#endif
+
 layout(std430) restrict buffer SidesPerChunk {
 	uint data[];
 }
@@ -131,6 +146,13 @@ layout(std430) restrict buffer TransparentCubesPerChunk {
 }
 transparentCubesPerChunk;
 
+#if FACE_IDS == 1
+layout(std430) restrict writeonly buffer TransparentCubeIds {
+	uint data[];
+}
+transparentCubeIds;
+#endif
+
 #endif
 
 // ----------------------------------
@@ -152,7 +174,10 @@ uniform int RegionsTexSize;
 
 uniform int LodLevel;
 uniform int TotalLodLevels;
+uniform ivec3 DispatchSize;
 uniform vec3 RenderOffset;
+// Instance positions are world blocks; noise/layer heights stay in cloud units.
+uniform float WorldBaseY = 0.0;
 uniform float Scale = 1.0;
 uniform vec3 Scroll;
 uniform float Wiggle;
@@ -235,15 +260,24 @@ float getNoiseForLayerGroup(LayerGroup group, float x, float y, float z, out vec
 
 bool isPosValid(float x, float y, float z, LayerGroup group, float fade)
 {
+#if TYPE == 0
+	// Region chunks have a finite vertical band; the CPU generator emits its
+	// top/bottom boundary faces instead of sampling an ungenerated neighbor.
+	if (y < RenderOffset.y || y >= RenderOffset.y + DispatchSize.y * Scale)
+		return false;
+#endif
 	vec3 gradient = vec3(0.0);
 	return getNoiseForLayerGroup(group, x, y, z, gradient) + fade > 0.0;
 }
 
-bool isPosValid(float x, float y, float z, int nx, int nz)
+bool isPosValid(float x, float y, float z, int nx, int nz, int owningRegionId)
 {
 #if TYPE == 0
-	vec2 texelCoord = gl_GlobalInvocationID.xz + RegionSampleOffset + vec2(nx, nz);
-    vec4 info = texture(RegionsSampler, vec3(texelCoord / RegionsTexSize, float(LodLevel)));
+	ivec2 texelCoord = ivec2(gl_GlobalInvocationID.xz) + ivec2(RegionSampleOffset) + ivec2(nx, nz);
+    vec4 info = texelFetch(RegionsSampler, ivec3(texelCoord, LodLevel), 0);
+    if (info.r < 0.0) return false;
+    // Adjacent formations are separate meshes even when both are opaque.
+    if (info.r != float(owningRegionId)) return false;
     uint regionId = uint(info.r);
     LayerGroup group = layerGroupings.data[regionId];
     float fade = -5.0 * pow(1.0 - info.g, 10.0);
@@ -278,7 +312,7 @@ bool shouldNotOcclude(int index)
 		else if (DoNotOccludeSide == 4)
 			return id.z == 0.0;
 		else
-			return false;			
+			return false;
 	}
 	else
 	{
@@ -299,17 +333,29 @@ void createFace(vec3 center, float cubeRadius, int index, float brightness)
 	SideInfo side;
 	side.side = float(index);
 	// SPIKE (26.2): convert cloud units -> world blocks for the vertex format.
-	side.pos = center * CLOUD_SCALE;
+	side.x = center.x * CLOUD_SCALE;
+	side.y = center.y * CLOUD_SCALE + WorldBaseY;
+	side.z = center.z * CLOUD_SCALE;
 	side.brightness = brightness;
 	side.radius = cubeRadius * CLOUD_SCALE;
 #if FIXED_SECTION_SIZE == 0
 	sides.data[currentFace] = side;
+#if FACE_IDS == 1
+	uint voxel = (gl_GlobalInvocationID.z * uint(DispatchSize.y) + gl_GlobalInvocationID.y)
+	    * uint(DispatchSize.x) + gl_GlobalInvocationID.x;
+	faceIds.data[currentFace] = voxel * 6u + uint(index);
+#endif
 #elif FIXED_SECTION_SIZE == 1
 	sides.data[OpaqueMeshDataOffset + currentFace] = side;
+#if FACE_IDS == 1
+	uint voxel = (gl_GlobalInvocationID.z * uint(DispatchSize.y) + gl_GlobalInvocationID.y)
+	    * uint(DispatchSize.x) + gl_GlobalInvocationID.x;
+	faceIds.data[OpaqueMeshDataOffset + currentFace] = voxel * 6u + uint(index);
+#endif
 #endif
 }
 
-void createCube(float x, float y, float z, float cubeRadius, float brightness, float fade, LayerGroup group)
+void createCube(float x, float y, float z, float cubeRadius, float brightness, float fade, LayerGroup group, int regionId)
 {
 	vec3 pos = vec3(x, y, z);
 	vec3 norm = normalize(pos - Origin);
@@ -321,18 +367,76 @@ void createCube(float x, float y, float z, float cubeRadius, float brightness, f
 	if ((TestFacesFacingAway || dot(norm, vec3(0.0, 1.0, 0.0)) <= 0.0) && (!isPosValid(x, y + Scale, z, group, fade) || shouldNotOcclude(3)))
 		createFace(center, cubeRadius, 3, brightness);
 	//-X
-	if ((TestFacesFacingAway || dot(norm, vec3(-1.0, 0.0, 0.0)) <= 0.0) && (!isPosValid(x - Scale, y, z, -1, 0) || shouldNotOcclude(0)))
+	if ((TestFacesFacingAway || dot(norm, vec3(-1.0, 0.0, 0.0)) <= 0.0) && (!isPosValid(x - Scale, y, z, -1, 0, regionId) || shouldNotOcclude(0)))
 		createFace(center, cubeRadius, 0, brightness);
 	//+X
-	if ((TestFacesFacingAway || dot(norm, vec3(1.0, 0.0, 0.0)) <= 0.0) && (!isPosValid(x + Scale, y, z, 1, 0) || shouldNotOcclude(1)))
+	if ((TestFacesFacingAway || dot(norm, vec3(1.0, 0.0, 0.0)) <= 0.0) && (!isPosValid(x + Scale, y, z, 1, 0, regionId) || shouldNotOcclude(1)))
 		createFace(center, cubeRadius, 1, brightness);
 	//-Z
-	if ((TestFacesFacingAway || dot(norm, vec3(0.0, 0.0, -1.0)) <= 0.0) && (!isPosValid(x, y, z - Scale, 0, -1) || shouldNotOcclude(4)))
+	if ((TestFacesFacingAway || dot(norm, vec3(0.0, 0.0, -1.0)) <= 0.0) && (!isPosValid(x, y, z - Scale, 0, -1, regionId) || shouldNotOcclude(4)))
 		createFace(center, cubeRadius, 4, brightness);
 	//+Z
-	if ((TestFacesFacingAway || dot(norm, vec3(0.0, 0.0, 1.0)) <= 0.0) && (!isPosValid(x, y, z + Scale, 0, 1) || shouldNotOcclude(5)))
+	if ((TestFacesFacingAway || dot(norm, vec3(0.0, 0.0, 1.0)) <= 0.0) && (!isPosValid(x, y, z + Scale, 0, 1, regionId) || shouldNotOcclude(5)))
 		createFace(center, cubeRadius, 5, brightness);
 }
+
+#if SHARED_OCCUPANCY == 1
+shared uint workgroupOccupied[${LOCAL_SIZE_X} * ${LOCAL_SIZE_Y} * ${LOCAL_SIZE_Z}];
+shared uint workgroupRegion[${LOCAL_SIZE_X} * ${LOCAL_SIZE_Y} * ${LOCAL_SIZE_Z}];
+
+bool isNeighborValidShared(float x, float y, float z, ivec3 delta,
+                           LayerGroup group, float fade, int owningRegionId)
+{
+    ivec3 localNeighbor = ivec3(gl_LocalInvocationID) + delta;
+    ivec3 globalNeighbor = ivec3(gl_GlobalInvocationID) + delta;
+    if (all(greaterThanEqual(localNeighbor, ivec3(0)))
+            && all(lessThan(localNeighbor, LOCAL_SIZE_I))
+            && all(greaterThanEqual(globalNeighbor, ivec3(0)))
+            && all(lessThan(globalNeighbor, DispatchSize)))
+    {
+        uint index = uint((localNeighbor.z * LOCAL_SIZE_I.y + localNeighbor.y)
+                * LOCAL_SIZE_I.x + localNeighbor.x);
+        if (delta.y == 0 && workgroupRegion[index] != uint(owningRegionId + 1))
+            return false;
+        return workgroupOccupied[index] != 0u;
+    }
+    if (delta.y != 0)
+        return isPosValid(x, y, z, group, fade);
+    return isPosValid(x, y, z, delta.x, delta.z, owningRegionId);
+}
+
+void createCubeShared(float x, float y, float z, float cubeRadius,
+                      float brightness, float fade, LayerGroup group, int regionId)
+{
+    vec3 pos = vec3(x, y, z);
+    vec3 norm = normalize(pos - Origin);
+    vec3 center = pos + cubeRadius;
+    if ((TestFacesFacingAway || dot(norm, vec3(0.0, -1.0, 0.0)) <= 0.0)
+            && (!isNeighborValidShared(x, y - Scale, z, ivec3(0, -1, 0), group, fade, regionId)
+                || shouldNotOcclude(2)))
+        createFace(center, cubeRadius, 2, brightness);
+    if ((TestFacesFacingAway || dot(norm, vec3(0.0, 1.0, 0.0)) <= 0.0)
+            && (!isNeighborValidShared(x, y + Scale, z, ivec3(0, 1, 0), group, fade, regionId)
+                || shouldNotOcclude(3)))
+        createFace(center, cubeRadius, 3, brightness);
+    if ((TestFacesFacingAway || dot(norm, vec3(-1.0, 0.0, 0.0)) <= 0.0)
+            && (!isNeighborValidShared(x - Scale, y, z, ivec3(-1, 0, 0), group, fade, regionId)
+                || shouldNotOcclude(0)))
+        createFace(center, cubeRadius, 0, brightness);
+    if ((TestFacesFacingAway || dot(norm, vec3(1.0, 0.0, 0.0)) <= 0.0)
+            && (!isNeighborValidShared(x + Scale, y, z, ivec3(1, 0, 0), group, fade, regionId)
+                || shouldNotOcclude(1)))
+        createFace(center, cubeRadius, 1, brightness);
+    if ((TestFacesFacingAway || dot(norm, vec3(0.0, 0.0, -1.0)) <= 0.0)
+            && (!isNeighborValidShared(x, y, z - Scale, ivec3(0, 0, -1), group, fade, regionId)
+                || shouldNotOcclude(4)))
+        createFace(center, cubeRadius, 4, brightness);
+    if ((TestFacesFacingAway || dot(norm, vec3(0.0, 0.0, 1.0)) <= 0.0)
+            && (!isNeighborValidShared(x, y, z + Scale, ivec3(0, 0, 1), group, fade, regionId)
+                || shouldNotOcclude(5)))
+        createFace(center, cubeRadius, 5, brightness);
+}
+#endif
 
 // ----- Transparent -----
 
@@ -358,22 +462,103 @@ void createTransparentCube(float x, float y, float z, float cubeRadius, float br
 #elif FIXED_SECTION_SIZE == 1
 	cubesTransparent.data[TransparentMeshDataOffset + currentCube] = cube;
 #endif
+#if FACE_IDS == 1
+	uint voxel = (gl_GlobalInvocationID.z * uint(DispatchSize.y) + gl_GlobalInvocationID.y)
+		* uint(DispatchSize.x) + gl_GlobalInvocationID.x;
+#if FIXED_SECTION_SIZE == 0
+	transparentCubeIds.data[currentCube] = voxel;
+#elif FIXED_SECTION_SIZE == 1
+	transparentCubeIds.data[TransparentMeshDataOffset + currentCube] = voxel;
+#endif
+#endif
 }
 
 #endif
 
 // -----------------------
 
-void main() 
+#if SHARED_OCCUPANCY == 1
+void main()
 {
+    bool inVolume = all(lessThan(gl_GlobalInvocationID, uvec3(DispatchSize)));
     vec3 id = gl_GlobalInvocationID;
     float x = id.x * Scale + RenderOffset.x;
     float y = id.y * Scale + RenderOffset.y;
     float z = id.z * Scale + RenderOffset.z;
-    
+    uint regionId = 0u;
+    LayerGroup group = layerGroupings.data[0];
+    float fade = 0.0;
+    bool hasRegion = inVolume;
+
 #if TYPE == 0
-	vec2 texelCoord = gl_GlobalInvocationID.xz + RegionSampleOffset;
-    vec4 info = texture(RegionsSampler, vec3(texelCoord / RegionsTexSize, float(LodLevel)));
+    if (inVolume)
+    {
+        ivec2 texelCoord = ivec2(gl_GlobalInvocationID.xz) + ivec2(RegionSampleOffset);
+        vec4 info = texelFetch(RegionsSampler, ivec3(texelCoord, LodLevel), 0);
+        hasRegion = info.r >= 0.0;
+        if (hasRegion)
+        {
+            regionId = uint(info.r);
+            group = layerGroupings.data[regionId];
+            fade = -5.0 * pow(1.0 - info.g, 10.0);
+#if FADE_NEAR_ORIGIN == 1
+            float len = distance(vec2(x, z), Origin.xz);
+            fade = min(fade, -5.0 * (1.0 - min(max(len - FadeStart, 0.0) / (FadeEnd - FadeStart), 1.0)));
+#endif
+        }
+    }
+#elif TYPE == 1
+    if (inVolume)
+    {
+        float len = distance(vec2(x, z), Origin.xz);
+        fade = -5.0 * min(max(len - FadeStart, 0.0) / (FadeEnd - FadeStart), 1.0);
+    }
+#endif
+
+    vec3 gradient = vec3(0.0);
+    float noise = hasRegion ? getNoiseForLayerGroup(group, x, y, z, gradient) + fade : -10000.0;
+    workgroupOccupied[gl_LocalInvocationIndex] = hasRegion && noise > 0.0 ? 1u : 0u;
+    workgroupRegion[gl_LocalInvocationIndex] = hasRegion ? regionId + 1u : 0u;
+    // Every invocation, including out-of-volume lanes, must reach this barrier.
+    barrier();
+    if (!hasRegion) return;
+
+    float storminess = clamp(group.Storminess + fade * 0.1, 0.0, 1.0);
+    float brightness = clamp(1.0 - storminess * (1.0 - clamp((y - group.StormStart) / group.StormFadeDistance, 0.0, 1.0)), 0.0, 1.0);
+#if STYLE == 1
+    gradient = normalize(gradient);
+    float strength = dot(gradient, SHADE_DIRECTION) * 0.5 + 0.5;
+    brightness = clamp(brightness - strength * 0.1, 0.0, 1.0);
+#endif
+    if (noise > 0.0)
+    {
+        createCubeShared(x, y, z, Scale / 2.0, brightness, fade, group, int(regionId));
+    }
+#if TRANSPARENCY == 1
+    else if (group.TransparencyFade > 0.01 && noise > -group.TransparencyFade && noise < 0.0)
+    {
+        float length = distance(vec2(x, z), Origin.xz);
+        if (length < TransparencyDistance)
+        {
+            float alpha = 1.0 / group.TransparencyFade * (noise + group.TransparencyFade);
+            createTransparentCube(x, y, z, Scale / 2.0, brightness, alpha);
+        }
+    }
+#endif
+}
+#else
+void main()
+{
+    if (any(greaterThanEqual(gl_GlobalInvocationID, uvec3(DispatchSize)))) return;
+    vec3 id = gl_GlobalInvocationID;
+    float x = id.x * Scale + RenderOffset.x;
+    float y = id.y * Scale + RenderOffset.y;
+    float z = id.z * Scale + RenderOffset.z;
+
+#if TYPE == 0
+	ivec2 texelCoord = ivec2(gl_GlobalInvocationID.xz) + ivec2(RegionSampleOffset);
+    vec4 info = texelFetch(RegionsSampler, ivec3(texelCoord, LodLevel), 0);
+    if (info.r < 0.0) return;
     uint regionId = uint(info.r);
     LayerGroup group = layerGroupings.data[regionId];
     float fade = -5.0 * pow(1.0 - info.g, 10.0);
@@ -383,6 +568,7 @@ void main()
 #endif
 #elif TYPE == 1
 	LayerGroup group = layerGroupings.data[0];
+	uint regionId = 0u;
 	float len = distance(vec2(x, z), Origin.xz);
 	float fade = -5.0 * min(max(len - FadeStart, 0.0) / (FadeEnd - FadeStart), 1.0);
 #endif
@@ -397,17 +583,18 @@ void main()
 #endif
     if (noise > 0.0)
     {
-    	createCube(x, y, z, Scale / 2.0, brightness, fade, group);
+		createCube(x, y, z, Scale / 2.0, brightness, fade, group, int(regionId));
     }
 #if TRANSPARENCY == 1
     else if (group.TransparencyFade > 0.01 && noise > -group.TransparencyFade && noise < 0.0)
     {
-   		float length = distance(vec2(x, z), Origin.xz);
-   		if (length < TransparencyDistance)
-   		{
-   			float alpha = 1.0 / group.TransparencyFade * (noise + group.TransparencyFade);
-    		createTransparentCube(x, y, z, Scale / 2.0, brightness, alpha);
-   		}
+		float length = distance(vec2(x, z), Origin.xz);
+		if (length < TransparencyDistance)
+		{
+			float alpha = 1.0 / group.TransparencyFade * (noise + group.TransparencyFade);
+		createTransparentCube(x, y, z, Scale / 2.0, brightness, alpha);
+		}
     }
 #endif
 }
+#endif

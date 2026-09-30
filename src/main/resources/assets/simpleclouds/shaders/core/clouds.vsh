@@ -52,6 +52,7 @@ vec3 sideNormal(int side)
 }
 
 #include <simpleclouds:cloud_faces.glsl>
+#include <simpleclouds:cloud_cell_clip.glsl>
 
 vec4 mixLight(vec3 lightDir0, vec3 lightDir1, vec3 normal, vec4 color)
 {
@@ -82,4 +83,5 @@ void main()
 	{
 		vertexColor = finalCol;
 	}
+	if (!cloudCellInsideClip(SidePos.xz)) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
 }

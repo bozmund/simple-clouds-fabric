@@ -13,10 +13,12 @@ import dev.nonamecrackers2.simpleclouds.common.command.CloudCommandSource;
 import dev.nonamecrackers2.simpleclouds.common.command.CloudCommands;
 import dev.nonamecrackers2.simpleclouds.common.config.SimpleCloudsConfig;
 import dev.nonamecrackers2.simpleclouds.common.config.SimpleCloudsConfigLoader;
+import dev.nonamecrackers2.simpleclouds.common.config.SimpleCloudsConfigListeners;
 import dev.nonamecrackers2.simpleclouds.common.packet.impl.SendCloudTypesPacket;
 import dev.nonamecrackers2.simpleclouds.common.world.CloudManager;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.fabricmc.fabric.api.resource.ResourceManagerHelper;
 import net.fabricmc.fabric.api.resource.v1.reloader.SimpleReloadListener;
@@ -36,7 +38,7 @@ import nonamecrackers2.crackerslib.common.command.ConfigCommandBuilder;
  * - Reload listeners (SynchronousResourceReloadListener)
  * - Datapack sync (ServerPlayConnectionEvents / ServerLifecycleEvents)
  *
- * Deferred (TODO):
+ * Server mixin hooks:
  * - Sleeping during thunder (PlayerSleepEvent equivalent)
  * - Removing storms after sleeping
  */
@@ -46,27 +48,30 @@ public class SimpleCloudsEvents
 
 	public static void register()
 	{
-		// Command registration — DEFERRED in the 26.2 vertical slice.
-		// The new command backend serializes every custom Brigadier argument type when
-		// sending the command tree to players (ClientboundCommandsPacket →
-		// ArgumentTypeInfos.unpack), and only vanilla-bootstrapped types are recognized.
-		// Our CloudTypeArgument/EnumArgument would therefore kill player joins. Port the
-		// argument types via a bootstrap mixin (or string-arg + manual validation) later;
-		// commands are not required for the cloud rendering vertical slice.
-		//
-		// CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) ->
-		// {
-		// 	ConfigCommandBuilder.builder(dispatcher, SimpleCloudsMod.MODID)
-		// 			.addSpec(ModConfig.Type.SERVER, SimpleCloudsConfig.SERVER_SPEC)
-		// 			.addSpec(ModConfig.Type.COMMON, SimpleCloudsConfig.COMMON_SPEC)
-		// 			.register();
-		// 	CloudCommands.register(dispatcher, "clouds", src -> true, CloudCommandSource.SERVER, CloudTypeDataManager.getServerInstance());
-		// });
+		// Custom cloud argument is registered by the common entrypoint before this callback.
+		CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) ->
+				CloudCommands.register(dispatcher, "clouds",
+						net.minecraft.commands.Commands.hasPermission(net.minecraft.commands.Commands.LEVEL_GAMEMASTERS),
+						CloudCommandSource.SERVER, CloudTypeDataManager.getServerInstance()));
+		// ConfigCommandBuilder still needs its server-side port; do not register its
+		// client-only custom argument tree here.
 
 		// Config loading: Forge's addSpec (deferred with the commands above) used to make
 		// Forge load + bind these specs; on Fabric we do it explicitly so isLoaded() works
 		// and ConfigValue.get() doesn't throw on player join.
 		ServerLifecycleEvents.SERVER_STARTING.register(server -> SimpleCloudsConfigLoader.loadServerConfigs());
+		ServerLifecycleEvents.SERVER_STARTED.register(SimpleCloudsConfigListeners::setCurrentServer);
+		ServerLifecycleEvents.SERVER_STOPPED.register(server -> SimpleCloudsConfigListeners.setCurrentServer(null));
+		ServerTickEvents.END_SERVER_TICK.register(SimpleCloudsConfigListeners::tick);
+		ServerLifecycleEvents.END_DATA_PACK_RELOAD.register((server, resources, success) -> {
+			if (!success)
+				return;
+			server.execute(() -> {
+				SendCloudTypesPacket packet = new SendCloudTypesPacket(CloudTypeDataManager.getServerInstance());
+				for (ServerPlayer player : server.getPlayerList().getPlayers())
+					ServerPlayNetworking.send(player, packet);
+			});
+		});
 
 		// Reload listeners: register the data managers directly so cloud types + spawning
 		// config load on server start and on /reload. The spawning manager depends on the
@@ -85,7 +90,7 @@ public class SimpleCloudsEvents
 		});
 	}
 
-	// Deferred: sleeping during thunder
+	// Called by MixinServerPlayer for the bed's night/weather condition only.
 	public static boolean allowSleepingDuringThunderClouds(Player player)
 	{
 		CloudManager<?> manager = CloudManager.get(player.level());
@@ -100,7 +105,7 @@ public class SimpleCloudsEvents
 		return false;
 	}
 
-	// Deferred: removing storms after sleeping
+	// Called by MixinServerLevel only after collective deep sleep succeeds.
 	public static void removeStormsAfterSleeping(LevelAccessor levelAccessor)
 	{
 		if (levelAccessor instanceof ServerLevel level)

@@ -1,0 +1,20 @@
+#version 430
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) readonly buffer FaceIds {
+    uint ids[];
+};
+layout(std430, binding = 1) buffer FacePresence {
+    uint words[];
+};
+
+uniform uint FaceCount;
+uniform uint MaxId;
+
+void main() {
+    uint at = gl_GlobalInvocationID.x;
+    if (at >= FaceCount) return;
+    uint id = ids[at];
+    if (id >= MaxId) return;
+    atomicOr(words[id >> 5], 1u << (id & 31u));
+}

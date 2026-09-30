@@ -31,7 +31,11 @@ void main()
 {
 	float fade = ColorModulator.a;
 	float r = texture(BayerMatrixSampler, gl_FragCoord.xy * DitherScale).r;
-	if (fade < r) discard;
+	// Negative values below -2 encode the complementary mask of a departing
+	// chunk: each Bayer cell shows either the old or new voxel, not both.
+	if (fade <= -2.0) {
+		if (r < -fade - 2.0) discard;
+	} else if (fade < r) discard;
 
 	vec4 color = vertexColor * vec4(ColorModulator.rgb, 1.0);
 	color = mix(color, FogColor, smoothstep(FogStart, FogEnd, fogDistance));

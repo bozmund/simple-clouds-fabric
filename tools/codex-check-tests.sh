@@ -2,10 +2,12 @@
 set -euo pipefail
 cd "$(cd "$(dirname "$0")/.." && pwd)"
 while IFS= read -r -d '' kv; do export "$kv"; done < /home/jan/.cache/simpleclouds/launch.env
-MC=/home/jan/.gradle/caches/fabric-loom/minecraftMaven/net/minecraft/minecraft-merged-deobf/26.2/minecraft-merged-deobf-26.2.jar
-CP="build/classes/java/main:build/resources/main:$MC"
-while IFS= read -r -d '' jar; do CP="$CP:$jar"; done < <(find /home/jan/.gradle/caches/modules-2/files-2.1 -type f \( -name 'log4j-*.jar' -o -name 'joml-*.jar' -o -name 'fastutil-*.jar' -o -name 'slf4j-*.jar' -o -name 'guava-*.jar' -o -name 'gson-*.jar' \) -print0)
-for test in PsrdNoiseTest CpuChunkSeamTest CpuEmptyChunkTest ChunkBufferPoolTest ChunkGenerationKeyTest ShaderFaceTest StormCoverageTest StormFogMapTest; do
+MC_VERSION=$(sed -n 's/^minecraft_version=//p' gradle.properties | tr -d '\r')
+MC="/home/jan/.gradle/caches/fabric-loom/minecraftMaven/net/minecraft/minecraft-merged-deobf/$MC_VERSION/minecraft-merged-deobf-$MC_VERSION.jar"
+test -f "$MC" || { echo "Missing Minecraft $MC_VERSION test dependency: $MC" >&2; exit 1; }
+./gradlew --no-daemon --max-workers=8 -q -I tools/test-classpath.gradle classes writeParityClasspath
+CP="$(<build/parity-classpath.txt):$MC"
+for test in CloudRefreshScheduleTest CloudMixedLodCoverageProbe StormFragmentCoverageTest CloudFaceCoverageTest CloudWorldCoverageTest CloudRelocationParityTest CloudGridTransitionTest KeyMappingMigrationTest ClientCoordinatesTest CloudArgumentWireTest CloudCommandTreeTest CloudSyncPositionTest EventBusTest PreviewCameraTest PreviewSelectionTest CloudTypeSelectionTest RainSoundTest CloudMotionProbe CloudScrollSmootherTest CloudFaceDeltaTest WeatherStateTest LocalWeatherClassificationTest LightningBatchTest PrecipitationParityTest TransparencyBoundaryTest PsrdNoiseTest CpuChunkSeamTest CpuEmptyChunkTest RegionNoiseCacheTest ChunkBufferPoolTest ChunkGenerationKeyTest ShaderFaceTest StormCoverageTest StormFogMapTest; do
   echo "RUN $test"
   java -cp "$CP" "$test.java"
 done

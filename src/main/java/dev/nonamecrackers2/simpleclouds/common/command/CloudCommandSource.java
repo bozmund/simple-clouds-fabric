@@ -59,12 +59,23 @@ public interface CloudCommandSource<S extends Level, T extends CloudManager<S>>
 	}
 
 	
-	/** 26.2: vanilla Vec2 getters are bound to CommandSourceStack; client contexts resolve via the same path. */
+	/** Vanilla parses the coordinates on both sides; resolve against the actual source position. */
 	static <C> Vec2 getVec2Arg(CommandContext<C> context, String name) throws CommandSyntaxException
 	{
 		if (context.getSource() instanceof CommandSourceStack)
 			return Vec2Argument.getVec2((CommandContext<CommandSourceStack>)(CommandContext<?>)context, name);
-		throw new UnsupportedOperationException("Vec2 arguments require a server command source");
+		if (context.getSource() instanceof FabricClientCommandSource client)
+		{
+			var coordinates = context.getArgument(name, net.minecraft.commands.arguments.coordinates.WorldCoordinates.class);
+			return resolveClientVec2(coordinates, client.getPosition());
+		}
+		throw new UnsupportedOperationException("Unsupported command source: " + context.getSource());
+	}
+
+	static Vec2 resolveClientVec2(net.minecraft.commands.arguments.coordinates.WorldCoordinates coordinates,
+			net.minecraft.world.phys.Vec3 position)
+	{
+		return new Vec2((float)coordinates.x().get(position.x), (float)coordinates.z().get(position.z));
 	}
 
 	static <C> void sendError(C source, Component message)
@@ -245,7 +256,7 @@ public interface CloudCommandSource<S extends Level, T extends CloudManager<S>>
 		}
 	}
 	
-	default int spawnModifiedCloud(CommandContext<FabricClientCommandSource> context, Function<CloudSpawningConfig.Info, SpawnInfo> func) throws CommandSyntaxException
+	default <C> int spawnModifiedCloud(CommandContext<C> context, Function<CloudSpawningConfig.Info, SpawnInfo> func) throws CommandSyntaxException
 	{
 		T manager = this.getCloudManager(context);
 		CloudGenerator generator = manager.getCloudGenerator();
@@ -300,7 +311,7 @@ public interface CloudCommandSource<S extends Level, T extends CloudManager<S>>
 		return type.weatherType().ordinal() + 1;
 	}
 	
-	default int getCloudTypeCount(CommandContext<FabricClientCommandSource> context, boolean inRegion, boolean withRadius) throws CommandSyntaxException
+	default <C> int getCloudTypeCount(CommandContext<C> context, boolean inRegion, boolean withRadius) throws CommandSyntaxException
 	{
 		T manager = this.getCloudManager(context);
 		CloudGenerator generator = manager.getCloudGenerator();
@@ -327,7 +338,7 @@ public interface CloudCommandSource<S extends Level, T extends CloudManager<S>>
 		return size;
 	}
 	
-	default int clearClouds(CommandContext<FabricClientCommandSource> context, Predicate<CloudRegion> region) throws CommandSyntaxException
+	default <C> int clearClouds(CommandContext<C> context, Predicate<CloudRegion> region) throws CommandSyntaxException
 	{
 		T manager = this.getCloudManager(context);
 		CloudGenerator generator = manager.getCloudGenerator();

@@ -159,9 +159,18 @@ public class LightningBolt
 	 */
 	public int renderInto(float[] out, float partialTick, float r, float g, float b, float a)
 	{
+		return this.renderInto(out, 0, partialTick, r, g, b, a);
+	}
+
+	/** Appends one complete bolt without overwriting any preceding bolts. */
+	public int renderInto(float[] out, int offset, float partialTick, float r, float g, float b, float a)
+	{
 		float alpha = Mth.lerp(partialTick, this.fadeO, this.fade) * a;
 		if (alpha <= 0.01F)
 			return 0;
+		int required = this.renderFloatCount(partialTick);
+		if (offset < 0 || offset > out.length - required)
+			throw new IllegalArgumentException("Lightning output buffer is too small");
 
 		int written = 0;
 		float animFactor = ((float) this.tickCount + partialTick) / (float) BRANCH_SEQUENCE_FADE_DURATION;
@@ -169,8 +178,30 @@ public class LightningBolt
 		// World-space: the bolt's origin is at `position`; the caller's view matrix does the camera transform.
 		Matrix4f camera = new Matrix4f().translate(this.position.x, this.position.y, this.position.z);
 		for (Branch branch : this.root)
-			written += renderBranch(maxRenderDepth, 0, new Vector3f(), camera, out, written, r * this.r, g * this.g, b * this.b, alpha, branch);
+			written += renderBranch(maxRenderDepth, 0, new Vector3f(), camera, out, offset + written, r * this.r, g * this.g, b * this.b, alpha, branch);
 		return written;
+	}
+
+	/** Exact upper bound for the current animated branch tree, in floats. */
+	public int renderFloatCount(float partialTick)
+	{
+		int depth = Mth.floor(this.totalDepth * ((this.tickCount + partialTick) / BRANCH_SEQUENCE_FADE_DURATION));
+		int count = 0;
+		for (Branch branch : this.root)
+			count = Math.addExact(count, countBranch(branch, depth));
+		return count;
+	}
+
+	private static int countBranch(Branch branch, int depth)
+	{
+		if (depth < 0) return 0;
+		int count = 0;
+		for (int layer = 0; layer < 4; layer++)
+			if (branch.width - 4.0F * (branch.width / 4.0F) * (layer / 4.0F) > 0.05F)
+				count += VERTS_PER_SECTION * FLOATS_PER_VERTEX;
+		for (Branch child : branch.branches)
+			count = Math.addExact(count, countBranch(child, depth - 1));
+		return count;
 	}
 
 	private int renderBranch(int maxDepth, int currentDepth, Vector3f offset, Matrix4f mat, float[] out, int offsetI, float r, float g, float b, float a, Branch branch)

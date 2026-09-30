@@ -38,12 +38,15 @@ import dev.nonamecrackers2.simpleclouds.common.noise.StaticNoiseSettings;
 import dev.nonamecrackers2.simpleclouds.client.renderer.pipeline.CloudsRenderPipeline;
 import dev.nonamecrackers2.simpleclouds.client.renderer.settings.CloudsRendererSettings;
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudsDrawPipeline;
+import dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudWorldCoverage;
+import dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudFaceCoverage;
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudVertexFormat;
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.ChunkBufferPool;
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.CpuCloudGenerator;
 import dev.nonamecrackers2.simpleclouds.client.FogColorCapturer;
 import dev.nonamecrackers2.simpleclouds.common.world.CloudManager;
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.GpuCloudGeneration;
+import dev.nonamecrackers2.simpleclouds.client.renderer.v2.GpuStormColumns;
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.PreviewDrawPipeline;
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.RainDrawPipeline;
 import dev.nonamecrackers2.simpleclouds.client.world.ClientCloudManager;
@@ -210,10 +213,28 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	 * parameters to the cube_mesh.comp compute shader's per-type LayerGroups; the CPU
 	 * generator consumes them here.)
 	 */
+	private static CloudType[] selectedCloudTypes()
+	{
+		CloudType[] available = ClientSideCloudTypeManager.getInstance().getIndexedCloudTypes();
+		var level = Minecraft.getInstance().level;
+		if (level == null) return available;
+		var manager = CloudManager.get(level);
+		if (manager == null) return available;
+		return dev.nonamecrackers2.simpleclouds.client.cloud.CloudTypeSelection.select(
+				manager.getCloudMode(), manager.getSingleModeCloudTypeRawId(), available,
+				ClientCloudManager.isAvailableServerSide());
+	}
+
 	public static List<CpuCloudGenerator.CloudLayerGroup> dataDrivenGroups()
 	{
+		return dataDrivenGroups(selectedCloudTypes());
+	}
+
+	/** Explicit source for previews, independent of the world's current cloud mode. */
+	public static List<CpuCloudGenerator.CloudLayerGroup> dataDrivenGroups(CloudType[] types)
+	{
 		List<CpuCloudGenerator.CloudLayerGroup> out = new java.util.ArrayList<>();
-		for (CloudType type : ClientSideCloudTypeManager.getInstance().getIndexedCloudTypes())
+		for (CloudType type : types)
 		{
 			if (!hasRenderableLayers(type))
 				continue;
@@ -267,7 +288,7 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	{
 		java.util.Map<net.minecraft.resources.Identifier, Integer> out = new java.util.HashMap<>();
 		int i = 0;
-		for (CloudType type : ClientSideCloudTypeManager.getInstance().getIndexedCloudTypes())
+		for (CloudType type : selectedCloudTypes())
 		{
 			if (hasRenderableLayers(type))
 				out.put(type.id(), i++);
@@ -280,10 +301,18 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	 * region upload): the partial-tick position/radius + rotation/stretch transform, in
 	 * cloud units (8 world blocks), tied to the formation's type group.
 	 */
+	private boolean usesRegionMasks()
+	{
+		return this.cloudManager == null || this.cloudManager.getCloudMode()
+				!= dev.nonamecrackers2.simpleclouds.api.common.cloud.CloudMode.SINGLE;
+	}
+
 	private List<CpuCloudGenerator.RegionMask> buildRegionMasks(java.util.Map<net.minecraft.resources.Identifier, Integer> typeToGroup, float partialTick)
 	{
 		if (this.cloudManager == null)
 			return List.of();
+		if (this.cloudManager.getCloudMode() == dev.nonamecrackers2.simpleclouds.api.common.cloud.CloudMode.SINGLE)
+			return List.of(); // Infinite selected type; ignore leftover multi-region cells.
 		var clouds = this.cloudManager.getClouds();
 		if (clouds.isEmpty())
 			return List.of();
@@ -308,6 +337,30 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	// centered and snapped to the primary 32-unit grid, so the cache is stable between
 	// grid crossings (the camera moves within a grid cell without invalidating chunks).
 	private final java.util.Map<ChunkCoord, ChunkData> chunkCaches = new java.util.HashMap<>();
+	private final java.util.Map<ChunkCoord, dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudGridTransition.Retained<ChunkCoord, ChunkData>> retainedGridChunks = new java.util.HashMap<>();
+	private int cachedSnapX, cachedSnapZ;
+	// CPU cache entries are indexes, not owners. World fragments own each
+	// shared buffer until its last covered area has actually been replaced.
+	private final CloudWorldCoverage<ChunkCoord, ChunkData> worldCoverage = new CloudWorldCoverage<>(SimpleCloudsRenderer::closeChunk);
+	private final java.util.concurrent.ConcurrentHashMap<ChunkCoord, List<CloudWorldCoverage.Fragment<ChunkData>>> batchWorldSources = new java.util.concurrent.ConcurrentHashMap<>();
+
+	private static CloudWorldCoverage.Rect worldBounds(ChunkCoord coord)
+	{
+		int span = PRIMARY_CHUNK * coord.lodScale();
+		return new CloudWorldCoverage.Rect(coord.x0(), coord.z0(), coord.x0() + span, coord.z0() + span, coord.lodScale());
+	}
+
+	private ChunkData drawableChunk(ChunkCoord coord)
+	{
+		ChunkData exact = this.chunkCaches.get(coord);
+		if (WORLD_COVERAGE)
+		{
+			var fragments = this.worldCoverage.fragments(coord);
+			return exact != null ? exact : fragments.isEmpty() ? null : fragments.getFirst().source();
+		}
+		var retained = this.retainedGridChunks.get(coord);
+		return exact != null ? exact : retained != null ? retained.value() : null;
+	}
 	/** A1: reusable direct buffers for the per-chunk CPU instance data (capped pool;
 	 *  buffers are grown only when a chunk outgrows the borrow, never per call). */
 	private final ChunkBufferPool chunkBufferPool = new ChunkBufferPool();
@@ -335,12 +388,14 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	// drops (the fill is spread over frames, nearest first).
 	private static final int CHUNK_ENQUEUE_BUDGET = 6;
 	private static final int CHUNK_POLL_BUDGET = 12;
-	/** A2: a chunk regenerates when the wind scroll drifts this far (cloud units,
-	 *  1 = 8 world blocks) from the scroll its geometry was sampled with. The
-	 *  original evaluated the noise per frame (GPU compute, Scroll uniform);
-	 *  this is the CPU compromise — the field updates in 8-block steps at whatever
-	 *  rate the worker pool + budgets allow (nearest chunks first). */
-	private static final float SCROLL_REGEN_THRESHOLD = 1.0F;
+	// Development discriminator: after reducing CPU generation cost, the old
+	// six-starts/frame ceiling itself may limit refresh cadence. Keep production
+	// and experimental GPU scheduling unchanged until the higher bound is tested.
+	private static final boolean CPU_BUDGET_PROBE = "1".equals(System.getenv("SIMPLECLOUDS_DEV"))
+			&& "1".equals(System.getenv("SIMPLECLOUDS_CPU_BUDGET_PROBE"));
+	private static final int CPU_ENQUEUE_BUDGET = CPU_BUDGET_PROBE ? 32 : CHUNK_ENQUEUE_BUDGET;
+	private static final int CPU_POLL_BUDGET = CPU_BUDGET_PROBE ? 32 : CHUNK_POLL_BUDGET;
+	private static final int CHUNK_REFRESH_BUDGET = 96;
 	private static final int PRIMARY_CHUNK = 32; // LevelOfDetailConfig primary span (cloud units)
 	private static final int LOD_Y_MIN = 16;     // minimum Y span (cloud units)
 	private static final float CLOUD_SCALE_F = 8.0F;
@@ -349,15 +404,32 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	 *  A1: the instance data lives in persistent PER-CHUNK GPU buffers (created when
 	 *  the chunk is published, freed when the chunk is replaced or leaves the LOD
 	 *  layout) — the old whole-field combined buffer + per-frame rebuild is gone.
-	 *  The CPU copy goes back to the pool right after the GPU upload. */
+	 *  The pooled generation buffers are released after upload; a compact heap
+	 *  copy remains so the next generation can identify unchanged faces. */
 	private static final class ChunkData
 	{
+		ChunkCoord sourceCoord;
+		ChunkData departing;
 		long regionSig;
 		int groupsHash;
 		GpuBuffer opaque;
 		int opaqueCount;
+		GpuBuffer opaqueAdded;
+		int opaqueAddedCount;
+		// Experimental GPU-local opaque transition state for the next generation.
+		GpuBuffer gpuOpaqueRaw;
+		GpuBuffer gpuOpaqueIds;
+		int gpuOpaqueRawCount;
+		GpuBuffer gpuTransparentRaw;
+		GpuBuffer gpuTransparentIds;
+		int gpuTransparentRawCount;
 		GpuBuffer transparent;
 		int transparentCount;
+		GpuBuffer transparentAdded;
+		int transparentAddedCount;
+		byte[] opaqueRaw;
+		byte[] transparentRaw;
+		boolean gpuResidentOnly;
 		float stormCoverage;
 		// Plan item 3: the chunk's storm columns (storm-type cloud above the camera, index
 		// ix * stormZCells + iz) for the spatial storm-fog map.
@@ -368,8 +440,7 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		// game tick at which this data was published; the chunk ramps alpha 0->1 over
 		// five ticks so new content fades in instead of popping.
 		long lastGenTick;
-		// A2: the wind scroll the noise was sampled with (the chunk regenerates when
-		// the scroll drifts more than SCROLL_REGEN_THRESHOLD from this snapshot).
+		// Noise sample time, not a world-space translation of the completed mesh.
 		float genScrollX;
 		float genScrollY;
 		float genScrollZ;
@@ -391,18 +462,134 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	private java.util.concurrent.ExecutorService chunkWorkerPool;
 	private final java.util.concurrent.atomic.AtomicInteger chunkThreadCounter = new java.util.concurrent.atomic.AtomicInteger();
 	private final java.util.ArrayDeque<ChunkJob> batchWaiting = new java.util.ArrayDeque<>();
-	private final java.util.Map<ChunkCoord, ChunkData> batchStaged = new java.util.HashMap<>();
+	// Opt-in development backend. Never enabled by an ordinary profile launch.
+	private static final boolean GPU_WORLD_EXPERIMENT = "1".equals(System.getenv("SIMPLECLOUDS_GPU_WORLD"));
+	// Opt-in diagnostic for sudden visible replacements during a cloud refresh.
+	private static final boolean TRACE_VISUAL_CHURN = "1".equals(System.getenv("SIMPLECLOUDS_TRACE_VISUAL_CHURN"));
+	private static final boolean GPU_DIRECT_OPAQUE_EXPERIMENT = GPU_WORLD_EXPERIMENT
+			&& "1".equals(System.getenv("SIMPLECLOUDS_GPU_DIRECT_OPAQUE"));
+	private static final boolean GPU_DIRECT_TRANSPARENT_EXPERIMENT = GPU_WORLD_EXPERIMENT
+			&& "1".equals(System.getenv("SIMPLECLOUDS_GPU_DIRECT_TRANSPARENT"));
+	private static final boolean GPU_STORM_BITS_EXPERIMENT = GPU_WORLD_EXPERIMENT
+			&& "1".equals(System.getenv("SIMPLECLOUDS_GPU_STORM_BITS"));
+	private static final boolean GPU_NO_READBACK_EXPERIMENT = GPU_DIRECT_OPAQUE_EXPERIMENT
+			&& GPU_DIRECT_TRANSPARENT_EXPERIMENT && GPU_STORM_BITS_EXPERIMENT
+			&& "1".equals(System.getenv("SIMPLECLOUDS_GPU_NO_READBACK"));
+	// CPU and plain GPU-readback sources both have complete heap face records.
+	// Share physical ownership/clipping there. Direct-delta GPU experiments still
+	// require a fragment-aware GPU predecessor path before they can use this.
+	private static final boolean WORLD_COVERAGE = !GPU_WORLD_EXPERIMENT
+			|| (!GPU_DIRECT_OPAQUE_EXPERIMENT && !GPU_DIRECT_TRANSPARENT_EXPERIMENT);
+	private static final boolean GPU_TEST_CPU_FALLBACK = GPU_WORLD_EXPERIMENT
+			&& "1".equals(System.getenv("SIMPLECLOUDS_DEV"))
+			&& "1".equals(System.getenv("SIMPLECLOUDS_GPU_TEST_CPU_FALLBACK"));
+	private static final int MAX_GPU_FACE_IDS = 32 * 256 * 32 * 6;
+	// Development-only concurrency probe; production keeps the bounded four
+	// slots until the larger configurations pass full-pack visual and memory tests.
+	private static final int GPU_WORLD_SLOTS = GPU_WORLD_EXPERIMENT
+			&& "1".equals(System.getenv("SIMPLECLOUDS_DEV"))
+			&& "16".equals(System.getenv("SIMPLECLOUDS_GPU_WORLD_SLOTS")) ? 16
+			: GPU_WORLD_EXPERIMENT && "1".equals(System.getenv("SIMPLECLOUDS_DEV"))
+				&& "8".equals(System.getenv("SIMPLECLOUDS_GPU_WORLD_SLOTS")) ? 8 : 4;
+	private static final int GPU_POST_LIMIT = 8;
+	private static final class GpuSlot
+	{
+		final GpuCloudGeneration generator;
+		@Nullable ChunkJob job;
+		long startedNanos;
+		GpuSlot(GpuCloudGeneration generator) { this.generator = generator; }
+	}
+	private final GpuSlot[] gpuSlots = new GpuSlot[GPU_WORLD_SLOTS];
+	@Nullable private dev.nonamecrackers2.simpleclouds.client.renderer.v2.GpuFaceDelta gpuFaceDelta;
+	private final java.util.Map<ChunkCoord,GpuOpaqueCandidate> pendingGpuOpaque = new java.util.HashMap<>();
+	@Nullable private dev.nonamecrackers2.simpleclouds.client.renderer.v2.GpuTransparentExpansion gpuTransparentExpansion;
+	@Nullable private dev.nonamecrackers2.simpleclouds.client.renderer.v2.GpuFaceDelta gpuTransparentDelta;
+	@Nullable private dev.nonamecrackers2.simpleclouds.client.renderer.v2.GpuStormColumnBits gpuStormBits;
+	private final java.util.Map<ChunkCoord,GpuTransparentCandidate> pendingGpuTransparent = new java.util.HashMap<>();
+	private static final class GpuOpaqueCandidate implements AutoCloseable
+	{
+		final long batch;
+		GpuBuffer raw, ids, stable, added, removed;
+		int rawCount, stableCount, addedCount, removedCount;
+		boolean useGpuDelta;
+		GpuOpaqueCandidate(long batch) { this.batch = batch; }
+		void adoptRawOnly(ChunkData current)
+		{
+			current.gpuOpaqueRaw = this.raw; this.raw = null;
+			current.gpuOpaqueIds = this.ids; this.ids = null;
+			current.gpuOpaqueRawCount = this.rawCount;
+		}
+		void adopt(ChunkData current, ChunkData faded)
+		{
+			this.adoptRawOnly(current);
+			current.opaque = this.stable; this.stable = null;
+			current.opaqueCount = this.stableCount;
+			current.opaqueAdded = this.added; this.added = null;
+			current.opaqueAddedCount = this.addedCount;
+			faded.opaque = this.removed; this.removed = null;
+			faded.opaqueCount = this.removedCount;
+		}
+		@Override public void close()
+		{
+			for (GpuBuffer buffer : new GpuBuffer[] { this.raw, this.ids, this.stable, this.added, this.removed })
+				if (buffer != null) buffer.close();
+			this.raw = this.ids = this.stable = this.added = this.removed = null;
+		}
+	}
+	private static final class GpuTransparentCandidate implements AutoCloseable
+	{
+		final long batch;
+		GpuBuffer raw, ids, stable, added, removed;
+		int rawCount, stableCount, addedCount, removedCount;
+		boolean useGpuDelta;
+		GpuTransparentCandidate(long batch) { this.batch = batch; }
+		void adoptRawOnly(ChunkData current)
+		{
+			current.gpuTransparentRaw = this.raw; this.raw = null;
+			current.gpuTransparentIds = this.ids; this.ids = null;
+			current.gpuTransparentRawCount = this.rawCount;
+		}
+		void adopt(ChunkData current, ChunkData faded)
+		{
+			this.adoptRawOnly(current);
+			current.transparent = this.stable; this.stable = null;
+			current.transparentCount = this.stableCount;
+			current.transparentAdded = this.added; this.added = null;
+			current.transparentAddedCount = this.addedCount;
+			faded.transparent = this.removed; this.removed = null;
+			faded.transparentCount = this.removedCount;
+		}
+		@Override public void close()
+		{
+			for (GpuBuffer buffer : new GpuBuffer[] { this.raw, this.ids, this.stable, this.added, this.removed })
+				if (buffer != null) buffer.close();
+			this.raw = this.ids = this.stable = this.added = this.removed = null;
+		}
+	}
+	@Nullable private java.util.concurrent.ExecutorService gpuPostPool;
+	private final java.util.concurrent.atomic.AtomicInteger gpuPostPending = new java.util.concurrent.atomic.AtomicInteger();
+	private boolean gpuWorldFailed;
+	private long gpuOnlyCompleted;
 	private final java.util.Set<ChunkCoord> batchExpected = new java.util.HashSet<>();
+	private final java.util.Map<ChunkCoord, ChunkData> batchDeltaSources = new java.util.HashMap<>();
+	private boolean batchInProgress;
 	private long batchId;
 	private long publishedBatchCount;
+	private long batchStartedNanos;
+	private long lastPublishedNanos;
+	private int lastLoggedGenerationConfig = Integer.MIN_VALUE;
+	private long lastUnpausedGameTick;
+	private float lastUnpausedPartialTick;
+	private long initialSyncWaitStartedTick = Long.MIN_VALUE;
+	private boolean initialSyncTimeoutLogged;
+	private boolean initialFieldRevealed;
+	private long initialFieldWaitStartedTick = Long.MIN_VALUE;
+	private long initialFieldRevealTick;
+	private long summaryPublishedBatches;
+	private long summaryBatchDurationNanos;
+	private long summaryLongestBatchNanos;
+	private long summaryLongestPublishGapNanos;
 	private final java.util.Map<ChunkCoord, ChunkData> previousBatch = new java.util.HashMap<>();
-	private long transitionStartedNanos;
-	private static final long TRANSITION_NANOS = 300_000_000L;
-
-	private float transitionProgress()
-	{
-		return Math.min(1.0F, (System.nanoTime() - this.transitionStartedNanos) / (float)TRANSITION_NANOS);
-	}
 	private boolean batchFailed;
 	private long retryBatchAfterNanos;
 	private boolean hasScrollPhase;
@@ -415,6 +602,18 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	private long worstFrameNanos;
 	private long summaryQueued, summaryCompleted, summaryUploadBytes, summaryGenerationNanos;
 	private long summaryMissing, summaryMask, summaryScroll, summaryConfig, summaryFailed;
+	private final long[] summaryQueuedHeight = new long[4];
+	private long summaryChangedFaces;
+	private long summaryMaxChangedFacesInFrame;
+	private int summaryMaxReplacedInFrame;
+	private long summarySupersededFades, summaryInterruptedFades;
+	private long summaryGpuSubmitNanos, summaryGpuReadbackNanos, summaryUploadNanos;
+	private long summaryGpuSubmits, summaryGpuReadbacks, summaryUploads;
+	private long summaryGpuOpaqueBytes, summaryGpuTransparentBytes, summaryGpuEmptyChunks;
+	private long summaryGpuDirectOpaque, summaryGpuDirectFallback;
+	private long summaryGpuDirectTransparent, summaryGpuTransparentFallback;
+	private final java.util.concurrent.atomic.AtomicLong summaryGpuPostNanos = new java.util.concurrent.atomic.AtomicLong();
+	private final java.util.concurrent.atomic.AtomicLong summaryGpuPostJobs = new java.util.concurrent.atomic.AtomicLong();
 
 	/** One off-thread chunk generation request (immutable inputs). x0/y0/z0/x1/y1/z1
 	 *  are the chunk bounds in CLOUD UNITS; lodScale is the cube/grid spacing (cloud
@@ -422,9 +621,10 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	 *  camera height in cloud units above cloudHeight (negative below the clouds). */
 	private record ChunkJob(ChunkCoord coord, int x0, int y0, int z0, int x1, int y1, int z1, int lodScale,
 			List<CpuCloudGenerator.CloudLayerGroup> groups, List<CpuCloudGenerator.RegionMask> regions,
-			long regionSig, int groupsHash, int camGridY, float cloudHeight,
+			boolean regionMode, long regionSig, int groupsHash, int camGridY, float cloudHeight,
 			float scrollX, float scrollY, float scrollZ,
-			float camCloudX, float camCloudZ, long batch)
+			float camCloudX, float camCloudZ, int transparencyDistance, long batch,
+			byte[] previousOpaque, byte[] previousTransparent)
 	{
 	}
 
@@ -435,60 +635,194 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 			java.nio.ByteBuffer transparent, int transparentCount, float stormCoverage,
 			byte[] stormColumns, int stormXCells, int stormZCells,
 			float scrollX, float scrollY, float scrollZ, long regionSig, int groupsHash,
-			long batch, long generationNanos, boolean success)
+			long batch, long generationNanos, boolean success, boolean fromGpu, boolean gpuOnly,
+			dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudFaceDelta.Split opaqueDelta,
+			dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudFaceDelta.Split transparentDelta,
+			@Nullable ChunkJob retryJob)
 	{
 	}
 
 	private void prepareBatch(List<long[]> target, List<CpuCloudGenerator.CloudLayerGroup> groups,
-			List<CpuCloudGenerator.RegionMask> regions, int config, int maxY, int cameraY, int cloudHeight,
-			float sx, float sy, float sz, float cameraX, float cameraZ)
+			List<CpuCloudGenerator.RegionMask> regions, int config, int maxY, int[] groupMaxY,
+			int cameraY, int cloudHeight,
+			float sx, float sy, float sz, float cameraX, float cameraZ, int transparencyDistance,
+			@Nullable Frustum visibleFrustum)
 	{
-		if (!this.previousBatch.isEmpty())
-		{
-			if (this.transitionProgress() < 1.0F) return;
-			this.previousBatch.values().forEach(SimpleCloudsRenderer::closeChunk);
-			this.previousBatch.clear();
-		}
-		if (!this.batchExpected.isEmpty() || !this.batchStaged.isEmpty()
+		if (this.batchInProgress
 				|| System.nanoTime() < this.retryBatchAfterNanos) return;
-		boolean scrollChanged = !this.hasScrollPhase || Math.abs(sx - this.phaseX) > SCROLL_REGEN_THRESHOLD
-				|| Math.abs(sy - this.phaseY) > SCROLL_REGEN_THRESHOLD || Math.abs(sz - this.phaseZ) > SCROLL_REGEN_THRESHOLD;
-		this.batchX = scrollChanged ? (float)Math.floor(sx) : this.phaseX;
-		this.batchY = scrollChanged ? (float)Math.floor(sy) : this.phaseY;
-		this.batchZ = scrollChanged ? (float)Math.floor(sz) : this.phaseZ;
+		// Original compute path samples fractional Scroll on a world-fixed voxel
+		// lattice. Translating a completed mesh moves its region/height boundaries
+		// too, which noise scroll must not do. Do not round the sample time.
+		this.batchX = sx;
+		this.batchY = sy;
+		this.batchZ = sz;
 		this.batchFailed = false;
 		this.batchId++;
-		int coarsestLod = target.stream().mapToInt(c -> (int)c[2]).max().orElse(1);
-		int latticeX = dev.nonamecrackers2.simpleclouds.client.renderer.v2.ChunkGenerationKey.latticeShift(this.batchX, coarsestLod);
-		int latticeZ = dev.nonamecrackers2.simpleclouds.client.renderer.v2.ChunkGenerationKey.latticeShift(this.batchZ, coarsestLod);
+		this.batchStartedNanos = System.nanoTime();
 		List<CpuCloudGenerator.CloudLayerGroup> immutableGroups = List.copyOf(groups);
+		record Candidate(ChunkJob job, int reason, long lastGenTick, boolean visible) {}
+		List<Candidate> missingChunks = new java.util.ArrayList<>();
+		List<Candidate> near = new java.util.ArrayList<>();
+		List<Candidate> distant = new java.util.ArrayList<>();
 		var masks = regions.stream().map(r -> new dev.nonamecrackers2.simpleclouds.client.renderer.v2.ChunkGenerationKey.Mask(
 				r.x(), r.z(), r.radius(), r.m00(), r.m01(), r.m10(), r.m11(), r.groupIndex())).toList();
 		for (long[] c : target)
 		{
 			int x = (int)c[0], z = (int)c[1], lod = (int)c[2], span = PRIMARY_CHUNK * lod;
+			int chunkMaxY = this.usesRegionMasks()
+					? dev.nonamecrackers2.simpleclouds.client.renderer.v2.ChunkGenerationKey.localMaxY(
+							x, z, span, lod, masks, groupMaxY, LOD_Y_MIN)
+					: maxY;
+			int chunkConfig = java.util.Objects.hash(config, chunkMaxY);
 			ChunkCoord coord = new ChunkCoord(x, z, lod);
-			x += latticeX;
-			z += latticeZ;
+			// Let retained face-local dissolves finish before replacing their
+			// source again. Retargeting can clip them, but cannot discard them.
+			if (WORLD_COVERAGE && this.worldCoverage.fragments(coord).stream().anyMatch(
+					p -> p.source().departing != null && chunkAlpha(p.source(),
+							Minecraft.getInstance().level.getGameTime(), 0.0F) < 1.0F)) continue;
 			ChunkData old = this.chunkCaches.get(coord);
 			long key = dev.nonamecrackers2.simpleclouds.client.renderer.v2.ChunkGenerationKey.local(x, z, span, lod, masks);
-			if (old != null && old.regionSig == key && old.groupsHash == config && !scrollChanged) continue;
-			if (old == null) this.summaryMissing++;
-			else if (old.groupsHash != config) this.summaryConfig++;
-			else if (scrollChanged) this.summaryScroll++;
-			else this.summaryMask++;
-			this.batchExpected.add(coord);
-			this.batchWaiting.add(new ChunkJob(coord, x, 0, z, x + span, maxY, z + span, lod,
-					immutableGroups, regions, key, config, cameraY, cloudHeight,
-					this.batchX, this.batchY, this.batchZ, cameraX, cameraZ, this.batchId));
+			boolean missing = old == null;
+			ChunkData deltaSource = missing ? this.drawableChunk(coord) : old;
+			boolean configChanged = !missing && old.groupsHash != chunkConfig;
+			boolean maskChanged = !missing && old.regionSig != key;
+			boolean scrollChanged = missing || sx != old.genScrollX || sy != old.genScrollY || sz != old.genScrollZ;
+			if (!missing && !configChanged && !maskChanged && !scrollChanged) continue;
+			ChunkJob job = new ChunkJob(coord, x, 0, z, x + span, chunkMaxY, z + span, lod,
+					immutableGroups, regions, this.usesRegionMasks(), key, chunkConfig, cameraY, cloudHeight,
+					this.batchX, this.batchY, this.batchZ, cameraX, cameraZ,
+					transparencyDistance, this.batchId,
+					deltaSource == null ? null : deltaSource.opaqueRaw, deltaSource == null ? null : deltaSource.transparentRaw);
+			int reason = missing ? 0 : configChanged ? 1 : maskChanged ? 2 : 3;
+			boolean visible = visibleFrustum == null || visibleFrustum.isVisible(
+					new net.minecraft.world.phys.AABB(x * CLOUD_SCALE_F, cloudHeight,
+							z * CLOUD_SCALE_F, (x + span) * CLOUD_SCALE_F,
+							cloudHeight + chunkMaxY * CLOUD_SCALE_F,
+							(z + span) * CLOUD_SCALE_F));
+			Candidate candidate = new Candidate(job, reason, missing ? 0 : old.lastGenTick, visible);
+			if (missing) missingChunks.add(candidate);
+			else if (lod == 1) near.add(candidate);
+			else distant.add(candidate);
 		}
+		// Original generation culls against the camera frustum. Our bounded
+		// backend cannot do all 364 chunks per sweep, so favor chunks in view
+		// without starving the rest: a visible chunk gets a three-second age
+		// credit, while an offscreen chunk eventually wins by actual age.
+		// Share the budget across LODs: a fixed near-ring quota previously
+		// spent slots on offscreen chunks while visible distant chunks waited.
+		for (Candidate candidate : missingChunks) this.queueBatchJob(candidate.job(), candidate.reason());
+		List<Candidate> refreshCandidates = new java.util.ArrayList<>(near);
+		refreshCandidates.addAll(distant);
+		List<Candidate> selected = dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudRefreshSchedule.select(
+				refreshCandidates, CHUNK_REFRESH_BUDGET - missingChunks.size(),
+				Candidate::lastGenTick, Candidate::visible);
+		for (Candidate candidate : selected) this.queueBatchJob(candidate.job(), candidate.reason());
+		long nearSlots = selected.stream().filter(c -> c.job().lodScale() == 1).count();
+		long distantSlots = selected.size() - nearSlots;
+		if (TRACE_VISUAL_CHURN && this.batchId % 10 == 0)
+		{
+			long nowTick = Minecraft.getInstance().level.getGameTime();
+			java.util.List<Long> visibleAges = java.util.stream.Stream.concat(near.stream(), distant.stream())
+					.filter(Candidate::visible)
+					.map(c -> Math.max(0L, nowTick - c.lastGenTick()))
+					.sorted().toList();
+			long ageP50 = visibleAges.isEmpty() ? 0L : visibleAges.get((visibleAges.size() - 1) / 2);
+			long ageP95 = visibleAges.isEmpty() ? 0L : visibleAges.get((visibleAges.size() - 1) * 95 / 100);
+			long ageMax = visibleAges.isEmpty() ? 0L : visibleAges.get(visibleAges.size() - 1);
+			LOGGER.info("[MOTION-SCHEDULE] batch={} frustum={} nearVisible={}/{} distantVisible={}/{} selectedNear={} selectedDistant={} selectedVisibleNear={} selectedVisibleDistant={} visibleAgeTicks[p50={},p95={},max={}]",
+					this.batchId, visibleFrustum != null,
+					near.stream().filter(Candidate::visible).count(), near.size(),
+					distant.stream().filter(Candidate::visible).count(), distant.size(),
+					nearSlots, distantSlots,
+					selected.stream().filter(c -> c.job().lodScale() == 1 && c.visible()).count(),
+					selected.stream().filter(c -> c.job().lodScale() != 1 && c.visible()).count(),
+					ageP50, ageP95, ageMax);
+		}
+		this.batchInProgress = !this.batchExpected.isEmpty();
+	}
+
+	private void queueBatchJob(ChunkJob job, int reason)
+	{
+		this.batchExpected.add(job.coord());
+		this.batchDeltaSources.put(job.coord(), this.drawableChunk(job.coord()));
+		if (WORLD_COVERAGE) this.batchWorldSources.put(job.coord(), this.worldCoverage.fragments(job.coord()));
+		this.batchWaiting.add(job);
+		if (TRACE_VISUAL_CHURN)
+			this.summaryQueuedHeight[job.y1() <= 16 ? 0 : job.y1() <= 64 ? 1 : job.y1() <= 128 ? 2 : 3]++;
+		if (reason == 0) this.summaryMissing++;
+		else if (reason == 1) this.summaryConfig++;
+		else if (reason == 2) this.summaryMask++;
+		else this.summaryScroll++;
 	}
 
 	private static void closeChunk(@Nullable ChunkData data)
 	{
 		if (data == null) return;
+		closeChunk(data.departing);
+		data.departing = null;
 		if (data.opaque != null) data.opaque.close();
+		if (data.opaqueAdded != null) data.opaqueAdded.close();
+		if (data.gpuOpaqueRaw != null) data.gpuOpaqueRaw.close();
+		if (data.gpuOpaqueIds != null) data.gpuOpaqueIds.close();
+		if (data.gpuTransparentRaw != null) data.gpuTransparentRaw.close();
+		if (data.gpuTransparentIds != null) data.gpuTransparentIds.close();
 		if (data.transparent != null) data.transparent.close();
+		if (data.transparentAdded != null) data.transparentAdded.close();
+	}
+
+	private byte[] predecessorFaces(ChunkJob job, boolean transparent)
+	{
+		if (!WORLD_COVERAGE) return transparent ? job.previousTransparent() : job.previousOpaque();
+		var pieces = this.batchWorldSources.getOrDefault(job.coord(), List.of());
+		java.util.List<CloudWorldCoverage.Fragment<byte[]>> sources = new java.util.ArrayList<>(pieces.size());
+		for (var piece : pieces)
+			sources.add(new CloudWorldCoverage.Fragment<>(piece.bounds(),
+					transparent ? piece.source().transparentRaw : piece.source().opaqueRaw));
+		return CloudFaceCoverage.gather(sources, transparent ? 28 : 24);
+	}
+
+	private List<CloudWorldCoverage.Fragment<ChunkData>> drawablePieces(ChunkCoord coord)
+	{
+		if (WORLD_COVERAGE) return this.worldCoverage.fragments(coord);
+		ChunkData value = this.drawableChunk(coord);
+		return value == null ? List.of() : List.of(new CloudWorldCoverage.Fragment<>(worldBounds(value.sourceCoord), value));
+	}
+
+	private void drawPiece(org.joml.Matrix4f view, ChunkData d, ChunkData old,
+			CloudWorldCoverage.Rect clip, boolean transparent, float startupAlpha, long nowTick, float partialTick)
+	{
+		float alpha = chunkAlpha(d, nowTick, partialTick);
+		if (WORLD_COVERAGE && d.departing != null && alpha >= 1.0F)
+		{
+			closeChunk(d.departing); d.departing = null; old = null;
+		}
+		if (transparent)
+		{
+			if (startupAlpha >= 1.0F && old != null && old.transparent != null && old.transparentCount > 0)
+				this.drawPipeline.drawTransparencyClouds(view, old.transparent, old.transparentCount, -(2.0F + alpha), 0,0,0,clip);
+			if (d.transparent != null && d.transparentCount > 0)
+				this.drawPipeline.drawTransparencyClouds(view, d.transparent, d.transparentCount, startupAlpha, 0,0,0,clip);
+			if (d.transparentAdded != null && d.transparentAddedCount > 0 && alpha > 0)
+				this.drawPipeline.drawTransparencyClouds(view, d.transparentAdded, d.transparentAddedCount, Math.min(alpha,startupAlpha), 0,0,0,clip);
+		}
+		else
+		{
+			if (startupAlpha >= 1.0F && old != null && old.opaque != null)
+				this.drawPipeline.drawClouds(view, old.opaque, old.opaqueCount, -(2.0F + alpha), 0,0,0,clip);
+			if (d.opaque != null)
+				this.drawPipeline.drawClouds(view, d.opaque, d.opaqueCount, startupAlpha, 0,0,0,clip);
+			if (d.opaqueAdded != null && alpha > 0)
+				this.drawPipeline.drawClouds(view, d.opaqueAdded, d.opaqueAddedCount, Math.min(alpha,startupAlpha), 0,0,0,clip);
+		}
+	}
+
+	@Nullable
+	private static GpuBuffer uploadFaces(String name, byte[] faces)
+	{
+		if (faces.length == 0) return null;
+		java.nio.ByteBuffer bytes = java.nio.ByteBuffer.allocateDirect(faces.length);
+		bytes.put(faces).flip();
+		return RenderSystem.getDevice().createBuffer(() -> name, GpuBuffer.USAGE_VERTEX, bytes);
 	}
 
 	private void logGenerationSummary()
@@ -497,13 +831,42 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		if (this.lastFrameNanos != 0) this.worstFrameNanos = Math.max(this.worstFrameNanos, now - this.lastFrameNanos);
 		this.lastFrameNanos = now;
 		if (now < this.nextSummaryNanos) return;
-		LOGGER.info("Simple Clouds generation backend=CPU queued={} completed={} failed={} stale[missing={},mask={},scroll={},config={}] generationMs={} uploadBytes={} worstFrameMs={} pending={} staged={} transformWritesPeakPerFrame={}",
+		LOGGER.info("Simple Clouds generation backend={} queued={} completed={} failed={} stale[missing={},mask={},scroll={},config={}] generationMs={} uploadBytes={} worstFrameMs={} pending={} staged={} transformWritesPeakPerFrame={} publishedBatches={} meanBatchMs={} longestBatchMs={} longestPublishGapMs={}",
+				!GPU_WORLD_EXPERIMENT ? "CPU" : this.gpuWorldFailed ? "CPU_FALLBACK" : "GPU_EXPERIMENT",
 				this.summaryQueued, this.summaryCompleted, this.summaryFailed, this.summaryMissing, this.summaryMask,
 				this.summaryScroll, this.summaryConfig, this.summaryGenerationNanos / 1_000_000L,
-				this.summaryUploadBytes, this.worstFrameNanos / 1_000_000L, this.batchExpected.size(), this.batchStaged.size(),
-				this.drawPipeline != null ? this.drawPipeline.takePeakFrameTransforms() : 0);
+				this.summaryUploadBytes, this.worstFrameNanos / 1_000_000L, this.batchExpected.size(), 0,
+				this.drawPipeline != null ? this.drawPipeline.takePeakFrameTransforms() : 0,
+				this.summaryPublishedBatches,
+				this.summaryPublishedBatches == 0 ? 0 : this.summaryBatchDurationNanos / this.summaryPublishedBatches / 1_000_000L,
+				this.summaryLongestBatchNanos / 1_000_000L,
+				this.summaryLongestPublishGapNanos / 1_000_000L);
+		if (GPU_WORLD_EXPERIMENT)
+			LOGGER.info("Simple Clouds stage timings (summed job time, not wall time): submits={} submitMs={} readbacks={} readbackMs={} readbackOpaqueMiB={} readbackTransparentMiB={} emptyChunks={} directOpaque={} directFallback={} directTransparent={} transparentFallback={} postJobs={} postMs={} uploads={} uploadMs={}",
+				this.summaryGpuSubmits, this.summaryGpuSubmitNanos / 1_000_000L,
+				this.summaryGpuReadbacks, this.summaryGpuReadbackNanos / 1_000_000L,
+				this.summaryGpuOpaqueBytes / 1_048_576L, this.summaryGpuTransparentBytes / 1_048_576L,
+				this.summaryGpuEmptyChunks,this.summaryGpuDirectOpaque,this.summaryGpuDirectFallback,
+				this.summaryGpuDirectTransparent,this.summaryGpuTransparentFallback,
+				this.summaryGpuPostJobs.getAndSet(0), this.summaryGpuPostNanos.getAndSet(0) / 1_000_000L,
+				this.summaryUploads, this.summaryUploadNanos / 1_000_000L);
+		if (TRACE_VISUAL_CHURN)
+			LOGGER.info("[VISUAL-CHURN-SUMMARY] queuedY[<=16={},<=64={},<=128={},>128={}] changedFaces={} maxFrameChangedFaces={} maxFrameReplacedChunks={} supersededFades={} interruptedFades={}",
+				this.summaryQueuedHeight[0], this.summaryQueuedHeight[1], this.summaryQueuedHeight[2], this.summaryQueuedHeight[3],
+				this.summaryChangedFaces, this.summaryMaxChangedFacesInFrame, this.summaryMaxReplacedInFrame,
+				this.summarySupersededFades, this.summaryInterruptedFades);
+		java.util.Arrays.fill(this.summaryQueuedHeight, 0);
+		this.summaryChangedFaces = this.summaryMaxChangedFacesInFrame = 0;
+		this.summaryMaxReplacedInFrame = 0;
+		this.summarySupersededFades = this.summaryInterruptedFades = 0;
 		this.summaryQueued = this.summaryCompleted = this.summaryFailed = this.summaryMissing = this.summaryMask = 0;
 		this.summaryScroll = this.summaryConfig = this.summaryGenerationNanos = this.summaryUploadBytes = this.worstFrameNanos = 0;
+		this.summaryGpuSubmits = this.summaryGpuReadbacks = this.summaryUploads = 0;
+		this.summaryGpuSubmitNanos = this.summaryGpuReadbackNanos = this.summaryUploadNanos = 0;
+		this.summaryGpuOpaqueBytes = this.summaryGpuTransparentBytes = this.summaryGpuEmptyChunks = 0;
+		this.summaryGpuDirectOpaque = this.summaryGpuDirectFallback = 0;
+		this.summaryGpuDirectTransparent = this.summaryGpuTransparentFallback = 0;
+		this.summaryPublishedBatches = this.summaryBatchDurationNanos = this.summaryLongestBatchNanos = this.summaryLongestPublishGapNanos = 0;
 		this.nextSummaryNanos = now + 30_000_000_000L;
 	}
 
@@ -511,23 +874,23 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	{
 		return "phase=" + this.phaseX + "," + this.phaseY + "," + this.phaseZ
 				+ " batch=" + this.batchId + " waiting=" + this.batchExpected.size()
-				+ " staged=" + this.batchStaged.size();
+				+ " fading=" + this.previousBatch.size();
 	}
 
 	public String meshDiagnostic()
 	{
-		return "faces=" + this.chunkCaches.values().stream().mapToLong(d -> d.opaqueCount).sum()
+		return "faces=" + this.chunkCaches.values().stream().mapToLong(d -> d.opaqueCount + d.opaqueAddedCount).sum()
 				+ " previousFaces=" + this.previousBatch.values().stream().mapToLong(d -> d.opaqueCount).sum()
-				+ " transition=" + this.transitionProgress();
+				+ " perChunkFadeTicks=" + (int)(1.0F / CHUNK_FADE_IN_ALPHA_PER_TICK);
 	}
 
 	public long getPublishedBatchCount() { return this.publishedBatchCount; }
 
-	/** Dev captures must not accept a partially populated post-teleport field. */
+	/** The continuously refreshed field is ready once its visible layout is filled;
+	 * waiting for a frame with no active fade/batch would starve captures forever. */
 	public boolean isCaptureFieldSettled()
 	{
-		return this.getChunkFillFraction() >= 0.97F
-				&& (this.previousBatch.isEmpty() || this.transitionProgress() >= 1.0F);
+		return this.getChunkFillFraction() >= 0.97F;
 	}
 
 	private void startChunkWorkerPool()
@@ -572,7 +935,7 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 				try
 				{
 					generator.setGroups(job.groups());
-					generator.setRegions(job.regions());
+					generator.setRegions(job.regions(), job.regionMode());
 					// Initial borrow: the old "one cube per 64 cells" heuristic as a floor;
 					// the pool hands back high-water buffers for stable chunks, and the
 					// grower covers denser-than-expected regeneration.
@@ -604,20 +967,28 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 								return bigger;
 							},
 							opaqueCount, transparentCount, job.camGridY(),
-							new float[] { job.camCloudX(), job.camCloudZ() }, stormCoverage);
+						new float[] { job.camCloudX(), job.camCloudZ() }, stormCoverage,
+						job.transparencyDistance());
 					// The result carries the FINAL buffers (the grower may have swapped
 					// them for bigger pooled ones).
 					opaque = out[0];
 					transparent = out[1];
 					ownedO[0] = opaque;
 					ownedT[0] = transparent;
+					// Face matching is CPU-heavy. Do it on the generating worker, not
+					// on the render thread that must keep drawing every frame.
+					var opaqueDelta = dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudFaceDelta.split(
+							this.predecessorFaces(job, false), opaque, CloudVertexFormat.BYTES_PER_INSTANCE);
+					var transparentDelta = dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudFaceDelta.split(
+							this.predecessorFaces(job, true), transparent, CloudVertexFormat.BYTES_PER_INSTANCE_ALPHA);
 					synchronized (this.completionLock)
 					{
 						if (!this.workersStopped)
 						{
 							this.completedChunks.add(new ChunkResult(job.coord(), opaque, (int) opaqueCount[0], transparent, (int) transparentCount[0], stormCoverage[0],
 									generator.copyStormColumns(), generator.lastStormXCells(), generator.lastStormZCells(),
-									job.scrollX(), job.scrollY(), job.scrollZ(), job.regionSig(), job.groupsHash(), job.batch(), System.nanoTime() - started, true));
+									job.scrollX(), job.scrollY(), job.scrollZ(), job.regionSig(), job.groupsHash(), job.batch(), System.nanoTime() - started, true, false, false,
+								opaqueDelta, transparentDelta,null));
 							published = true;
 						}
 					}
@@ -628,7 +999,8 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 					{
 						if (!this.workersStopped)
 							this.completedChunks.add(new ChunkResult(job.coord(), null, 0, null, 0, 0, null, 0, 0,
-									job.scrollX(), job.scrollY(), job.scrollZ(), job.regionSig(), job.groupsHash(), job.batch(), System.nanoTime() - started, false));
+									job.scrollX(), job.scrollY(), job.scrollZ(), job.regionSig(), job.groupsHash(), job.batch(), System.nanoTime() - started, false, false, false,
+									null, null,null));
 					}
 					LOGGER.debug("Simple Clouds chunk generation failure", t);
 				}
@@ -650,6 +1022,394 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		{
 			Thread.currentThread().interrupt();
 		}
+	}
+
+	/** Polls a bounded set of GPU jobs without waiting. CPU face comparison and
+	 * storm reconstruction remain off the render thread. */
+	private void serviceGpuWorld()
+	{
+		for (GpuSlot slot : this.gpuSlots)
+		{
+			if (slot == null || slot.job == null) continue;
+			try { this.completeGpuSlot(slot); }
+			catch (Throwable failure) { this.disableGpuWorld(failure,null); break; }
+		}
+		if (this.gpuWorldFailed)
+		{
+			for (int i = 0; i < CHUNK_ENQUEUE_BUDGET && !this.batchWaiting.isEmpty(); i++)
+			{
+				ChunkJob job = this.batchWaiting.removeFirst();
+				this.pendingChunks.add(job.coord());
+				this.chunkJobQueue.add(job);
+				this.summaryQueued++;
+			}
+			return;
+		}
+		int submitted = 0;
+		for (int i = 0; i < this.gpuSlots.length && submitted < CHUNK_ENQUEUE_BUDGET
+				&& this.gpuPostPending.get() < GPU_POST_LIMIT && !this.batchWaiting.isEmpty(); i++)
+		{
+			GpuSlot slot = this.gpuSlots[i];
+			if (slot != null && slot.job != null) continue;
+			ChunkJob job = this.batchWaiting.removeFirst();
+			this.pendingChunks.add(job.coord());
+			this.summaryQueued++;
+			submitted++;
+			if (!job.regionMode()) { this.chunkJobQueue.add(job); continue; }
+			try
+			{
+				if (slot == null)
+				{
+					GpuCloudGeneration generator = new GpuCloudGeneration(this.chunkBufferPool);
+					if (!generator.init()) throw new IllegalStateException("OpenGL GPU generator unavailable");
+					slot = new GpuSlot(generator);
+					this.gpuSlots[i] = slot;
+					if (this.gpuPostPool == null)
+					{
+						this.gpuPostPool = java.util.concurrent.Executors.newFixedThreadPool(2,r ->
+						{
+							Thread thread = new Thread(r,"simpleclouds-gpu-post");
+							thread.setDaemon(true);
+							return thread;
+						});
+						LOGGER.info("Experimental GPU world generation enabled with {} bounded slots; CPU fallback remains available",GPU_WORLD_SLOTS);
+					}
+				}
+				float wiggle = (job.scrollX()+job.scrollY()+job.scrollZ())/5.0F;
+				slot.startedNanos = System.nanoTime();
+				slot.generator.submitRegions(job.x0(),job.y0(),job.z0(),job.x1(),job.y1(),job.z1(),
+						job.camCloudX(),job.camGridY(),job.camCloudZ(),job.groups(),job.regions(),
+						new GpuCloudGeneration.Sampling(job.lodScale(),job.cloudHeight(),
+								job.scrollX(),job.scrollY(),job.scrollZ(),wiggle,
+								job.transparencyDistance()));
+				this.summaryGpuSubmitNanos += System.nanoTime() - slot.startedNanos;
+				this.summaryGpuSubmits++;
+				slot.job = job;
+			}
+			catch (Throwable failure) { this.disableGpuWorld(failure,job); return; }
+		}
+	}
+
+	private void completeGpuSlot(GpuSlot slot)
+	{
+		ChunkJob job = slot.job;
+		boolean countsOnly = this.canFinishGpuWithoutGeometry(job);
+		long readbackStarted = System.nanoTime();
+		if (!(countsOnly ? slot.generator.pollRegionsCountsOnly() : slot.generator.pollRegions())) return;
+		this.summaryGpuReadbackNanos += System.nanoTime() - readbackStarted;
+		this.summaryGpuReadbacks++;
+		java.nio.ByteBuffer opaque = slot.generator.instanceData();
+		java.nio.ByteBuffer transparent = slot.generator.transparentData();
+		if (!countsOnly && opaque == null) { opaque = this.chunkBufferPool.borrow(256); opaque.limit(0); }
+		if (!countsOnly && transparent == null) { transparent = this.chunkBufferPool.borrow(256); transparent.limit(0); }
+		final java.nio.ByteBuffer outputOpaque = opaque, outputTransparent = transparent;
+		int opaqueCount = slot.generator.instanceCount(), transparentCount = slot.generator.transparentInstanceCount();
+		if (!countsOnly) this.summaryGpuOpaqueBytes += opaque.remaining();
+		// The adapter returns six draw records per compact transparent cube.
+		if (!countsOnly) this.summaryGpuTransparentBytes += (long) transparentCount / 6L * 24L;
+		if (opaqueCount == 0 && transparentCount == 0) this.summaryGpuEmptyChunks++;
+		long started = slot.startedNanos;
+		GpuOpaqueCandidate directOpaque = null;
+		GpuTransparentCandidate directTransparent = null;
+		GpuStormColumns.Result gpuStorm = null;
+		try
+		{
+			if (GPU_STORM_BITS_EXPERIMENT)
+			{
+				if (this.gpuStormBits == null)
+					this.gpuStormBits = new dev.nonamecrackers2.simpleclouds.client.renderer.v2.GpuStormColumnBits(32 * 32);
+				gpuStorm = this.gpuStormBits.fromFaceIds(slot.generator,job.x0(),job.y0(),job.z0(),
+						job.x1(),job.y1(),job.z1(),job.lodScale(),job.camGridY(),job.camCloudX(),job.camCloudZ(),
+						job.groups(),job.regions());
+			}
+			if (GPU_DIRECT_OPAQUE_EXPERIMENT)
+				directOpaque = this.makeGpuOpaqueCandidate(job,slot.generator,opaqueCount);
+			if (GPU_DIRECT_TRANSPARENT_EXPERIMENT)
+				directTransparent = this.makeGpuTransparentCandidate(job,slot.generator,transparentCount);
+		}
+		catch (RuntimeException | Error failure)
+		{
+			if (directOpaque != null) directOpaque.close();
+			if (directTransparent != null) directTransparent.close();
+			this.chunkBufferPool.release(outputOpaque);
+			this.chunkBufferPool.release(outputTransparent);
+			throw failure;
+		}
+		final GpuStormColumns.Result reducedStorm = gpuStorm;
+		if (countsOnly)
+		{
+			if (directOpaque == null || !directOpaque.useGpuDelta
+					|| directTransparent == null || !directTransparent.useGpuDelta || reducedStorm == null)
+			{
+				if (directOpaque != null) directOpaque.close();
+				if (directTransparent != null) directTransparent.close();
+				this.chunkBufferPool.release(outputOpaque);
+				this.chunkBufferPool.release(outputTransparent);
+				throw new IllegalStateException("Counts-only GPU completion lacks direct draw or storm data");
+			}
+			boolean accepted;
+			synchronized (this.completionLock)
+			{
+				accepted = !this.workersStopped;
+				if (accepted)
+					this.completedChunks.add(new ChunkResult(job.coord(),outputOpaque,opaqueCount,
+							outputTransparent,transparentCount,reducedStorm.coverage(),reducedStorm.columns(),
+							reducedStorm.xCells(),reducedStorm.zCells(),job.scrollX(),job.scrollY(),job.scrollZ(),
+							job.regionSig(),job.groupsHash(),job.batch(),System.nanoTime()-started,true,true,true,
+								null,null,job));
+			}
+			if (!accepted)
+			{
+				directOpaque.close();
+				directTransparent.close();
+				this.chunkBufferPool.release(outputOpaque);
+				this.chunkBufferPool.release(outputTransparent);
+				slot.job = null;
+				return;
+			}
+			GpuOpaqueCandidate oldOpaque = this.pendingGpuOpaque.put(job.coord(),directOpaque);
+			if (oldOpaque != null) oldOpaque.close();
+			GpuTransparentCandidate oldTransparent = this.pendingGpuTransparent.put(job.coord(),directTransparent);
+			if (oldTransparent != null) oldTransparent.close();
+			slot.job = null;
+			if (GPU_TEST_CPU_FALLBACK && ++this.gpuOnlyCompleted == 256)
+				this.disableGpuWorld(new IllegalStateException("Intentional development-only GPU-to-CPU fallback test"),null);
+			return;
+		}
+		this.gpuPostPending.incrementAndGet();
+		try
+		{
+			this.gpuPostPool.execute(() ->
+			{
+				boolean published = false;
+				try
+				{
+					long postStarted = System.nanoTime();
+					var cpuStorm = GpuStormColumns.fromFaces(outputOpaque,job.x0(),job.z0(),job.x1(),job.z1(),
+							job.lodScale(),job.cloudHeight(),job.camGridY(),job.camCloudX(),job.camCloudZ(),
+							job.groups(),job.regions());
+					if (reducedStorm != null && (!java.util.Arrays.equals(cpuStorm.columns(),reducedStorm.columns())
+							|| Math.abs(cpuStorm.coverage()-reducedStorm.coverage()) > 0.000001f))
+						throw new IllegalStateException("GPU storm column bitset differs from CPU face reconstruction");
+					var storm = reducedStorm != null ? reducedStorm : cpuStorm;
+					var opaqueDelta = dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudFaceDelta.split(
+							this.predecessorFaces(job,false),outputOpaque,CloudVertexFormat.BYTES_PER_INSTANCE);
+					var transparentDelta = dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudFaceDelta.split(
+							this.predecessorFaces(job,true),outputTransparent,CloudVertexFormat.BYTES_PER_INSTANCE_ALPHA);
+					this.summaryGpuPostNanos.addAndGet(System.nanoTime() - postStarted);
+					this.summaryGpuPostJobs.incrementAndGet();
+					synchronized (this.completionLock)
+					{
+						if (!this.workersStopped)
+						{
+							this.completedChunks.add(new ChunkResult(job.coord(),outputOpaque,opaqueCount,
+									outputTransparent,transparentCount,storm.coverage(),storm.columns(),
+									storm.xCells(),storm.zCells(),job.scrollX(),job.scrollY(),job.scrollZ(),
+									job.regionSig(),job.groupsHash(),job.batch(),System.nanoTime()-started,true,true,false,
+									opaqueDelta,transparentDelta,null));
+							published = true;
+						}
+					}
+				}
+				catch (Throwable failure)
+				{
+					LOGGER.warn("Experimental GPU chunk post-processing failed; retrying on CPU",failure);
+					synchronized (this.completionLock)
+					{
+						if (!this.workersStopped) this.chunkJobQueue.add(job);
+					}
+				}
+				finally
+				{
+					if (!published)
+					{
+						this.chunkBufferPool.release(outputOpaque);
+						this.chunkBufferPool.release(outputTransparent);
+					}
+					this.gpuPostPending.decrementAndGet();
+				}
+			});
+			if (directOpaque != null)
+			{
+				GpuOpaqueCandidate superseded = this.pendingGpuOpaque.put(job.coord(),directOpaque);
+				if (superseded != null) superseded.close();
+			}
+			if (directTransparent != null)
+			{
+				GpuTransparentCandidate superseded = this.pendingGpuTransparent.put(job.coord(),directTransparent);
+				if (superseded != null) superseded.close();
+			}
+			slot.job = null;
+		}
+		catch (RuntimeException rejected)
+		{
+			this.gpuPostPending.decrementAndGet();
+			this.chunkBufferPool.release(outputOpaque);
+			this.chunkBufferPool.release(outputTransparent);
+			if (directOpaque != null) directOpaque.close();
+			if (directTransparent != null) directTransparent.close();
+			throw rejected;
+		}
+	}
+
+	private boolean canFinishGpuWithoutGeometry(ChunkJob job)
+	{
+		if (!GPU_NO_READBACK_EXPERIMENT || !job.regionMode()) return false;
+		ChunkData old = this.chunkCaches.get(job.coord());
+		return old == null || old.groupsHash == job.groupsHash()
+				&& gpuOpaqueHistoryReady(old) && gpuTransparentHistoryReady(old);
+	}
+
+	private static boolean gpuOpaqueHistoryReady(ChunkData old)
+	{
+		return old.gpuOpaqueRawCount == 0
+				? old.gpuResidentOnly || old.opaqueRaw != null && old.opaqueRaw.length == 0
+				: old.gpuOpaqueIds != null && old.gpuOpaqueRaw != null;
+	}
+
+	private static boolean gpuTransparentHistoryReady(ChunkData old)
+	{
+		return old.gpuTransparentRawCount == 0
+				? old.gpuResidentOnly || old.transparentRaw != null && old.transparentRaw.length == 0
+				: old.gpuTransparentIds != null && old.gpuTransparentRaw != null;
+	}
+
+	private GpuOpaqueCandidate makeGpuOpaqueCandidate(ChunkJob job,GpuCloudGeneration generator,int count)
+	{
+		GpuOpaqueCandidate candidate = new GpuOpaqueCandidate(job.batch());
+		try
+		{
+			String name = "simpleclouds.direct." + job.coord().x0() + "." + job.coord().z0()
+					+ "." + job.coord().lodScale();
+			if (count > 0)
+			{
+				candidate.raw = RenderSystem.getDevice().createBuffer(() -> name + ".raw",
+						GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_COPY_DST,(long)count * CloudVertexFormat.BYTES_PER_INSTANCE);
+				candidate.ids = RenderSystem.getDevice().createBuffer(() -> name + ".ids",
+						GpuBuffer.USAGE_COPY_DST,(long)count * Integer.BYTES);
+				generator.copyOpaqueTo(candidate.raw);
+				generator.copyFaceIdsTo(candidate.ids);
+			}
+			candidate.rawCount = count;
+			ChunkData old = this.chunkCaches.get(job.coord());
+			// IDs are local to a chunk's lattice. A configuration change can move
+			// the world-space center or alter vertical dimensions, so use the CPU
+			// face matcher for that one replacement and seed new GPU state for later.
+			boolean compatible = old == null || old.groupsHash == job.groupsHash() && gpuOpaqueHistoryReady(old);
+			if (!compatible) return candidate;
+			int oldCount = old == null ? 0 : old.gpuOpaqueRawCount;
+			if (this.gpuFaceDelta == null)
+				this.gpuFaceDelta = new dev.nonamecrackers2.simpleclouds.client.renderer.v2.GpuFaceDelta(MAX_GPU_FACE_IDS);
+			var counts = this.gpuFaceDelta.compare(old == null ? null : old.gpuOpaqueIds,
+					old == null ? null : old.gpuOpaqueRaw,oldCount,candidate.ids,candidate.raw,count);
+			candidate.stableCount = counts.stable();
+			candidate.addedCount = counts.added();
+			candidate.removedCount = counts.removed();
+			candidate.useGpuDelta = true;
+			if (candidate.stableCount > 0)
+				candidate.stable = RenderSystem.getDevice().createBuffer(() -> name + ".stable",
+						GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_COPY_DST,
+						(long)candidate.stableCount * CloudVertexFormat.BYTES_PER_INSTANCE);
+			if (candidate.addedCount > 0)
+				candidate.added = RenderSystem.getDevice().createBuffer(() -> name + ".added",
+						GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_COPY_DST,
+						(long)candidate.addedCount * CloudVertexFormat.BYTES_PER_INSTANCE);
+			if (candidate.removedCount > 0)
+				candidate.removed = RenderSystem.getDevice().createBuffer(() -> name + ".removed",
+						GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_COPY_DST,
+						(long)candidate.removedCount * CloudVertexFormat.BYTES_PER_INSTANCE);
+			this.gpuFaceDelta.copySplitTo(candidate.stable,candidate.added,candidate.removed);
+			return candidate;
+		}
+		catch (RuntimeException | Error failure)
+		{
+			candidate.close();
+			throw failure;
+		}
+	}
+
+	private GpuTransparentCandidate makeGpuTransparentCandidate(ChunkJob job,GpuCloudGeneration generator,int count)
+	{
+		GpuTransparentCandidate candidate = new GpuTransparentCandidate(job.batch());
+		try
+		{
+			String name = "simpleclouds.transparentDirect." + job.coord().x0() + "." + job.coord().z0()
+					+ "." + job.coord().lodScale();
+			if (this.gpuTransparentExpansion == null)
+				this.gpuTransparentExpansion = new dev.nonamecrackers2.simpleclouds.client.renderer.v2.GpuTransparentExpansion(32 * 256 * 32);
+			int expanded = this.gpuTransparentExpansion.expandFrom(generator,job.cloudHeight());
+			if (expanded != count) throw new IllegalStateException("Transparent GPU expansion count differs from readback");
+			if (count > 0)
+			{
+				candidate.raw = RenderSystem.getDevice().createBuffer(() -> name + ".raw",
+						GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_COPY_DST,(long)count * CloudVertexFormat.BYTES_PER_INSTANCE_ALPHA);
+				candidate.ids = RenderSystem.getDevice().createBuffer(() -> name + ".ids",
+						GpuBuffer.USAGE_COPY_DST,(long)count * Integer.BYTES);
+				this.gpuTransparentExpansion.copyFacesTo(candidate.raw);
+				this.gpuTransparentExpansion.copyFaceIdsTo(candidate.ids);
+			}
+			candidate.rawCount = count;
+			ChunkData old = this.chunkCaches.get(job.coord());
+			boolean compatible = old == null || old.groupsHash == job.groupsHash() && gpuTransparentHistoryReady(old);
+			if (!compatible) return candidate;
+			int oldCount = old == null ? 0 : old.gpuTransparentRawCount;
+			if (this.gpuTransparentDelta == null)
+				this.gpuTransparentDelta = new dev.nonamecrackers2.simpleclouds.client.renderer.v2.GpuFaceDelta(
+						MAX_GPU_FACE_IDS,CloudVertexFormat.BYTES_PER_INSTANCE_ALPHA);
+			var counts = this.gpuTransparentDelta.compare(old == null ? null : old.gpuTransparentIds,
+					old == null ? null : old.gpuTransparentRaw,oldCount,candidate.ids,candidate.raw,count);
+			candidate.stableCount = counts.stable();
+			candidate.addedCount = counts.added();
+			candidate.removedCount = counts.removed();
+			candidate.useGpuDelta = true;
+			if (candidate.stableCount > 0)
+				candidate.stable = RenderSystem.getDevice().createBuffer(() -> name + ".stable",
+						GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_COPY_DST,
+						(long)candidate.stableCount * CloudVertexFormat.BYTES_PER_INSTANCE_ALPHA);
+			if (candidate.addedCount > 0)
+				candidate.added = RenderSystem.getDevice().createBuffer(() -> name + ".added",
+						GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_COPY_DST,
+						(long)candidate.addedCount * CloudVertexFormat.BYTES_PER_INSTANCE_ALPHA);
+			if (candidate.removedCount > 0)
+				candidate.removed = RenderSystem.getDevice().createBuffer(() -> name + ".removed",
+						GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_COPY_DST,
+						(long)candidate.removedCount * CloudVertexFormat.BYTES_PER_INSTANCE_ALPHA);
+			this.gpuTransparentDelta.copySplitTo(candidate.stable,candidate.added,candidate.removed);
+			return candidate;
+		}
+		catch (RuntimeException | Error failure)
+		{
+			candidate.close();
+			throw failure;
+		}
+	}
+
+	private void disableGpuWorld(Throwable failure,@Nullable ChunkJob retry)
+	{
+		LOGGER.warn("Experimental GPU world generation failed; continuing with CPU backend",failure);
+		this.gpuWorldFailed = true;
+		this.pendingGpuOpaque.values().forEach(GpuOpaqueCandidate::close);
+		this.pendingGpuOpaque.clear();
+		this.pendingGpuTransparent.values().forEach(GpuTransparentCandidate::close);
+		this.pendingGpuTransparent.clear();
+		if (this.gpuFaceDelta != null) { this.gpuFaceDelta.close(); this.gpuFaceDelta = null; }
+		if (this.gpuTransparentDelta != null) { this.gpuTransparentDelta.close(); this.gpuTransparentDelta = null; }
+		if (this.gpuTransparentExpansion != null) { this.gpuTransparentExpansion.close(); this.gpuTransparentExpansion = null; }
+		if (this.gpuStormBits != null) { this.gpuStormBits.close(); this.gpuStormBits = null; }
+		boolean alreadyQueued = false;
+		for (int i = 0; i < this.gpuSlots.length; i++)
+		{
+			GpuSlot slot = this.gpuSlots[i];
+			if (slot == null) continue;
+			if (slot.job != null)
+			{
+				this.chunkJobQueue.add(slot.job);
+				if (slot.job == retry) alreadyQueued = true;
+			}
+			slot.generator.close();
+			this.gpuSlots[i] = null;
+		}
+		if (retry != null && !alreadyQueued) this.chunkJobQueue.add(retry);
 	}
 
 
@@ -717,9 +1477,11 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 
 	private static org.joml.Matrix4f takeViewRotation(net.minecraft.client.Camera camera)
 	{
-		org.joml.Matrix4f bobbed = bobbedViewRotation;
+		// 26.3 applies bob/hurt to the PROJECTION, not the camera view rotation.
+		// A bobView pose contains only bobbing (identity while standing still).
+		// Using it here replaces yaw/pitch and pins the clouds to the screen.
 		bobbedViewRotation = null;
-		return bobbed != null ? bobbed : camera.getViewRotationMatrix(new org.joml.Matrix4f());
+		return camera.getViewRotationMatrix(new org.joml.Matrix4f());
 	}
 
 	/**
@@ -794,8 +1556,28 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		return (float) Mth.clamp(age * CHUNK_FADE_IN_ALPHA_PER_TICK, 0.0, 1.0);
 	}
 
-	private void generateAndDrawClouds(double camX, double camY, double camZ, float partialTick)
+	private void generateAndDrawClouds(double camX, double camY, double camZ, float partialTick, Matrix4f projMat)
 	{
+		// An integrated server sends the authoritative cloud regions and types
+		// shortly after join. Drawing the client fallback field before that packet
+		// arrives causes a conspicuous full-sky replacement on the first seconds.
+		// Keep the client-only/multiplayer fallback, and time out rather than
+		// leaving an empty sky if a broken server never sends its packet.
+		if (this.mc.hasSingleplayerServer() && this.mc.level != null
+				&& CloudManager.get(this.mc.level) instanceof ClientCloudManager clientManager
+				&& !clientManager.hasReceivedSync())
+		{
+			long gameTick = this.mc.level.getGameTime();
+			if (this.initialSyncWaitStartedTick == Long.MIN_VALUE)
+				this.initialSyncWaitStartedTick = gameTick;
+			if (gameTick - this.initialSyncWaitStartedTick < 100)
+				return;
+			if (!this.initialSyncTimeoutLogged)
+			{
+				this.initialSyncTimeoutLogged = true;
+				LOGGER.warn("Cloud manager did not synchronize within 100 ticks; rendering the client fallback");
+			}
+		}
 		if (this.drawPipeline == null || this.cpuGenerator == null)
 		{
 			// Retry (throttled to every 64th failed frame) instead of staying dark.
@@ -808,16 +1590,25 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		// World view matrix: view rotation * translate(-cameraPos). The LevelRenderer
 		// model-view stack is already popped at our TAIL hook, so build it explicitly.
 		var camera = Minecraft.getInstance().gameRenderer.mainCamera();
+		this.cullFrustum = null;
+		// In 26.3 the level-render hook passes no projection argument. The
+		// extracted camera render state owns the active level projection instead.
+		Matrix4f activeProjection = projMat != null ? projMat
+				: Minecraft.getInstance().gameRenderer.gameRenderState()
+						.levelRenderState.cameraRenderState.projectionMatrix;
+		if (SimpleCloudsConfig.CLIENT.frustumCulling.get() && activeProjection != null)
+		{
+			// Frustum.prepare takes the camera origin in world blocks; pass only
+			// the view rotation here, not a view matrix already translated by it.
+			this.cullFrustum = new Frustum(takeViewRotation(camera), activeProjection);
+			this.cullFrustum.prepare(camX, camY, camZ);
+		}
 		org.joml.Matrix4f view = new org.joml.Matrix4f();
 		view.mul(takeViewRotation(camera));
 		view.mul(new org.joml.Matrix4f().translate((float)-camX, (float)-camY, (float)-camZ));
 
-		// A2 (VISUAL-PARITY-PLAN addendum): NO global view translation anymore — the
-		// wind scroll is baked into the generated geometry (each chunk carries the
-		// scroll it was sampled with and regenerates when the scroll drifts more
-		// than SCROLL_REGEN_THRESHOLD, the CPU equivalent of the original's
-		// per-frame Scroll/Wiggle uniforms). `terrainView` equals `view` (kept for
-		// the terrain-shadow call).
+		// Scroll/Wiggle alter noise samples, not the world-space draw transform.
+		// This matches the original renderer's camera/cloud-height-only transform.
 		org.joml.Matrix4f terrainView = new org.joml.Matrix4f(view);
 		var driftManager = CloudManager.get(Minecraft.getInstance().level);
 		float scrollX = 0.0F, scrollY = 0.0F, scrollZ = 0.0F;
@@ -853,7 +1644,7 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		String gridKey = snapX + "," + snapZ;
 
 		List<CpuCloudGenerator.CloudLayerGroup> groups = dataDrivenGroups();
-		int groupsHash = groups.hashCode();
+		int groupsHash = 31 * groups.hashCode() + Boolean.hashCode(this.usesRegionMasks());
 		// Formation footprints: the original's multi-region path masks the same
 		// world-fixed noise field by the spawned formations' X/Z coverage. With no
 		// formations (not synced yet / vanilla weather) the generator falls back to
@@ -862,33 +1653,31 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		// Capture actual interpolated transforms; per-chunk keys quantize their
 		// influence at that chunk's sampling resolution. No global signature.
 		List<CpuCloudGenerator.RegionMask> regions = List.copyOf(this.buildRegionMasks(typeToGroup, partialTick));
-		boolean chunkSetChanged = !gridKey.equals(this.lastChunkGridKey);
+		LevelOfDetailOptions selectedLod = SimpleCloudsConfig.CLIENT.levelOfDetail.get();
+		boolean layoutChanged = this.lodConfig != selectedLod.getConfig();
+		if (layoutChanged)
+		{
+			this.lodConfig = selectedLod.getConfig();
+			this.lodChunks = this.lodConfig.getPreparedChunks();
+			LOGGER.info("Cloud LOD layout changed to {} ({} prepared chunks)", selectedLod, this.lodChunks.size());
+		}
+		String previousGridKey = this.lastChunkGridKey;
+		boolean chunkSetChanged = layoutChanged || !gridKey.equals(previousGridKey);
 		this.lastChunkGridKey = gridKey;
 
-		// Y span: the max ACTIVE layer height (cloud units), rounded up to a multiple
-		// of the coarsest lodScale (8) so every LOD grid divides evenly. Avoids
-		// generating empty air above the highest active layer (step 2, fix 3).
+		// Keep one Y lattice for every selected cloud type. Deriving this span from
+		// only the currently spawned formations invalidated the entire 364-chunk
+		// field whenever a taller/shorter type appeared or disappeared.
+		// Round up so every LOD grid divides the same stable vertical extent.
 		int maxLayerY = LOD_Y_MIN;
-		java.util.Set<Integer> activeGroups = new java.util.HashSet<>();
-		for (CpuCloudGenerator.RegionMask r : regions)
-			activeGroups.add(r.groupIndex());
-		if (regions.isEmpty())
-			for (int gi = 0; gi < groups.size(); gi++) activeGroups.add(gi);
-		for (int gi : activeGroups)
+		int[] groupMaxY = new int[groups.size()];
+		for (int gi = 0; gi < groups.size(); gi++)
 		{
-			if (gi < 0 || gi >= groups.size())
-				continue;
+			int groupY = LOD_Y_MIN;
 			for (CpuCloudGenerator.NoiseLayer l : groups.get(gi).layers())
-				maxLayerY = Math.max(maxLayerY, (int) Math.ceil(l.heightOffset() + l.height()));
-		}
-		maxLayerY = (int) (Math.ceil(maxLayerY / 8.0) * 8);
-
-		// Ensure the LOD layout is prepared (from the levelOfDetail config, default HIGH).
-		if (this.lodChunks.isEmpty())
-		{
-			LevelOfDetailOptions lodOption = SimpleCloudsConfig.CLIENT.levelOfDetail.get();
-			this.lodConfig = lodOption.getConfig();
-			this.lodChunks = this.lodConfig.getPreparedChunks();
+				groupY = Math.max(groupY, (int) Math.ceil(l.heightOffset() + l.height()));
+			groupMaxY[gi] = (int) (Math.ceil(groupY / 8.0) * 8);
+			maxLayerY = Math.max(maxLayerY, groupMaxY[gi]);
 		}
 
 		// Target chunk list: each PreparedChunk offset by the camera snap, nearest first.
@@ -907,55 +1696,213 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		this.totalChunkCount = target.size();
 		java.util.Set<ChunkCoord> targetKeys = new java.util.HashSet<>();
 		for (long[] c : target) targetKeys.add(new ChunkCoord((int)c[0], (int)c[1], (int)c[2]));
+		if (chunkSetChanged)
+		{
+			int dx = snapX - this.cachedSnapX, dz = snapZ - this.cachedSnapZ;
+			if (WORLD_COVERAGE)
+			{
+				java.util.Map<ChunkCoord, CloudWorldCoverage.Rect> rectangles = new java.util.HashMap<>();
+				for (ChunkCoord coord : targetKeys) rectangles.put(coord, worldBounds(coord));
+				this.worldCoverage.retarget(rectangles);
+				this.chunkCaches.keySet().retainAll(targetKeys);
+			}
+			else dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudGridTransition.retarget(
+					this.chunkCaches, this.retainedGridChunks, targetKeys,
+					coord -> layoutChanged ? null : new ChunkCoord(coord.x0() - dx, coord.z0() - dz, coord.lodScale()),
+					SimpleCloudsRenderer::closeChunk);
+			this.cachedSnapX = snapX;
+			this.cachedSnapZ = snapZ;
+			if (TRACE_VISUAL_CHURN)
+				LOGGER.info("[MOTION-RETAIN] tick={} exact={} retained={} target={} worldFragments={}",
+						mc.level.getGameTime(), this.chunkCaches.size(), this.retainedGridChunks.size(), target.size(),
+						WORLD_COVERAGE ? this.worldCoverage.snapshot().values().stream().mapToInt(List::size).sum() : 0);
+		}
+		if (TRACE_VISUAL_CHURN && chunkSetChanged)
+		{
+			int overlap = 0;
+			for (ChunkCoord coord : targetKeys)
+				if (this.chunkCaches.containsKey(coord)) overlap++;
+			LOGGER.info("[MOTION-GRID] tick={} previous={} grid={} camera={},{},{} layoutChanged={} target={} cached={} overlap={} missing={}",
+					mc.level.getGameTime(), previousGridKey, gridKey, camX, camY, camZ,
+					layoutChanged, target.size(), this.chunkCaches.size(), overlap, target.size() - overlap);
+		}
+		int transparencyDistance = CpuCloudGenerator.transparencyDistance(
+				this.lodConfig.getEffectiveChunkSpan(), PRIMARY_CHUNK,
+				SimpleCloudsConfig.CLIENT.transparencyRenderDistancePercentage.get());
+		// Camera height only changes the storm-above-camera summary, not any
+		// cloud voxel or face. Including its bucket here made head bob near a
+		// 64-block boundary invalidate the entire field repeatedly.
 		int generationConfig = java.util.Objects.hash(groupsHash, maxLayerY, cloudHeight,
-				snapX, snapZ, Math.floorDiv(camGridY, 8));
-		this.prepareBatch(target, groups, regions, generationConfig, maxLayerY, camGridY, cloudHeight,
-				scrollX, scrollY, scrollZ, (float)camCloudX, (float)camCloudZ);
+				transparencyDistance);
+		if (generationConfig != this.lastLoggedGenerationConfig)
+		{
+			LOGGER.info("Cloud generation config changed: groupsHash={} maxLayerY={} cloudHeight={} cameraYBucket={} transparencyDistance={} groups={}",
+					groupsHash,maxLayerY,cloudHeight,Math.floorDiv(camGridY,8),transparencyDistance,groups.size());
+			this.lastLoggedGenerationConfig = generationConfig;
+		}
+		boolean paused = mc.isPaused();
+		if (!paused)
+			this.prepareBatch(target, groups, regions, generationConfig, maxLayerY, groupMaxY,
+					camGridY, cloudHeight,
+					scrollX, scrollY, scrollZ, (float)camCloudX, (float)camCloudZ,
+					transparencyDistance, this.cullFrustum);
 
 		// Pick up finished chunks (budgeted, generated off-thread — no render hitch).
 		// Results retain the exact key/config/phase with which they were generated.
-		// Replacement buffers are staged and become visible together, not as a wave.
-		// A1: the CPU result is uploaded into the chunk's PERSISTENT per-chunk GPU
-		// buffer here, and the CPU copy goes straight back to the pool (the GPU buffer
-		// is the home of the data; it is freed when the chunk is replaced or evicted).
+		// Each completed chunk is published independently. The worker has already
+		// split its faces into stable, added and removed sets before this GPU upload.
 		int polled = 0;
+		int replacedThisFrame = 0;
+		long changedFacesThisFrame = 0;
 		ChunkResult result;
-		while (polled < CHUNK_POLL_BUDGET && (result = this.completedChunks.poll()) != null)
+		while (!paused && polled < (GPU_WORLD_EXPERIMENT ? CHUNK_POLL_BUDGET : CPU_POLL_BUDGET)
+				&& (result = this.completedChunks.poll()) != null)
 		{
 			polled++;
 			final ChunkResult r = result; // final capture for the buffer-name lambdas
+			GpuOpaqueCandidate gpuOpaque = this.pendingGpuOpaque.get(r.coord());
+			if (gpuOpaque != null)
+			{
+				if (gpuOpaque.batch == r.batch()) this.pendingGpuOpaque.remove(r.coord());
+				else gpuOpaque = null;
+			}
+			GpuTransparentCandidate gpuTransparent = this.pendingGpuTransparent.get(r.coord());
+			if (gpuTransparent != null)
+			{
+				if (gpuTransparent.batch == r.batch()) this.pendingGpuTransparent.remove(r.coord());
+				else gpuTransparent = null;
+			}
 			this.pendingChunks.remove(r.coord());
 			if (r.batch() != this.batchId)
 			{
+				if (gpuOpaque != null) gpuOpaque.close();
+				if (gpuTransparent != null) gpuTransparent.close();
 				this.chunkBufferPool.release(r.opaque());
 				this.chunkBufferPool.release(r.transparent());
 				continue;
 			}
+			// A second crossing may change the retained predecessor while this
+			// worker runs. Its face delta is then stale even if its world key matches.
+			// Keep the drawable predecessor and retry; never apply an unrelated delta.
+			if (targetKeys.contains(r.coord())
+					&& (!WORLD_COVERAGE
+						? this.batchDeltaSources.get(r.coord()) != this.drawableChunk(r.coord())
+						: !java.util.Objects.equals(this.batchWorldSources.get(r.coord()), this.worldCoverage.fragments(r.coord()))))
+			{
+				if (gpuOpaque != null) gpuOpaque.close();
+				if (gpuTransparent != null) gpuTransparent.close();
+				this.chunkBufferPool.release(r.opaque());
+				this.chunkBufferPool.release(r.transparent());
+				this.batchExpected.remove(r.coord());
+				this.batchDeltaSources.remove(r.coord());
+				this.batchWorldSources.remove(r.coord());
+				this.batchFailed = true;
+				if (TRACE_VISUAL_CHURN) LOGGER.info("[MOTION-STALE-DELTA] coord={} batch={}", r.coord(), r.batch());
+				continue;
+			}
+			if (r.gpuOnly() && (gpuOpaque == null || !gpuOpaque.useGpuDelta
+					|| gpuTransparent == null || !gpuTransparent.useGpuDelta))
+			{
+				// GPU failure may have closed candidates after this result was
+				// queued. Preserve the expected chunk and regenerate it on CPU.
+				if (gpuOpaque != null) gpuOpaque.close();
+				if (gpuTransparent != null) gpuTransparent.close();
+				this.chunkBufferPool.release(r.opaque());
+				this.chunkBufferPool.release(r.transparent());
+				if (r.retryJob() == null) throw new IllegalStateException("GPU-only result has no CPU retry job");
+				this.pendingChunks.add(r.coord());
+				this.chunkJobQueue.add(r.retryJob());
+				this.summaryQueued++;
+				this.summaryGpuDirectFallback++;
+				continue;
+			}
 			this.batchExpected.remove(r.coord());
+			this.batchDeltaSources.remove(r.coord());
+			this.batchWorldSources.remove(r.coord());
 			this.summaryCompleted++;
 			this.summaryGenerationNanos += r.generationNanos();
 			if (!r.success())
 			{
+				if (gpuOpaque != null) gpuOpaque.close();
+				if (gpuTransparent != null) gpuTransparent.close();
 				this.batchFailed = true;
 				this.retryBatchAfterNanos = System.nanoTime() + 2_000_000_000L;
 				this.summaryFailed++;
 				continue;
 			}
 			ChunkData d = new ChunkData();
+			ChunkData fadedOut = new ChunkData();
 			try
 			{
 			d.regionSig = r.regionSig();
+			d.sourceCoord = r.coord();
 			d.groupsHash = r.groupsHash();
-			ChunkData prev = this.chunkCaches.get(r.coord());
-			d.lastGenTick = prev != null ? prev.lastGenTick : mc.level.getGameTime();
-			d.opaqueCount = r.opaqueCount();
-			d.opaque = d.opaqueCount > 0 && r.opaque() != null
-					? RenderSystem.getDevice().createBuffer(() -> "simpleclouds.chunk.o." + r.coord().x0() + "." + r.coord().z0() + "." + r.coord().lodScale(), GpuBuffer.USAGE_VERTEX, r.opaque())
-					: null;
-			d.transparentCount = r.transparentCount();
-			d.transparent = d.transparentCount > 0 && r.transparent() != null
-					? RenderSystem.getDevice().createBuffer(() -> "simpleclouds.chunk.t." + r.coord().x0() + "." + r.coord().z0() + "." + r.coord().lodScale(), GpuBuffer.USAGE_VERTEX, r.transparent())
-					: null;
+			d.lastGenTick = mc.level.getGameTime();
+			ChunkData previous = this.drawableChunk(r.coord());
+			var opaqueDelta = r.opaqueDelta();
+			var transparentDelta = r.transparentDelta();
+			String bufferName = "simpleclouds.chunk." + r.coord().x0() + "." + r.coord().z0() + "." + r.coord().lodScale();
+			long uploadStarted = System.nanoTime();
+			boolean directOpaque = r.gpuOnly();
+			boolean directTransparent = r.gpuOnly();
+			if (r.gpuOnly())
+			{
+				if (!r.fromGpu() || gpuOpaque == null || !gpuOpaque.useGpuDelta
+						|| gpuTransparent == null || !gpuTransparent.useGpuDelta)
+					throw new IllegalStateException("Counts-only GPU result has no valid direct draw buffers");
+				d.gpuResidentOnly = true;
+				gpuOpaque.adopt(d,fadedOut);
+				gpuTransparent.adopt(d,fadedOut);
+				this.summaryGpuDirectOpaque++;
+				this.summaryGpuDirectTransparent++;
+			}
+			else
+			{
+			d.opaqueRaw = opaqueDelta.complete();
+			d.transparentRaw = transparentDelta.complete();
+			directOpaque = r.fromGpu() && gpuOpaque != null && gpuOpaque.useGpuDelta
+					&& gpuOpaque.stableCount == opaqueDelta.stableCount(CloudVertexFormat.BYTES_PER_INSTANCE)
+					&& gpuOpaque.addedCount == opaqueDelta.addedCount(CloudVertexFormat.BYTES_PER_INSTANCE)
+					&& gpuOpaque.removedCount == opaqueDelta.removedCount(CloudVertexFormat.BYTES_PER_INSTANCE);
+			if (r.fromGpu() && gpuOpaque != null && gpuOpaque.useGpuDelta && !directOpaque)
+				LOGGER.warn("GPU face-local delta counts disagree with CPU for {}; using CPU draw buffers",r.coord());
+			if (directOpaque) this.summaryGpuDirectOpaque++;
+			else if (r.fromGpu() && gpuOpaque != null) this.summaryGpuDirectFallback++;
+			if (directOpaque)
+				gpuOpaque.adopt(d,fadedOut);
+			else
+			{
+				if (r.fromGpu() && gpuOpaque != null) gpuOpaque.adoptRawOnly(d);
+				d.opaqueCount = opaqueDelta.stableCount(CloudVertexFormat.BYTES_PER_INSTANCE);
+				d.opaque = uploadFaces(bufferName + ".stable.o", opaqueDelta.stable());
+				d.opaqueAddedCount = opaqueDelta.addedCount(CloudVertexFormat.BYTES_PER_INSTANCE);
+				d.opaqueAdded = uploadFaces(bufferName + ".added.o", opaqueDelta.added());
+				fadedOut.opaqueCount = opaqueDelta.removedCount(CloudVertexFormat.BYTES_PER_INSTANCE);
+				fadedOut.opaque = uploadFaces(bufferName + ".removed.o", opaqueDelta.removed());
+			}
+			directTransparent = r.fromGpu() && gpuTransparent != null && gpuTransparent.useGpuDelta
+					&& gpuTransparent.stableCount == transparentDelta.stableCount(CloudVertexFormat.BYTES_PER_INSTANCE_ALPHA)
+					&& gpuTransparent.addedCount == transparentDelta.addedCount(CloudVertexFormat.BYTES_PER_INSTANCE_ALPHA)
+					&& gpuTransparent.removedCount == transparentDelta.removedCount(CloudVertexFormat.BYTES_PER_INSTANCE_ALPHA);
+			if (r.fromGpu() && gpuTransparent != null && gpuTransparent.useGpuDelta && !directTransparent)
+				LOGGER.warn("GPU transparent face-local delta counts disagree with CPU for {}; using CPU draw buffers",r.coord());
+			if (directTransparent) this.summaryGpuDirectTransparent++;
+			else if (r.fromGpu() && gpuTransparent != null) this.summaryGpuTransparentFallback++;
+			if (directTransparent)
+				gpuTransparent.adopt(d,fadedOut);
+			else
+			{
+				if (r.fromGpu() && gpuTransparent != null) gpuTransparent.adoptRawOnly(d);
+				d.transparentCount = transparentDelta.stableCount(CloudVertexFormat.BYTES_PER_INSTANCE_ALPHA);
+				d.transparent = uploadFaces(bufferName + ".stable.t", transparentDelta.stable());
+				d.transparentAddedCount = transparentDelta.addedCount(CloudVertexFormat.BYTES_PER_INSTANCE_ALPHA);
+				d.transparentAdded = uploadFaces(bufferName + ".added.t", transparentDelta.added());
+				fadedOut.transparentCount = transparentDelta.removedCount(CloudVertexFormat.BYTES_PER_INSTANCE_ALPHA);
+				fadedOut.transparent = uploadFaces(bufferName + ".removed.t", transparentDelta.removed());
+			}
+			this.summaryUploadNanos += System.nanoTime() - uploadStarted;
+			this.summaryUploads++;
+			}
 			d.stormCoverage = r.stormCoverage();
 			d.stormColumns = r.stormColumns();
 			d.stormXCells = r.stormXCells();
@@ -963,64 +1910,165 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 			d.genScrollX = r.scrollX();
 			d.genScrollY = r.scrollY();
 			d.genScrollZ = r.scrollZ();
-			this.batchStaged.put(r.coord(), d);
-			this.summaryUploadBytes += (r.opaque() == null ? 0 : r.opaque().remaining())
-					+ (r.transparent() == null ? 0 : r.transparent().remaining());
+			// Unchanged faces are drawn without a transition. Only genuinely added
+			// and removed faces take part in the complementary five-tick dissolve.
+			if (targetKeys.contains(r.coord()))
+			{
+				// A CPU fallback after a counts-only GPU generation has no heap
+				// previous-face copy. Fade its complete GPU-resident field out
+				// instead of dropping it abruptly while the CPU result fades in.
+				if (previous != null && previous.gpuResidentOnly)
+				{
+					if (!directOpaque && previous.gpuOpaqueRaw != null)
+					{
+						if (fadedOut.opaque != null) fadedOut.opaque.close();
+						fadedOut.opaque = previous.gpuOpaqueRaw;
+						fadedOut.opaqueCount = previous.gpuOpaqueRawCount;
+						previous.gpuOpaqueRaw = null;
+					}
+					if (!directTransparent && previous.gpuTransparentRaw != null)
+					{
+						if (fadedOut.transparent != null) fadedOut.transparent.close();
+						fadedOut.transparent = previous.gpuTransparentRaw;
+						fadedOut.transparentCount = previous.gpuTransparentRawCount;
+						previous.gpuTransparentRaw = null;
+					}
+				}
+				if (WORLD_COVERAGE)
+				{
+					d.departing = fadedOut;
+					this.worldCoverage.publish(r.coord(), d);
+					this.chunkCaches.put(r.coord(), d);
+					if (GPU_TEST_CPU_FALLBACK && r.fromGpu() && !r.gpuOnly()
+							&& ++this.gpuOnlyCompleted == 512)
+					{
+						var beforeFallback = this.worldCoverage.snapshot();
+						this.disableGpuWorld(new IllegalStateException("Intentional development-only GPU-readback-to-CPU fallback test"), null);
+						if (!beforeFallback.equals(this.worldCoverage.snapshot()))
+							throw new IllegalStateException("GPU fallback changed live physical coverage");
+						LOGGER.info("[GPU-FALLBACK-TEST] readbackCompletions=512 coverageUnchanged=true fragments={}",
+								beforeFallback.values().stream().mapToInt(List::size).sum());
+					}
+				}
+				else
+				{
+				this.chunkCaches.put(r.coord(), d);
+				this.retainedGridChunks.remove(r.coord());
+				closeChunk(previous);
+				if (fadedOut.opaque != null || fadedOut.transparent != null)
+				{
+					ChunkData superseded = this.previousBatch.put(r.coord(), fadedOut);
+					if (TRACE_VISUAL_CHURN && superseded != null && previous != null)
+					{
+						this.summarySupersededFades++;
+						float priorAlpha = chunkAlpha(previous, mc.level.getGameTime(), 0.0F);
+						if (priorAlpha < 1.0F)
+						{
+							this.summaryInterruptedFades++;
+							if (this.summaryInterruptedFades <= 8)
+								LOGGER.info("[FADE-OVERLAP] tick={} coord={} priorAlpha={} discardedFaces={}",
+										mc.level.getGameTime(), r.coord(), priorAlpha,
+										superseded.opaqueCount + superseded.transparentCount);
+						}
+					}
+					closeChunk(superseded);
+				}
+				else
+				{
+					closeChunk(this.previousBatch.remove(r.coord()));
+				}
+				}
+			}
+			else { closeChunk(d); closeChunk(fadedOut); }
+			if (!r.gpuOnly())
+				this.summaryUploadBytes += opaqueDelta.stable().length + opaqueDelta.added().length + opaqueDelta.removed().length
+						+ transparentDelta.stable().length + transparentDelta.added().length + transparentDelta.removed().length;
+			if (previous != null && targetKeys.contains(r.coord()))
+			{
+				replacedThisFrame++;
+				changedFacesThisFrame += r.gpuOnly()
+						? (long) gpuOpaque.addedCount + gpuOpaque.removedCount
+								+ gpuTransparent.addedCount + gpuTransparent.removedCount
+						: (long) opaqueDelta.addedCount(CloudVertexFormat.BYTES_PER_INSTANCE)
+						+ opaqueDelta.removedCount(CloudVertexFormat.BYTES_PER_INSTANCE)
+						+ transparentDelta.addedCount(CloudVertexFormat.BYTES_PER_INSTANCE_ALPHA)
+						+ transparentDelta.removedCount(CloudVertexFormat.BYTES_PER_INSTANCE_ALPHA);
+			}
 			}
 			catch (RuntimeException uploadFailure)
 			{
-				closeChunk(d);
+				// publish commits coverage before retiring unused owners. If retirement
+				// throws, the new source is already live: never close its draw buffers.
+				boolean published = WORLD_COVERAGE && this.worldCoverage.fragments(r.coord())
+						.stream().anyMatch(piece -> piece.source() == d);
+				if (published)
+					this.chunkCaches.put(r.coord(), d);
+				else
+				{
+					// d may own fadedOut already; release it through exactly one path.
+					boolean ownsFade = d.departing == fadedOut;
+					closeChunk(d);
+					if (!ownsFade) closeChunk(fadedOut);
+				}
 				this.batchFailed = true;
 				this.summaryFailed++;
 				this.retryBatchAfterNanos = System.nanoTime() + 2_000_000_000L;
-				LOGGER.debug("Simple Clouds chunk upload failed; retaining previous batch", uploadFailure);
+				LOGGER.warn(published
+						? "Simple Clouds chunk retirement failed after publication; keeping the new chunk"
+						: "Simple Clouds chunk upload failed; retaining the previous chunk", uploadFailure);
 			}
 			finally
 			{
+			if (gpuOpaque != null) gpuOpaque.close();
+			if (gpuTransparent != null) gpuTransparent.close();
 			// A1: the CPU copies are released back to the pool now that the GPU has them.
 			this.chunkBufferPool.release(r.opaque());
 			this.chunkBufferPool.release(r.transparent());
 			}
 		}
-		if (this.batchExpected.isEmpty() && !this.batchStaged.isEmpty())
+		if (TRACE_VISUAL_CHURN)
 		{
-			// Publish one immutable phase at a frame boundary. Old meshes remain
-			// visible until every replacement is uploaded; no marching update seam.
-			for (var entry : this.batchStaged.entrySet())
-			{
-				if (this.batchFailed || !targetKeys.contains(entry.getKey())) closeChunk(entry.getValue());
-				else
-				{
-					ChunkData previous = this.chunkCaches.put(entry.getKey(), entry.getValue());
-					if (previous != null) this.previousBatch.put(entry.getKey(), previous);
-				}
-			}
+			this.summaryChangedFaces += changedFacesThisFrame;
+			this.summaryMaxChangedFacesInFrame = Math.max(this.summaryMaxChangedFacesInFrame, changedFacesThisFrame);
+			this.summaryMaxReplacedInFrame = Math.max(this.summaryMaxReplacedInFrame, replacedThisFrame);
+			if (replacedThisFrame >= 6 && changedFacesThisFrame >= 3000)
+				LOGGER.info("[VISUAL-CHURN] tick={} batch={} replacedChunks={} changedFaces={} targetChunks={} cachedChunks={} scroll={},{},{}",
+						mc.level.getGameTime(), this.batchId, replacedThisFrame, changedFacesThisFrame,
+						targetKeys.size(), this.chunkCaches.size(), scrollX, scrollY, scrollZ);
+		}
+		if (!paused && this.batchInProgress && this.batchExpected.isEmpty())
+		{
+			this.batchInProgress = false;
 			if (!this.batchFailed)
 			{
 				this.publishedBatchCount++;
-				this.transitionStartedNanos = System.nanoTime();
+				long publishedAt = System.nanoTime();
+				long batchDuration = publishedAt - this.batchStartedNanos;
+				this.summaryPublishedBatches++;
+				this.summaryBatchDurationNanos += batchDuration;
+				this.summaryLongestBatchNanos = Math.max(this.summaryLongestBatchNanos, batchDuration);
+				if (this.lastPublishedNanos != 0)
+					this.summaryLongestPublishGapNanos = Math.max(this.summaryLongestPublishGapNanos, publishedAt - this.lastPublishedNanos);
+				this.lastPublishedNanos = publishedAt;
 				this.phaseX = this.batchX; this.phaseY = this.batchY; this.phaseZ = this.batchZ;
 				this.hasScrollPhase = true;
 			}
-			this.batchStaged.clear();
 		}
 		// A1: hard cap on cached chunks (safety net; frees the GPU buffers of any
 		// leaked entries).
-		if (this.chunkCaches.size() > MAX_CACHED_CHUNKS)
+		if (!WORLD_COVERAGE && this.chunkCaches.size() > MAX_CACHED_CHUNKS)
 		{
 			java.util.Iterator<java.util.Map.Entry<ChunkCoord, ChunkData>> it = this.chunkCaches.entrySet().iterator();
 			while (this.chunkCaches.size() > MAX_CACHED_CHUNKS && it.hasNext())
 			{
 				ChunkData leaked = it.next().getValue();
 				it.remove();
-				if (leaked.opaque != null)
-					leaked.opaque.close();
-				if (leaked.transparent != null)
-					leaked.transparent.close();
+				closeChunk(leaked);
 			}
 		}
 
-		for (int i = 0; i < CHUNK_ENQUEUE_BUDGET && !this.batchWaiting.isEmpty(); i++)
+		if (!paused && GPU_WORLD_EXPERIMENT) this.serviceGpuWorld();
+		else for (int i = 0; !paused && i < CPU_ENQUEUE_BUDGET && !this.batchWaiting.isEmpty(); i++)
 		{
 			ChunkJob job = this.batchWaiting.removeFirst();
 			this.pendingChunks.add(job.coord());
@@ -1028,32 +2076,75 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 			this.summaryQueued++;
 		}
 		this.logGenerationSummary();
+		// Filling the initial 364-chunk layout used to be visible as several
+		// large sky replacements. Prepare it out of view, then reveal the ready
+		// field over five game ticks. This is startup-only; later voxel updates
+		// still publish individually through the normal face-delta path.
+		if (!this.initialFieldRevealed)
+		{
+			long gameTick = mc.level.getGameTime();
+			if (this.initialFieldWaitStartedTick == Long.MIN_VALUE)
+				this.initialFieldWaitStartedTick = gameTick;
+			if (this.getChunkFillFraction() < 0.97F
+					&& gameTick - this.initialFieldWaitStartedTick < 200)
+				return;
+			if (this.getChunkFillFraction() < 0.97F)
+				LOGGER.warn("Initial cloud field reached only {} fill after 200 ticks; revealing the available chunks",
+						this.getChunkFillFraction());
+			this.initialFieldRevealed = true;
+			this.initialFieldRevealTick = gameTick;
+		}
 
 		float localStorm = 0.0F;
 		int totalOpaque = 0, totalTransp = 0;
-		long nowTick = mc.level.getGameTime();
+		if (!paused)
+			this.lastUnpausedGameTick = mc.level.getGameTime();
+		long nowTick = this.lastUnpausedGameTick;
+		float startupAlpha = Mth.clamp((nowTick + partialTick - this.initialFieldRevealTick)
+				* CHUNK_FADE_IN_ALPHA_PER_TICK, 0.0F, 1.0F);
+		// A paused single-player world keeps gameTime still, so voxel dissolves
+		// freeze with the world instead of finishing on a wall-clock timer.
+		var fading = this.previousBatch.entrySet().iterator();
+		while (fading.hasNext())
+		{
+			var entry = fading.next();
+			ChunkData current = this.chunkCaches.get(entry.getKey());
+			if (!targetKeys.contains(entry.getKey()) || current == null
+					|| chunkAlpha(current, nowTick, partialTick) >= 1.0F)
+			{
+				closeChunk(entry.getValue());
+				fading.remove();
+			}
+		}
 		// Plan item 3: where storm cloud is overhead around the camera, for the spatial storm
-		// fog. Each chunk's columns sit where its geometry is drawn (grid position plus the drift
-		// since its generation, as in drawClouds).
+		// fog. Columns and rendered geometry share the same world-fixed lattice.
 		this.stormFogMap.begin(camX, camZ);
 		for (long[] c : target)
 		{
-			ChunkData d = this.chunkCaches.get(new ChunkCoord((int) c[0], (int) c[1], (int) c[2]));
-			if (d == null)
-				continue;
-			localStorm += d.stormCoverage;
+			ChunkCoord coord = new ChunkCoord((int)c[0], (int)c[1], (int)c[2]);
+			for (var piece : this.drawablePieces(coord))
+			{
+			ChunkData d = piece.source();
+			ChunkCoord origin = d.sourceCoord;
+			CloudWorldCoverage.Rect clip = WORLD_COVERAGE ? piece.bounds() : null;
+			localStorm += !WORLD_COVERAGE ? d.stormCoverage
+					: dev.nonamecrackers2.simpleclouds.client.renderer.v2.StormCoverage.contribution(
+							d.stormColumns, d.stormXCells, d.stormZCells, origin.x0(), origin.z0(), origin.lodScale(),
+							(float)camCloudX, (float)camCloudZ, clip);
 			if (d.stormColumns != null)
 				this.stormFogMap.addChunk(d.stormColumns, d.stormXCells, d.stormZCells,
-						(c[0] + d.genScrollX - scrollX) * CLOUD_SCALE_F, (c[1] + d.genScrollZ - scrollZ) * CLOUD_SCALE_F,
-						c[2] * CLOUD_SCALE_F);
-			totalOpaque += d.opaqueCount;
-			totalTransp += d.transparentCount;
+						origin.x0() * CLOUD_SCALE_F, origin.z0() * CLOUD_SCALE_F,
+						origin.lodScale() * CLOUD_SCALE_F, clip);
+			totalOpaque += d.opaqueCount + d.opaqueAddedCount;
+			totalTransp += d.transparentCount + d.transparentAddedCount;
+			}
 		}
 		// Evict chunks that left the target set (keeps the map bounded; A1: their
 		// GPU buffers are freed here — "free GPU buffers of chunks that leave the
 		// LOD layout").
 		if (chunkSetChanged || polled > 0)
 		{
+			int evictedCount = 0;
 			java.util.Set<ChunkCoord> keep = new java.util.HashSet<>(target.size());
 			for (long[] c : target)
 				keep.add(new ChunkCoord((int) c[0], (int) c[1], (int) c[2]));
@@ -1064,13 +2155,14 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 				if (!keep.contains(e.getKey()))
 				{
 					ChunkData evicted = e.getValue();
-					if (evicted.opaque != null)
-						evicted.opaque.close();
-					if (evicted.transparent != null)
-						evicted.transparent.close();
+					if (!WORLD_COVERAGE) closeChunk(evicted);
 					it.remove();
+					evictedCount++;
 				}
 			}
+			if (TRACE_VISUAL_CHURN && evictedCount > 0)
+				LOGGER.info("[MOTION-EVICT] tick={} grid={} evicted={} retained={} target={} polled={}",
+						mc.level.getGameTime(), gridKey, evictedCount, this.chunkCaches.size(), target.size(), polled);
 		}
 		this.cacheStormCoverage = Mth.clamp(localStorm, 0.0F, 1.0F);
 
@@ -1119,6 +2211,8 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 			this.loggedFog = true;
 			LOGGER.info("Simple Clouds clouds: fog range {}..{} blocks, sky color ({}, {}, {})", (int) fogStart, (int) fogEnd, fr, fg, fb);
 		}
+		this.fogStart = fogStart;
+		this.fogEnd = fogEnd;
 		this.drawPipeline.setFog(fr, fg, fb, fogStart, fogEnd);
 
 		// A1: per-chunk passes from the persistent per-chunk GPU buffers (the
@@ -1126,29 +2220,12 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		// alpha (step 3) is just this chunk's pass ColorModulator — no separate fade
 		// uploads, no whole-field rebuild.
 		boolean transpPassEnabled = SimpleCloudsConfig.CLIENT.transparency.get();
-		float transition = this.previousBatch.isEmpty() ? 1.0F : this.transitionProgress();
-		boolean blending = transition < 1.0F;
-		if (blending) this.drawPipeline.beginCloudTransition();
-		try
-		{
-		for (int scene = 0; scene < (blending ? 2 : 1); scene++)
-		{
-		boolean oldScene = blending && scene == 0;
-		if (blending) this.drawPipeline.selectCloudTransitionScene(oldScene);
 		for (long[] c : target)
 		{
 			ChunkCoord coord = new ChunkCoord((int)c[0], (int)c[1], (int)c[2]);
-			ChunkData old = this.previousBatch.get(coord);
-			ChunkData d = oldScene && old != null ? old : this.chunkCaches.get(coord);
-			if (d == null || d.opaque == null)
-				continue;
-			float alpha = chunkAlpha(d, nowTick, partialTick);
-			if (alpha <= 0.0F)
-				continue; // not visible yet this frame
-			// Step 5: continuous scroll — draw the chunk at its grid position plus
-			// the drift accumulated since its mesh was generated (see drawClouds).
-			this.drawPipeline.drawClouds(view, d.opaque, d.opaqueCount, alpha,
-					(d.genScrollX - scrollX) * CLOUD_SCALE_F, (d.genScrollY - scrollY) * CLOUD_SCALE_F, (d.genScrollZ - scrollZ) * CLOUD_SCALE_F);
+			for (var piece : this.drawablePieces(coord)) this.drawPiece(view, piece.source(),
+					WORLD_COVERAGE ? piece.source().departing : this.previousBatch.get(coord),
+					WORLD_COVERAGE ? piece.bounds() : null, false, startupAlpha, nowTick, partialTick);
 		}
 		// Transparent edges after the opaque pass (same chunk order; far-to-near
 		// blending order is a step-5 concern).
@@ -1157,24 +2234,11 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 			for (long[] c : target)
 			{
 				ChunkCoord coord = new ChunkCoord((int)c[0], (int)c[1], (int)c[2]);
-				ChunkData old = this.previousBatch.get(coord);
-				ChunkData d = oldScene && old != null ? old : this.chunkCaches.get(coord);
-				if (d == null || d.transparent == null || d.transparentCount == 0)
-					continue;
-				float alpha = chunkAlpha(d, nowTick, partialTick);
-				if (alpha <= 0.0F)
-					continue;
-				// Step 5: same scroll offset as the opaque pass (one chunk = one
-				// generation phase).
-				this.drawPipeline.drawTransparencyClouds(view, d.transparent, d.transparentCount, alpha,
-						(d.genScrollX - scrollX) * CLOUD_SCALE_F, (d.genScrollY - scrollY) * CLOUD_SCALE_F, (d.genScrollZ - scrollZ) * CLOUD_SCALE_F);
+				for (var piece : this.drawablePieces(coord)) this.drawPiece(view, piece.source(),
+						WORLD_COVERAGE ? piece.source().departing : this.previousBatch.get(coord),
+						WORLD_COVERAGE ? piece.bounds() : null, true, startupAlpha, nowTick, partialTick);
 			}
 		}
-
-		}
-		if (blending) this.drawPipeline.finishCloudTransition(transition);
-		}
-		finally { this.drawPipeline.resetCloudDestination(); }
 
 		// World effects: custom rain (1.20.1 PrecipitationQuads; slice without
 		// wind tilt / snow) into the scene, before the overlays.
@@ -1221,9 +2285,12 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		this.shadowSources.clear();
 		for (long[] c : target)
 		{
-			ChunkData d = this.chunkCaches.get(new ChunkCoord((int) c[0], (int) c[1], (int) c[2]));
-			if (d != null && d.opaque != null)
-				this.shadowSources.add(new CloudsDrawPipeline.InstanceSource(d.opaque, d.opaqueCount));
+			for (var piece : this.drawablePieces(new ChunkCoord((int)c[0], (int)c[1], (int)c[2])))
+			{
+				ChunkData d = piece.source();
+				if (d.opaque != null) this.shadowSources.add(new CloudsDrawPipeline.InstanceSource(d.opaque,
+						d.opaqueCount, WORLD_COVERAGE ? piece.bounds() : null));
+			}
 		}
 		this.drawPipeline.renderCloudShadowMap(camX, camY, camZ, (float) cloudHeight, this.shadowSources);
 		if (overlaysEnabled)
@@ -1248,9 +2315,9 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 			// state (no getFov method anymore).
 			float fovDeg = this.mc.gameRenderer.gameRenderState().levelRenderState.cameraRenderState.hudFov;
 			float aspect = (float) this.mc.getWindow().getWidth() / Math.max(1.0F, (float) this.mc.getWindow().getHeight());
-			// Vanilla cloud brightness (0..1) like the original's r/g/b args.
-			float bright = 0.9F;
-			this.atmosphericClouds.render(this.drawPipeline, view, partialTick, bright, bright, bright, fovDeg, aspect);
+			float[] cloudColor = this.getCloudColor(partialTick);
+			this.atmosphericClouds.render(this.drawPipeline, view, partialTick,
+					cloudColor[0], cloudColor[1], cloudColor[2], fovDeg, aspect);
 		}
 	}
 
@@ -1430,6 +2497,10 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	public void onCloudManagerChange(ClientCloudManager manager)
 	{
 		this.cloudManager = manager;
+		this.initialSyncWaitStartedTick = Long.MIN_VALUE;
+		this.initialSyncTimeoutLogged = false;
+		this.initialFieldRevealed = false;
+		this.initialFieldWaitStartedTick = Long.MIN_VALUE;
 	}
 
 	public boolean needsReinitialization()
@@ -1471,9 +2542,10 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		this.chunkJobQueue.clear();
 		this.batchWaiting.clear();
 		this.batchExpected.clear();
+		this.batchDeltaSources.clear();
+		this.batchWorldSources.clear();
+		this.batchInProgress = false;
 		this.pendingChunks.clear();
-		for (ChunkData data : this.batchStaged.values()) closeChunk(data);
-		this.batchStaged.clear();
 		if (this.drawPipeline != null)
 		{
 			this.drawPipeline.close();
@@ -1489,15 +2561,33 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 			this.chunkWorkerPool.shutdownNow();
 			this.chunkWorkerPool = null;
 		}
-		// A1: free the per-chunk GPU buffers.
-		for (ChunkData d : this.chunkCaches.values())
+		if (this.gpuPostPool != null)
 		{
-			if (d.opaque != null)
-				d.opaque.close();
-			if (d.transparent != null)
-				d.transparent.close();
+			this.gpuPostPool.shutdownNow();
+			this.gpuPostPool = null;
 		}
+		for (int i = 0; i < this.gpuSlots.length; i++)
+		{
+			if (this.gpuSlots[i] != null) this.gpuSlots[i].generator.close();
+			this.gpuSlots[i] = null;
+		}
+		this.pendingGpuOpaque.values().forEach(GpuOpaqueCandidate::close);
+		this.pendingGpuOpaque.clear();
+		this.pendingGpuTransparent.values().forEach(GpuTransparentCandidate::close);
+		this.pendingGpuTransparent.clear();
+		if (this.gpuFaceDelta != null) { this.gpuFaceDelta.close(); this.gpuFaceDelta = null; }
+		if (this.gpuTransparentDelta != null) { this.gpuTransparentDelta.close(); this.gpuTransparentDelta = null; }
+		if (this.gpuTransparentExpansion != null) { this.gpuTransparentExpansion.close(); this.gpuTransparentExpansion = null; }
+		if (this.gpuStormBits != null) { this.gpuStormBits.close(); this.gpuStormBits = null; }
+		this.gpuWorldFailed = false;
+		this.gpuOnlyCompleted = 0;
+		// A1: free the per-chunk GPU buffers.
+		if (!WORLD_COVERAGE) for (ChunkData d : this.chunkCaches.values()) closeChunk(d);
+		else this.worldCoverage.close();
 		this.chunkCaches.clear();
+		this.retainedGridChunks.values().forEach(retained -> closeChunk(retained.value()));
+		this.retainedGridChunks.clear();
+		this.lastChunkGridKey = null;
 		this.cpuGenerator = null;
 		this.worldEffects = null;
 		if (this.spike != null)
@@ -1545,7 +2635,19 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 
 	public float[] getCloudColor(float partialTick)
 	{
-		return new float[] { 1.0F, 1.0F, 1.0F };
+		if (this.mc.level == null)
+			return new float[] { 1.0F, 1.0F, 1.0F };
+		// 26.3 moved vanilla cloud colour from ClientLevel.getCloudColor to
+		// the extracted level render state (EnvironmentAttributes.CLOUD_COLOR).
+		int vanilla = this.mc.gameRenderer.gameRenderState().levelRenderState.cloudColor;
+		float factor = this.getWorldEffectsManager().getDarkenFactor(partialTick, 0.8F)
+				+ this.getWorldEffectsManager().flashStrength(partialTick)
+				* dev.nonamecrackers2.simpleclouds.common.cloud.SimpleCloudsConstants.LIGHTNING_FLASH_STRENGTH;
+		return new float[] {
+				Mth.clamp(((vanilla >> 16) & 0xFF) / 255.0F * factor, 0.0F, 1.0F),
+				Mth.clamp(((vanilla >> 8) & 0xFF) / 255.0F * factor, 0.0F, 1.0F),
+				Mth.clamp((vanilla & 0xFF) / 255.0F * factor, 0.0F, 1.0F)
+		};
 	}
 
 	public void translateClouds(PoseStack stack, double camX, double camY, double camZ)
@@ -1560,15 +2662,20 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	{
 		if (!SimpleCloudsCompatHelper.renderThisPass())
 			return;
+		if (this.mc.isPaused()) partialTick = this.lastUnpausedPartialTick;
+		else this.lastUnpausedPartialTick = partialTick;
 		// One reset per rendered frame of the pipeline's private transform ring (see
 		// CloudsDrawPipeline.beginFrame): every cloud, shadow, lightning, storm and transition
 		// draw of this frame writes its slice after it.
 		if (this.drawPipeline != null)
 			this.drawPipeline.beginFrame();
-		// Lightning brightening for this frame, the original's "factor += skyFlashFactor".
+		// The original tints every cloud pass with vanilla's time/weather cloud
+		// color, then applies local storm darkening and lightning brightening.
 		if (this.drawPipeline != null)
-			this.drawPipeline.setFlashBoost(this.getWorldEffectsManager().flashStrength(partialTick)
-					* dev.nonamecrackers2.simpleclouds.common.cloud.SimpleCloudsConstants.LIGHTNING_FLASH_STRENGTH);
+		{
+			float[] cloudColor = this.getCloudColor(partialTick);
+			this.drawPipeline.setCloudColor(cloudColor[0], cloudColor[1], cloudColor[2]);
+		}
 		// 26.2 3D previewer: while the previewer screen is open, draw the preview
 		// box into the main frame (snippet pipeline, orbit camera, no depth test)
 		// instead of the normal cloud pass.
@@ -1577,7 +2684,7 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 			this.drawPreviewInWorld(previewScreen, camX, camY, camZ);
 			return;
 		}
-		this.generateAndDrawClouds(camX, camY, camZ, partialTick);
+		this.generateAndDrawClouds(camX, camY, camZ, partialTick, projMat);
 	}
 
 	/**
@@ -1595,7 +2702,8 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 			if (this.previewPipeline == null)
 			{
 				this.previewPipeline = new PreviewDrawPipeline();
-				this.previewPipeline.generateMesh();
+				if (s3d instanceof dev.nonamecrackers2.simpleclouds.client.gui.CloudPreviewerScreen preview)
+					this.previewPipeline.generateMesh(preview.selectedCloudType());
 			}
 			Matrix4f view = PreviewDrawPipeline.previewViewMatrix(s3d.camRotX(), s3d.camRotY(), s3d.zoom(), s3d.offset());
 			this.previewPipeline.draw(this.drawPipeline, view);

@@ -60,6 +60,11 @@ public final class StormFogMap
 	 */
 	public void addChunk(byte[] columns, int xCells, int zCells, float worldX, float worldZ, float columnBlocks)
 	{
+		this.addChunk(columns, xCells, zCells, worldX, worldZ, columnBlocks, null);
+	}
+
+	public void addChunk(byte[] columns, int xCells, int zCells, float worldX, float worldZ, float columnBlocks, CloudWorldCoverage.Rect clip)
+	{
 		if (!this.valid || columns == null || columns.length < xCells * zCells || !(columnBlocks > 0.0F)
 				|| !Float.isFinite(worldX) || !Float.isFinite(worldZ))
 			return;
@@ -67,6 +72,8 @@ public final class StormFogMap
 		for (int ix = 0; ix < xCells; ix++)
 		{
 			float x0 = worldX + ix * columnBlocks - this.originX, x1 = x0 + columnBlocks;
+			if (clip != null && (worldX + (ix + .5F) * columnBlocks < clip.x0() * 8.0F
+					|| worldX + (ix + .5F) * columnBlocks >= clip.x1() * 8.0F)) continue;
 			if (x1 <= 0.0F || x0 >= CELLS * CELL_BLOCKS)
 				continue;
 			for (int iz = 0; iz < zCells; iz++)
@@ -74,6 +81,8 @@ public final class StormFogMap
 				if (columns[ix * zCells + iz] == 0)
 					continue;
 				float z0 = worldZ + iz * columnBlocks - this.originZ, z1 = z0 + columnBlocks;
+				if (clip != null && (worldZ + (iz + .5F) * columnBlocks < clip.z0() * 8.0F
+						|| worldZ + (iz + .5F) * columnBlocks >= clip.z1() * 8.0F)) continue;
 				if (z1 <= 0.0F || z0 >= CELLS * CELL_BLOCKS)
 					continue;
 				int cx0 = Math.max(0, (int) Math.floor(x0 / CELL_BLOCKS)), cx1 = Math.min(CELLS - 1, (int) Math.ceil(x1 / CELL_BLOCKS) - 1);

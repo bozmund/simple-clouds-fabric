@@ -15,13 +15,50 @@ import nonamecrackers2.crackerslib.client.gui.Screen3D;
  * the camera interaction (Screen3D mouse drag = rotate, middle-drag = pan,
  * scroll = zoom) and the close behavior.
  *
- * DEVIATIONS from 1.20.1: no per-type generator selector, no offscreen preview
+ * DEVIATIONS from 1.20.1: no noise-layer editor, no offscreen preview
  * image export button (CloudImageRenderer), background is the game sky instead
  * of a flat sky-blue target clear.
  */
 public class CloudPreviewerScreen extends Screen3D
 {
 	private final Screen prev;
+	private dev.nonamecrackers2.simpleclouds.common.cloud.CloudType selectedType;
+	private java.util.List<dev.nonamecrackers2.simpleclouds.common.cloud.CloudType> types = java.util.List.of();
+	private net.minecraft.client.gui.components.Button typeButton;
+
+	@Override
+	protected void init()
+	{
+		super.init();
+		var selectedId = this.selectedType == null ? null : this.selectedType.id();
+		this.types = dev.nonamecrackers2.simpleclouds.client.cloud.ClientSideCloudTypeManager.getInstance()
+				.getCloudTypes().values().stream().sorted(java.util.Comparator.comparing(t -> t.id().toString())).toList();
+		this.selectedType = this.types.stream().filter(t -> t.id().equals(selectedId)).findFirst()
+				.orElse(this.types.isEmpty() ? null : this.types.get(0));
+		this.typeButton = this.addRenderableWidget(net.minecraft.client.gui.components.Button
+				.builder(this.typeLabel(), button -> this.selectNextType())
+				.bounds(10, 10, Math.max(80, Math.min(320, this.width - 20)), 20).build());
+		this.typeButton.active = this.types.size() > 1;
+		destroyMeshGenerator();
+	}
+
+	private Component typeLabel()
+	{
+		return Component.literal(this.selectedType == null ? "No cloud types available" : "Cloud: " + this.selectedType.id() + " >");
+	}
+
+	private void selectNextType()
+	{
+		if (this.types.isEmpty()) return;
+		this.selectedType = this.types.get((this.types.indexOf(this.selectedType) + 1) % this.types.size());
+		this.typeButton.setMessage(this.typeLabel());
+		destroyMeshGenerator();
+	}
+
+	public dev.nonamecrackers2.simpleclouds.common.cloud.CloudType selectedCloudType()
+	{
+		return this.selectedType;
+	}
 
 	public static void addCloudMeshListener(RegisterClientReloadListenersEvent event)
 	{

@@ -2,6 +2,7 @@
 #extension GL_ARB_separate_shader_objects : require
 
 #include <minecraft:dynamictransforms.glsl>
+#include <minecraft:projection.glsl>
 
 // Lightning bolt section corner: world position + vertex color.
 layout(location = 0) in vec3 Position;
@@ -11,6 +12,6 @@ layout(location = 0) out vec4 vColor;
 
 void main()
 {
-	gl_Position = vec4(Position, 1.0) * transformations[0];
+	gl_Position = ProjMat * ModelViewMat * vec4(Position, 1.0);
 	vColor = Color;
 }

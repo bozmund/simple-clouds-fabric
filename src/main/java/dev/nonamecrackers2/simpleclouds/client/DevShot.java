@@ -93,6 +93,8 @@ public final class DevShot
 	private static final Logger LOGGER = LogManager.getLogger("simpleclouds/DevShot");
 	private static boolean checked;
 	private static boolean done;
+	private static boolean testNight;
+	private static boolean syncProbe; // SYNCPROBE token: inject one known periodic angle correction
 	private static int framesLeft;
 	private static int framesTotal;
 	private static float savedXRot;
@@ -155,6 +157,9 @@ public final class DevShot
 		// S5 (storm plan): after file1, take seqCount-1 more frames named
 		// file1-with-suffix (-02 .. -NN), seqInterval game ticks apart.
 		int seqCount;
+		boolean gridCross; // opted-in travel probe across one primary-grid boundary
+		boolean gridStorm; // same travel probe with a bounded original-sized storm
+		boolean gridRapid; // alternate the boundary while workers are still in flight
 		long seqInterval;
 		// Plan item 2 (STORM S2): stand on the terrain at (x, z) itself, not at the probe
 		// origin's ground height (reused 800 blocks away, it put the camera among plants /
@@ -206,7 +211,7 @@ public final class DevShot
 
 	private DevShot() {}
 
-	/** Forces the overworld WorldClock to NOON (the save's time can be night after SIGKILL exits). */
+	/** Sets a repeatable day or night clock for screenshot comparisons. */
 	private static void forceNoon(Minecraft mc)
 	{
 		IntegratedServer server = mc.getSingleplayerServer();
@@ -225,9 +230,9 @@ public final class DevShot
 		{
 			net.minecraft.core.Holder<net.minecraft.world.clock.WorldClock> holder =
 					server.registryAccess().lookupOrThrow(Registries.WORLD_CLOCK).getOrThrow(WorldClocks.OVERWORLD);
-			if (clock.moveToTimeMarker(holder, ClockTimeMarkers.NOON) != net.minecraft.world.clock.ServerClockManager.MoveResult.MOVED)
-				clock.setTotalTicks(holder, 6000L);
-			LOGGER.info("[DEVSHOT] moved the overworld clock to NOON for the screenshot");
+			if (clock.moveToTimeMarker(holder, testNight ? ClockTimeMarkers.MIDNIGHT : ClockTimeMarkers.NOON) != net.minecraft.world.clock.ServerClockManager.MoveResult.MOVED)
+				clock.setTotalTicks(holder, testNight ? 18000L : 6000L);
+			LOGGER.info("[DEVSHOT] moved the overworld clock to {} for the screenshot", testNight ? "MIDNIGHT" : "NOON");
 		}
 		catch (Throwable t)
 		{
@@ -760,7 +765,8 @@ public final class DevShot
 	{
 		viewSetupDone = true;
 		fillWaitDone = false;
-		forceNoon(mc);
+		if (!noSpawn)
+			forceNoon(mc);
 		double[] beach;
 		if (flatWorld)
 		{
@@ -803,7 +809,7 @@ public final class DevShot
 			}
 			else if (v.file1.startsWith("devshot-SHAKE-"))
 			{
-				v.x = beach[0];
+				v.x = v.gridCross ? Math.floor(beach[0] / 256.0) * 256.0 - 2.0 : beach[0];
 				v.y = beach[1] + 24.0;
 				v.z = beach[2];
 				v.yaw = (float)beach[3];
@@ -926,7 +932,7 @@ public final class DevShot
 
 		// FAST: crank the cloud speed so the wind drift is visible over a 10s motion test
 		// (step 4). The default speed (1.0) drifts <2 blocks in 10s, too slow to see.
-		if (fastClouds)
+		if (fastClouds && !noSpawn)
 		{
 			CloudManager manager = CloudManager.get(mc.level);
 			if (manager != null)
@@ -942,44 +948,50 @@ public final class DevShot
 		// or speed is overwritten by the next normal sync packet, producing a
 		// synthetic whole-sky jump that must not be blamed on the mesh cache.
 		var clientManager = CloudManager.get(mc.level);
-		IntegratedServer testServer = mc.getSingleplayerServer();
-		if (clientManager != null && views.stream().anyMatch(v -> v.file1.startsWith("devshot-SHAKE-")))
+		if (!noSpawn && clientManager != null && views.stream().anyMatch(v -> v.file1.startsWith("devshot-SHAKE-")))
 		{
+			View motion = views.stream().filter(v -> v.file1.startsWith("devshot-SHAKE-")).findFirst().orElseThrow();
+			String fixtureType = motion.gridStorm ? "simpleclouds:cumulonimbus" : "simpleclouds:cumulus";
 			// A replay starts from one named formation and the same noise phase.
 			// Saved random formations otherwise make normal/FAST runs incomparable.
 			for (CloudType type : ClientSideCloudTypeManager.getInstance().getIndexedCloudTypes())
 			{
-				if (!type.id().toString().equals("simpleclouds:cumulus")) continue;
-				View motion = views.stream().filter(v -> v.file1.startsWith("devshot-SHAKE-")).findFirst().orElseThrow();
+				if (!type.id().toString().equals(fixtureType)) continue;
 				CloudRegion region = new CloudRegion(type.id(), new Vec2(0.0F, 0.0F), 0.0F, 0.0F,
-						(float)(motion.x/8.0), (float)(motion.z/8.0), 1200.0F, 0.0F, 1.0F, 240000, 1, 9);
+						(float)(motion.x/8.0), (float)(motion.z/8.0), motion.gridStorm ? 200.0F : 1200.0F, 0.0F, 1.0F, 240000, 1, 9);
 				clientManager.getCloudGenerator().setClouds(List.of(region));
 				clientManager.setScrollAngle(0.75F);
-				LOGGER.info("[DEVSHOT] fixed SHAKE scene: one cumulus formation, initial angle=0.75");
+				LOGGER.info("[DEVSHOT] fixed SHAKE scene: one {} formation, radius={}, initial angle=0.75", fixtureType, motion.gridStorm ? 200 : 1200);
 				break;
 			}
 		}
-		if (clientManager != null && testServer != null)
-		{
-			var formationTags = clientManager.getClouds().stream().map(CloudRegion::toTag).toList();
-			float angle = clientManager.getScrollAngle();
-			float speed = fastClouds ? 32.0F : 1.0F;
-			dev.nonamecrackers2.simpleclouds.common.config.SimpleCloudsConfig.CLIENT.speedModifier.set((double)speed);
-			clientManager.setCloudSpeed(speed);
-			testServer.execute(() -> {
-				var authoritative = CloudManager.get(testServer.overworld());
-				if (authoritative == null) return;
-				authoritative.getCloudGenerator().setClouds(formationTags.stream().map(CloudRegion::new).toList());
-				authoritative.setScrollAngle(angle);
-				authoritative.setCloudSpeed(speed);
-				if (authoritative instanceof dev.nonamecrackers2.simpleclouds.common.world.ServerCloudManager serverManager)
-				{
-					serverManager.queueSync(dev.nonamecrackers2.simpleclouds.common.world.SyncType.BASE_PROPERTIES);
-					serverManager.queueSync(dev.nonamecrackers2.simpleclouds.common.world.SyncType.CLOUD_FORMATIONS);
-				}
-				LOGGER.info("[DEVSHOT] authoritative test scene synchronized; speed={}", speed);
-			});
-		}
+		if (!noSpawn)
+			syncTestCloudScene(mc, fastClouds);
+	}
+
+	private static void syncTestCloudScene(Minecraft mc, boolean fastClouds)
+	{
+		var clientManager = CloudManager.get(mc.level);
+		IntegratedServer testServer = mc.getSingleplayerServer();
+		if (clientManager == null || testServer == null) return;
+		var formationTags = clientManager.getClouds().stream().map(CloudRegion::toTag).toList();
+		float angle = clientManager.getScrollAngle();
+		float speed = fastClouds ? 32.0F : 1.0F;
+		dev.nonamecrackers2.simpleclouds.common.config.SimpleCloudsConfig.CLIENT.speedModifier.set((double)speed);
+		clientManager.setCloudSpeed(speed);
+		testServer.execute(() -> {
+			var authoritative = CloudManager.get(testServer.overworld());
+			if (authoritative == null) return;
+			authoritative.getCloudGenerator().setClouds(formationTags.stream().map(CloudRegion::new).toList());
+			authoritative.setScrollAngle(angle);
+			authoritative.setCloudSpeed(speed);
+			if (authoritative instanceof dev.nonamecrackers2.simpleclouds.common.world.ServerCloudManager serverManager)
+			{
+				serverManager.queueSync(dev.nonamecrackers2.simpleclouds.common.world.SyncType.BASE_PROPERTIES);
+				serverManager.queueSync(dev.nonamecrackers2.simpleclouds.common.world.SyncType.CLOUD_FORMATIONS);
+			}
+			LOGGER.info("[DEVSHOT] authoritative test scene synchronized; speed={}", speed);
+		});
 	}
 
 	private static int viewIdx = -1;
@@ -1120,6 +1132,7 @@ public final class DevShot
 			try
 			{
 				String content = Files.readString(request).trim();
+				LOGGER.info("[DEVSHOT] test request tokens: {}", content);
 				// A DevShot run is active: enable the (throttled) generator proof logs
 				// so chunk generation / brightness can be verified from the log.
 				dev.nonamecrackers2.simpleclouds.client.renderer.v2.CpuCloudGenerator.devProofLogging = true;
@@ -1129,10 +1142,30 @@ public final class DevShot
 				// keywords switch test scenes.
 				framesLeft = Integer.parseInt(parts[0]);
 				framesTotal = framesLeft;
+				testNight = false;
 				int numericSeen = 0;
 				for (int i2 = 1; i2 < parts.length; i2++)
 				{
 					String part = parts[i2];
+					if (part.equalsIgnoreCase("NIGHT") || part.equalsIgnoreCase("DAY"))
+					{
+						testNight = part.equalsIgnoreCase("NIGHT");
+						continue;
+					}
+					if (part.equalsIgnoreCase("GPUCHECK"))
+					{
+						LOGGER.info("[DEVSHOT] starting GPUCHECK");
+						try
+						{
+							LOGGER.info("[DEVSHOT] GPUCHECK backend={}", dev.nonamecrackers2.simpleclouds.client.renderer.v2.GpuCloudGeneration.backendClassName());
+							dev.nonamecrackers2.simpleclouds.client.renderer.v2.GpuComputeSelfTest.run();
+						}
+						catch (Throwable failure)
+						{
+							LOGGER.error("[GPU-SELFTEST] FAILED", failure);
+						}
+						continue;
+					}
 					if (part.equalsIgnoreCase("NOSHADOW"))
 					{
 						dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudsDrawPipeline.TERRAIN_SHADOWS_ENABLED = false;
@@ -1151,6 +1184,11 @@ public final class DevShot
 					if (part.equalsIgnoreCase("FAST"))
 					{
 						fastClouds = true;
+						continue;
+					}
+					if (part.equalsIgnoreCase("SYNCPROBE"))
+					{
+						syncProbe = true;
 						continue;
 					}
 					if (part.equalsIgnoreCase("LOOP"))
@@ -1310,12 +1348,55 @@ public final class DevShot
 						views.add(u1);
 						continue;
 					}
+					if (part.equalsIgnoreCase("GRIDCROSS") || part.equalsIgnoreCase("GRIDSTORM") || part.equalsIgnoreCase("GRIDRAPID"))
+					{
+						View motion = new View("devshot-SHAKE-01.png", -35.0F, 0.0F, 0, 0, 0);
+						motion.gridCross = true;
+						motion.gridStorm = part.equalsIgnoreCase("GRIDSTORM");
+						motion.gridRapid = part.equalsIgnoreCase("GRIDRAPID");
+						motion.seqCount = 81;
+						motion.seqInterval = 2;
+						views.add(motion);
+						continue;
+					}
 					if (part.equalsIgnoreCase("SHAKE"))
 					{
 						View motion = new View("devshot-SHAKE-01.png", -35.0F, 0.0F, 0, 0, 0);
 						motion.seqCount = 41;
 						motion.seqInterval = 5;
 						views.add(motion);
+						continue;
+					}
+					if (part.equalsIgnoreCase("LONGSHAKE"))
+					{
+						// Two minutes at normal speed, one image per game second.
+						// Reuse the SHAKE prefix so the fixed server-authoritative
+						// cloud fixture and camera apply to this longer motion probe.
+						View motion = new View("devshot-SHAKE-01.png", -35.0F, 0.0F, 0, 0, 0);
+						motion.seqCount = 121;
+						motion.seqInterval = 20;
+						views.add(motion);
+						continue;
+					}
+					if (part.equalsIgnoreCase("LONGSHAKE5"))
+					{
+						// Five-minute continuation of the fixed-camera motion probe.
+						// NOSPAWN retains natural server formations; otherwise SHAKE
+						// installs the reproducible, server-authoritative cumulus fixture.
+						View motion = new View("devshot-SHAKE-01.png", -35.0F, 0.0F, 0, 0, 0);
+						motion.seqCount = 301;
+						motion.seqInterval = 20;
+						views.add(motion);
+						continue;
+					}
+					if (part.equalsIgnoreCase("PITCH"))
+					{
+						// Same SHAKE cloud fixture and camera position/yaw for every shot.
+						// Only pitch changes; this isolates the far-plane regression from
+						// the old A/B views, which also move the camera and change terrain.
+						views.add(new View("devshot-SHAKE-PITCH-00.png", 0.0F, 0.0F, 0, 0, 0));
+						views.add(new View("devshot-SHAKE-PITCH-15.png", -15.0F, 0.0F, 0, 0, 0));
+						views.add(new View("devshot-SHAKE-PITCH-30.png", -30.0F, 0.0F, 0, 0, 0));
 						continue;
 					}
 					if (part.length() == 1)
@@ -1392,12 +1473,19 @@ public final class DevShot
 		if (views.isEmpty() && !testSpawned && framesLeft <= 230) // spawn early: band regen needs ~40 frames
 		{
 			testSpawned = true;
-			if (shadowTest)
+			if (noSpawn)
+				LOGGER.info("[DEVSHOT] NOSPAWN: leaving natural cloud formations, speed and clock unchanged");
+			else if (shadowTest)
 				setupShadowTest(mc);
 			else if (boltTest)
 				spawnTestBolt(mc);
 			else
 				spawnTestFormation(mc);
+			// The generic long-running probe must be server-authoritative too.
+			// Otherwise a normal formation sync replaces its client-only clouds,
+			// creating a synthetic whole-sky jump unrelated to the renderer.
+			if (!noSpawn)
+				syncTestCloudScene(mc, fastClouds);
 		}
 		if (!saved)
 		{
@@ -1510,6 +1598,26 @@ public final class DevShot
 				{
 					// S5 sequence frame (devshot-S5-01.png is file1; 02..30 follow).
 					seqFrame++;
+					if (v.gridCross && (v.gridRapid ? seqFrame >= 21 && seqFrame <= 60 : seqFrame == 21 || seqFrame == 61))
+					{
+						v.x += v.gridRapid ? (seqFrame % 2 == 1 ? 4.0 : -4.0) : seqFrame == 21 ? 4.0 : -4.0;
+						syncViewToServer(mc, v);
+						LOGGER.info("[DEVSHOT] GRIDCROSS frame={} camera target={},{},{}", seqFrame, v.x, v.y, v.z);
+					}
+					if (syncProbe && seqFrame == 60)
+					{
+						var cloudManager = CloudManager.get(mc.level);
+						float before = cloudManager.getScrollAngle();
+						// This exercises the exact routine packet handler with a known
+						// 2.4-cloud-unit correction, but only in an opted-in test.
+						dev.nonamecrackers2.simpleclouds.client.packet.SimpleCloudsClientPacketHandler
+							.handleUpdateCloudManagerPacket(
+								new dev.nonamecrackers2.simpleclouds.common.packet.impl.UpdateCloudManagerPacket(
+									cloudManager.getCloudSpeed(), before + 0.024F, cloudManager.getCloudHeight()),
+								cloudManager);
+						LOGGER.info("[DEVSHOT] SYNCPROBE frame={} requested angle delta=0.024; actual instant delta={}",
+							seqFrame, cloudManager.getScrollAngle() - before);
+					}
 					String prefix = v.file1.substring(0, v.file1.length() - "01.png".length());
 					shoot(mc, String.format("%s%02d.png", prefix, seqFrame));
 					if (seqFrame < v.seqCount)
@@ -1730,6 +1838,7 @@ public final class DevShot
 			framesLeft = POST_VIEW_FRAMES;
 			return;
 		}
+		LOGGER.info("[DEVSHOT] CAPTURE-END: restoring camera pitch={} yaw={}; subsequent visibility telemetry is outside the fixed-view capture", savedXRot, savedYRot);
 		mc.player.setXRot(savedXRot);
 		mc.player.setYRot(savedYRot);
 		done = true;
@@ -1739,7 +1848,8 @@ public final class DevShot
 	{
 		// Pin the clock so standard views (and the motion test E1/E2) differ only by the
 		// cloud drift, not by the advancing sun (forceNoon is applied once at setup).
-		forceNoon(mc);
+		if (!noSpawn)
+			forceNoon(mc);
 		var cam = mc.gameRenderer.mainCamera();
 		// Step 7 (real profile): the per-frame pin must have held the camera; a
 		// drift > 2 blocks from the pinned eye position means the shot is suspect.

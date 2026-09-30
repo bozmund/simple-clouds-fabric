@@ -4,6 +4,8 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.Constant;
+import org.spongepowered.asm.mixin.injection.ModifyConstant;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import dev.nonamecrackers2.simpleclouds.client.world.ClientCloudManager;
@@ -40,6 +42,20 @@ public abstract class MixinClientLevel extends Level implements CloudManagerHold
 	{
 		this.cloudManager = new ClientCloudManager((ClientLevel)(Object)this);
 		this.cloudManager.init(SimpleCloudsConfig.CLIENT.useSpecificSeed.get() ? SimpleCloudsConfig.CLIENT.cloudSeed.get() : RandomSource.create().nextLong());
+	}
+
+	// In 26.3 rain sounds moved from LevelRenderer.tickRain to ClientLevel.
+	// Preserve the original intensity multiplier for both exposed and sheltered rain.
+	@ModifyConstant(method = "tickWeatherEffects", constant = @Constant(floatValue = 0.2F, ordinal = 0), require = 1)
+	private float simpleclouds$rainVolume(float volume)
+	{
+		return volume * this.getRainLevel(0.0F);
+	}
+
+	@ModifyConstant(method = "tickWeatherEffects", constant = @Constant(floatValue = 0.1F, ordinal = 0), require = 1)
+	private float simpleclouds$shelteredRainVolume(float volume)
+	{
+		return volume * this.getRainLevel(0.0F);
 	}
 
 	@Override

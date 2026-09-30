@@ -12,41 +12,49 @@ import dev.nonamecrackers2.simpleclouds.api.SimpleCloudsAPI;
 import dev.nonamecrackers2.simpleclouds.common.cloud.CloudTypeSource;
 import dev.nonamecrackers2.simpleclouds.common.command.argument.CloudTypeArgument;
 import dev.nonamecrackers2.simpleclouds.common.world.CloudManager;
-import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
-import net.fabricmc.fabric.api.client.command.v2.ClientCommands;
 import net.minecraft.commands.arguments.TimeArgument;
 import net.minecraft.commands.arguments.coordinates.Vec2Argument;
 
 //TODO: Docs, including with API
 public class CloudCommands
 {
-	public static void register(CommandDispatcher<FabricClientCommandSource> dispatcher, String baseName, Predicate<FabricClientCommandSource> requirement, CloudCommandSource<?, ?> source, CloudTypeSource cloudTypeSource)
+    private static final class CommandNodes<C> {
+        LiteralArgumentBuilder<C> literal(String name) {
+            return LiteralArgumentBuilder.literal(name);
+        }
+        <T> com.mojang.brigadier.builder.RequiredArgumentBuilder<C,T> argument(
+                String name, com.mojang.brigadier.arguments.ArgumentType<T> type) {
+            return com.mojang.brigadier.builder.RequiredArgumentBuilder.argument(name,type);
+        }
+    }
+	public static <C> void register(CommandDispatcher<C> dispatcher, String baseName, Predicate<C> requirement, CloudCommandSource<?, ?> source, CloudTypeSource cloudTypeSource)
 	{
-		LiteralArgumentBuilder<FabricClientCommandSource> root = ClientCommands.literal(SimpleCloudsMod.MODID);
+		CommandNodes<C> commands = new CommandNodes<>();
+		LiteralArgumentBuilder<C> root = commands.literal(SimpleCloudsMod.MODID);
 		
-		root.then(ClientCommands.literal(baseName).requires(requirement)
-				.then(ClientCommands.literal("clear")
-						.then(ClientCommands.literal("all")
+		root.then(commands.literal(baseName).requires(requirement)
+				.then(commands.literal("clear")
+						.then(commands.literal("all")
 								.executes(ctx -> source.clearClouds(ctx, CloudCommandSource.ALL))
 						)
-						.then(ClientCommands.literal("storms")
+						.then(commands.literal("storms")
 								.executes(ctx -> source.clearClouds(ctx, CloudCommandSource.storms(cloudTypeSource)))
 						)
 				)
 		);
 		
-		root.then(ClientCommands.literal(baseName).requires(requirement)
-				.then(ClientCommands.literal("spawn")
-						.then(ClientCommands.argument("type", CloudTypeArgument.type(cloudTypeSource))
-								.then(ClientCommands.argument("position", Vec2Argument.vec2())
-										.then(ClientCommands.argument("radius", FloatArgumentType.floatArg(0.0F))
-												.then(ClientCommands.argument("stretchFactor", FloatArgumentType.floatArg(0.01F))
-														.then(ClientCommands.argument("rotation", FloatArgumentType.floatArg())
-																.then(ClientCommands.argument("lifeTime", TimeArgument.time(0))
-																		.then(ClientCommands.argument("growTime", TimeArgument.time(0))
-																				.then(ClientCommands.argument("direction", Vec2Argument.vec2(false))
-																						.then(ClientCommands.argument("maxSpeed", FloatArgumentType.floatArg(0.0F))
-																								.then(ClientCommands.argument("accelerationFactor", FloatArgumentType.floatArg(0.0F))
+		root.then(commands.literal(baseName).requires(requirement)
+				.then(commands.literal("spawn")
+						.then(commands.argument("type", CloudTypeArgument.type(cloudTypeSource))
+								.then(commands.argument("position", Vec2Argument.vec2())
+										.then(commands.argument("radius", FloatArgumentType.floatArg(0.0F))
+												.then(commands.argument("stretchFactor", FloatArgumentType.floatArg(0.01F))
+														.then(commands.argument("rotation", FloatArgumentType.floatArg())
+																.then(commands.argument("lifeTime", TimeArgument.time(0))
+																		.then(commands.argument("growTime", TimeArgument.time(0))
+																				.then(commands.argument("direction", Vec2Argument.vec2(false))
+																						.then(commands.argument("maxSpeed", FloatArgumentType.floatArg(0.0F))
+																								.then(commands.argument("accelerationFactor", FloatArgumentType.floatArg(0.0F))
 																										.executes(source::spawnCloud)
 																								)
 																						)
@@ -57,32 +65,32 @@ public class CloudCommands
 												)
 										)
 								)
-								.then(ClientCommands.literal("extreme")
+								.then(commands.literal("extreme")
 										.executes(ctx -> source.spawnModifiedCloud(ctx, CloudCommandSource.EXTREME_CLOUD_INFO))
 								)
-								.then(ClientCommands.literal("temperate")
+								.then(commands.literal("temperate")
 										.executes(ctx -> source.spawnModifiedCloud(ctx, CloudCommandSource.TEMPERATE_CLOUD_INFO))
 								)
-								.then(ClientCommands.literal("random")
+								.then(commands.literal("random")
 										.executes(ctx -> source.spawnModifiedCloud(ctx, i -> i))
 								)
 						)
-						.then(ClientCommands.literal("random")
+						.then(commands.literal("random")
 								.executes(source::spawnRandomCloud)
 						)
 				)
 		);
 		
-		root.then(ClientCommands.literal(baseName).requires(requirement)
-				.then(ClientCommands.literal("get")
-						.then(ClientCommands.literal("at")
-								.then(ClientCommands.argument("position", Vec2Argument.vec2())
+		root.then(commands.literal(baseName).requires(requirement)
+				.then(commands.literal("get")
+						.then(commands.literal("at")
+								.then(commands.argument("position", Vec2Argument.vec2())
 										.executes(source::getCloudTypeAt)
 								)
 						)
-						.then(ClientCommands.literal("count")
-								.then(ClientCommands.argument("position", Vec2Argument.vec2())
-										.then(ClientCommands.argument("radius", IntegerArgumentType.integer(0))
+						.then(commands.literal("count")
+								.then(commands.argument("position", Vec2Argument.vec2())
+										.then(commands.argument("radius", IntegerArgumentType.integer(0))
 												.executes(ctx -> source.getCloudTypeCount(ctx, true, true))
 										)
 										.executes(ctx -> source.getCloudTypeCount(ctx, true, false))
@@ -94,41 +102,41 @@ public class CloudCommands
 		
 		if (!SimpleCloudsAPI.getApi().getHooks().isExternalWeatherControlEnabled())
 		{
-			root.then(ClientCommands.literal(baseName).requires(requirement)
-					.then(ClientCommands.literal("refresh")
+			root.then(commands.literal(baseName).requires(requirement)
+					.then(commands.literal("refresh")
 							.executes(source::refreshClouds)
 							)
 					);
 		}
 		
-		root.then(ClientCommands.literal(baseName).requires(requirement)
-				.then(ClientCommands.literal("speed")
-						.then(ClientCommands.literal("get")
+		root.then(commands.literal(baseName).requires(requirement)
+				.then(commands.literal("speed")
+						.then(commands.literal("get")
 								.executes(source::getSpeed)
 						)
-						.then(ClientCommands.literal("set")
-								.then(ClientCommands.argument("amount", FloatArgumentType.floatArg(0.0F))
+						.then(commands.literal("set")
+								.then(commands.argument("amount", FloatArgumentType.floatArg(0.0F))
 										.executes(source::setSpeed)
 								)
 						)
 				)
 		);
 		
-		root.then(ClientCommands.literal(baseName).requires(requirement)
-				.then(ClientCommands.literal("seed")
-						.then(ClientCommands.literal("get")
+		root.then(commands.literal(baseName).requires(requirement)
+				.then(commands.literal("seed")
+						.then(commands.literal("get")
 								.executes(source::getSeed)
 						)
 				)
 		);
 		
-		root.then(ClientCommands.literal(baseName).requires(requirement)
-				.then(ClientCommands.literal("height")
-						.then(ClientCommands.literal("get")
+		root.then(commands.literal(baseName).requires(requirement)
+				.then(commands.literal("height")
+						.then(commands.literal("get")
 								.executes(source::getCloudHeight)
 						)
-						.then(ClientCommands.literal("set")
-								.then(ClientCommands.argument("height", IntegerArgumentType.integer(CloudManager.CLOUD_HEIGHT_MIN, CloudManager.CLOUD_HEIGHT_MAX))
+						.then(commands.literal("set")
+								.then(commands.argument("height", IntegerArgumentType.integer(CloudManager.CLOUD_HEIGHT_MIN, CloudManager.CLOUD_HEIGHT_MAX))
 										.executes(source::setCloudHeight)
 								)
 						)

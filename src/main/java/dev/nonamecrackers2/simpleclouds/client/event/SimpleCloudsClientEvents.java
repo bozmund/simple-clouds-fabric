@@ -65,8 +65,8 @@ public class SimpleCloudsClientEvents
 	// public hook for that, so this port uses a keybind (unbound by default -- set
 	// "Simple Clouds: Open Config" in the Controls screen). DEVIATION documented
 	// in PORTING.md.
-	// GLFW_KEY_UNKNOWN (-1) = unbound by default.
-	public static final KeyMapping OPEN_CONFIG = new KeyMapping("simpleclouds.key.openConfig", -1, KeyMapping.Category.MISC);
+	// Use Minecraft's current unknown key: SDL uses 0, not GLFW's old -1.
+	public static final KeyMapping OPEN_CONFIG = new KeyMapping("simpleclouds.key.openConfig", com.mojang.blaze3d.platform.InputConstants.UNKNOWN.getValue(), KeyMapping.Category.MISC);
 
 	// Headless verification: auto-open the config screen shortly after join so
 	// the GUI can be checked via screenshot. Off in production.
@@ -75,6 +75,7 @@ public class SimpleCloudsClientEvents
 
 	public static void register()
 	{
+		dev.nonamecrackers2.simpleclouds.client.config.SimpleCloudsClientConfigListeners.registerListener();
 		// Config presets (1.20.1 registerClientPresets port): must be registered
 		// and gathered before any ConfigScreen is constructed (the constructor
 		// queries ConfigPresets.getPresetsForModId, which NPEs otherwise).
@@ -191,7 +192,7 @@ public class SimpleCloudsClientEvents
 
 			// Tick the client cloud manager (region movement/growth/death; the original
 			// ticked every level's manager, client and server, from the level tick event).
-			if (client.level != null)
+			if (client.level != null && !client.isPaused())
 			{
 				CloudManager<?> cm = CloudManager.get(client.level);
 				if (cm != null)
@@ -200,12 +201,15 @@ public class SimpleCloudsClientEvents
 
 			SimpleCloudsRenderer.getOptionalInstance().ifPresent(renderer ->
 			{
-				renderer.baseTick();
-				if (client.level != null)
+				if (!client.isPaused())
 				{
-					WorldEffects effects = renderer.getWorldEffectsManager();
-					if (effects != null)
-						effects.tick();
+					renderer.baseTick();
+					if (client.level != null)
+					{
+						WorldEffects effects = renderer.getWorldEffectsManager();
+						if (effects != null)
+							effects.tick();
+					}
 				}
 			});
 

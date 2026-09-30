@@ -11,3 +11,6 @@ bin/
 # Local test evidence (screenshots, logs) and backup copies stay out of git
 evidence-*/
 *.before-*.java
+
+# Runtime logs remain on disk, outside source checkpoints.
+/logs/

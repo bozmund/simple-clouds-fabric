@@ -39,7 +39,7 @@ public class CloudManagerEvents
 {
 	/** Per-player last-synced dimension/position for change-detection resyncs. */
 	private static final Map<UUID, ResourceKey<Level>> LAST_SYNCED_DIMENSION = new ConcurrentHashMap<>();
-	private static final Map<UUID, Long> LAST_SYNCED_POSITION = new ConcurrentHashMap<>();
+	private static final Map<UUID, CloudSyncPosition> LAST_SYNCED_POSITION = new ConcurrentHashMap<>();
 	/** Resync a player who moved more than this far since the last full sync. */
 	private static final int RESYNC_DISTANCE_BLOCKS = 1024;
 
@@ -66,7 +66,8 @@ public class CloudManagerEvents
 						switch (syncType)
 						{
 						case BASE_PROPERTIES:
-							sendToDimension(level, new SendCloudManagerPacket(serverManager));
+							for (ServerPlayer player : level.players())
+								update(player);
 							break;
 						case MOVEMENT:
 							sendToDimension(level, new UpdateCloudManagerPacket(serverManager));
@@ -114,21 +115,16 @@ public class CloudManagerEvents
 	{
 		UUID id = player.getUUID();
 		ResourceKey<Level> dim = player.level().dimension();
-		long here = (player.blockPosition().getX() & 0xFFFFFFFFL) << 32 | (player.blockPosition().getZ() & 0xFFFFFFFFL);
 		ResourceKey<Level> lastDim = LAST_SYNCED_DIMENSION.get(id);
-		Long lastPos = LAST_SYNCED_POSITION.get(id);
+		CloudSyncPosition lastPos = LAST_SYNCED_POSITION.get(id);
 		if (lastDim == null)
 		{
 			rememberSync(player);
 			return;
 		}
-		if (lastDim.equals(dim) && lastPos != null)
-		{
-			int dx = (int) (player.blockPosition().getX() - ((lastPos >> 32) & 0xFFFFFFFFL));
-			int dz = (int) (player.blockPosition().getZ() - (lastPos & 0xFFFFFFFFL));
-			if (dx * dx + dz * dz <= RESYNC_DISTANCE_BLOCKS * RESYNC_DISTANCE_BLOCKS)
-				return;
-		}
+		if (lastDim.equals(dim) && lastPos != null &&
+			!lastPos.isFarFrom(player.getBlockX(), player.getBlockZ(), RESYNC_DISTANCE_BLOCKS))
+			return;
 		update(player);
 		rememberSync(player);
 	}
@@ -136,9 +132,7 @@ public class CloudManagerEvents
 	private static void rememberSync(ServerPlayer player)
 	{
 		LAST_SYNCED_DIMENSION.put(player.getUUID(), player.level().dimension());
-		long x = player.blockPosition().getX() & 0xFFFFFFFFL;
-		long z = player.blockPosition().getZ() & 0xFFFFFFFFL;
-		LAST_SYNCED_POSITION.put(player.getUUID(), x << 32 | z);
+		LAST_SYNCED_POSITION.put(player.getUUID(), new CloudSyncPosition(player.getBlockX(), player.getBlockZ()));
 	}
 
 	private static void sendToDimension(ServerLevel level, net.minecraft.network.protocol.common.custom.CustomPacketPayload payload)
@@ -152,8 +146,10 @@ public class CloudManagerEvents
 		CloudManager<ServerLevel> manager = CloudManager.get(player.level());
 		if (manager == null)
 			return;
-		ServerPlayNetworking.send(player, new SendCloudManagerPacket(manager));
-		sendCloudRegionsToPlayer(player);
+		// A full sync already carries this player's nearby formations. Sending
+		// a second regions packet here replaced the cloud field twice on join
+		// and after long-distance travel.
+		ServerPlayNetworking.send(player, new SendCloudManagerPacket(manager, cloudsNearPlayer(player, manager)));
 	}
 
 	private static void sendCloudRegionsToPlayer(ServerPlayer player)
@@ -161,8 +157,12 @@ public class CloudManagerEvents
 		CloudManager<ServerLevel> manager = CloudManager.get(player.level());
 		if (manager == null)
 			return;
+		ServerPlayNetworking.send(player, new SendCloudRegionsPacket(cloudsNearPlayer(player, manager)));
+	}
+
+	private static List<CloudRegion> cloudsNearPlayer(ServerPlayer player, CloudManager<ServerLevel> manager)
+	{
 		SpawnRegion region = new SpawnRegion(player.getBlockX(), player.getBlockZ(), SimpleCloudsConstants.SPAWN_RADIUS);
-		List<CloudRegion> formationsForPlayer = manager.getCloudGenerator().getCloudsInRegion(region);
-		ServerPlayNetworking.send(player, new SendCloudRegionsPacket(formationsForPlayer));
+		return manager.getCloudGenerator().getCloudsInRegion(region);
 	}
 }

@@ -176,7 +176,13 @@ public class ShaderFaceTest
 	static int[][] parseCreateFaces(String src)
 	{
 		int[][] dirs = new int[6][];
-		String[] lines = src.split("\n");
+		// Keep the legacy parser inside its original helper; the experimental
+		// shared-occupancy helper has a separate neighbor contract below.
+		int legacyStart = src.indexOf("void createCube(");
+		int sharedStart = src.indexOf("void createCubeShared(", legacyStart);
+		require(legacyStart >= 0 && sharedStart > legacyStart,
+				"cube_mesh.comp: missing legacy or shared cube helper");
+		String[] lines = src.substring(legacyStart, sharedStart).split("\n");
 		for (int i = 0; i < lines.length; i++)
 		{
 			Matcher cf = Pattern.compile("createFace\\(center,\\s*cubeRadius,\\s*(\\d+)\\s*,\\s*brightness\\)").matcher(lines[i]);
@@ -190,6 +196,26 @@ public class ShaderFaceTest
 		}
 		for (int s = 0; s < 6; s++)
 			require(dirs[s] != null, "cube_mesh.comp createFace is missing index " + s);
+		return dirs;
+	}
+
+	static int[][] parseSharedCreateFaces(String src)
+	{
+		int start = src.indexOf("void createCubeShared(");
+		int end = src.indexOf("#endif", start);
+		require(start >= 0 && end > start, "cube_mesh.comp: missing shared cube helper");
+		String helper = src.substring(start, end);
+		int[][] dirs = new int[6][];
+		for (int side = 0; side < 6; side++)
+		{
+			String pattern = "isNeighborValidShared\\([^;]*?ivec3\\(\\s*(-?\\d+)\\s*,\\s*(-?\\d+)\\s*,\\s*(-?\\d+)\\s*\\)"
+					+ "[^;]*?createFace\\(center,\\s*cubeRadius,\\s*" + side + "\\s*,\\s*brightness\\)";
+			Matcher match = Pattern.compile(pattern, Pattern.DOTALL).matcher(helper);
+			require(match.find(), "shared cube helper is missing neighbor/face " + side);
+			dirs[side] = new int[] { Integer.parseInt(match.group(1)),
+					Integer.parseInt(match.group(2)), Integer.parseInt(match.group(3)) };
+			require(!match.find(), "shared cube helper duplicates face " + side);
+		}
 		return dirs;
 	}
 
@@ -338,6 +364,10 @@ public class ShaderFaceTest
 		int[][][] transforms = parseTransforms(glsl);
 		double[][] normals = parseSideNormals(vsh);
 		int[][] compDirs = parseCreateFaces(comp);
+		int[][] sharedCompDirs = parseSharedCreateFaces(comp);
+		for (int side = 0; side < 6; side++)
+			require(java.util.Arrays.equals(compDirs[side], sharedCompDirs[side]),
+					"shared occupancy face " + side + " has a different neighbor direction");
 		int[][] cpuPlain = parseCpuFaces(gen, "plain");
 		int[][] cpuRegion = parseCpuFaces(gen, "region");
 

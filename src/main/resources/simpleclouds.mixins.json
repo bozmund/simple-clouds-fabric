@@ -4,21 +4,25 @@
   "compatibilityLevel": "JAVA_17",
   "mixins": [
     "MixinServerLevel",
+    "MixinServerPlayer",
     "MixinWeatherCommand",
     "MixinLevel",
     "MixinServerLevelAccessor"
   ],
   "client": [
+    "MixinCamera",
+    "MixinKeyMapping",
     "MixinClientLevel",
     "MixinClientLevelAccessor",
     "MixinCloudRenderer",
-    "MixinGameRenderer",
     "MixinLevelRenderer",
     "MixinLevelRendererStateAccessor",
     "MixinMinecraft",
     "MixinOptionsScreen",
     "MixinScreenRenderablesAccessor",
     "MixinFogRenderer",
+    "MixinSkyRenderer",
+    "MixinSoundManagerPreperations",
     "MixinWeatherEffectRenderer"
   ],
   "minVersion": "0.8"

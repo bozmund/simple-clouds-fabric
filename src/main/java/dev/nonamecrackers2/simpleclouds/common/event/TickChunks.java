@@ -26,7 +26,7 @@ public class TickChunks
             // Get Chunk Corner
             int blockX = chunk.getPos().getMinBlockX();
             int blockZ = chunk.getPos().getMinBlockZ();
-            
+
             // Get random heightmap position in the chunk
             BlockPos checkPos = level.getHeightmapPos(Heightmap.Types.MOTION_BLOCKING, level.getBlockRandomPos(blockX, 0, blockZ, 15));
 
@@ -38,15 +38,15 @@ public class TickChunks
             	// Position below the checkPos to get biome and handle precipitation
                 BlockPos belowPos = checkPos.below();
                 Biome biome = level.getBiome(belowPos).value(); // Get biome at the position below
-                Biome.Precipitation biomePrecipitation = biome.getPrecipitationAt(belowPos, 0); // Check precipitation type
-            	
+                Biome.Precipitation biomePrecipitation = biome.getPrecipitationAt(belowPos, level.getSeaLevel());
+
             	// Handle precipitation for cauldrons
                 if (biomePrecipitation != Biome.Precipitation.NONE)
                 {
                     BlockState blockState = level.getBlockState(belowPos);
                     blockState.getBlock().handlePrecipitation(blockState, level, belowPos, biomePrecipitation);
                 }
-            	
+
             	int snowAccumulationHeight = level.getGameRules().get(GameRules.MAX_SNOW_ACCUMULATION_HEIGHT);
             	if (snowAccumulationHeight > 0 && biome.shouldSnow(level, checkPos))
             	{

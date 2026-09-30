@@ -1,0 +1,79 @@
+#version 430
+#define FACE_ALPHA 0
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) readonly buffer OldFaceIds {
+    uint oldIds[];
+};
+layout(std430, binding = 1) readonly buffer NewFaceIds {
+    uint newIds[];
+};
+layout(std430, binding = 2) readonly buffer OldPresence {
+    uint oldWords[];
+};
+layout(std430, binding = 3) readonly buffer NewPresence {
+    uint newWords[];
+};
+layout(std430, binding = 4) buffer DeltaCounts {
+    uint stableCount;
+    uint addedCount;
+    uint removedCount;
+    uint invalidCount;
+};
+
+// Matches the 24-byte opaque vertex instance layout in cube_mesh.comp.
+struct SideInfo {
+    float side;
+    float x;
+    float y;
+    float z;
+    float radius;
+    float brightness;
+#if FACE_ALPHA == 1
+    float alpha;
+#endif
+};
+layout(std430, binding = 5) readonly buffer OldGeometry {
+    SideInfo oldFaces[];
+};
+layout(std430, binding = 6) readonly buffer NewGeometry {
+    SideInfo newFaces[];
+};
+layout(std430, binding = 7) writeonly buffer StableGeometry {
+    SideInfo stableFaces[];
+};
+layout(std430, binding = 8) writeonly buffer AddedGeometry {
+    SideInfo addedFaces[];
+};
+layout(std430, binding = 9) writeonly buffer RemovedGeometry {
+    SideInfo removedFaces[];
+};
+
+uniform uint OldCount;
+uniform uint NewCount;
+uniform uint MaxId;
+
+void main() {
+    uint at = gl_GlobalInvocationID.x;
+    if (at < NewCount) {
+        uint id = newIds[at];
+        if (id >= MaxId)
+            atomicAdd(invalidCount, 1u);
+        else if ((oldWords[id >> 5] & (1u << (id & 31u))) != 0u) {
+            uint outIndex = atomicAdd(stableCount, 1u);
+            stableFaces[outIndex] = newFaces[at];
+        } else {
+            uint outIndex = atomicAdd(addedCount, 1u);
+            addedFaces[outIndex] = newFaces[at];
+        }
+    }
+    if (at < OldCount) {
+        uint id = oldIds[at];
+        if (id >= MaxId)
+            atomicAdd(invalidCount, 1u);
+        else if ((newWords[id >> 5] & (1u << (id & 31u))) == 0u) {
+            uint outIndex = atomicAdd(removedCount, 1u);
+            removedFaces[outIndex] = oldFaces[at];
+        }
+    }
+}

@@ -16,6 +16,76 @@ public final class PsrdNoise
 	{
 	}
 
+	// permute() returns one of 289 integer hashes. A cloud job uses the same
+	// alpha for many thousands of samples; reuse its rotated lattice gradients
+	// instead of evaluating their trigonometry at all four corners of every cell.
+	// Per-thread state avoids synchronization and sharing mutable worker scratch.
+	private static final ThreadLocal<GradientCache> GRADIENTS =
+			ThreadLocal.withInitial(GradientCache::new);
+
+	/** Worker-owned sampler. Do not share between concurrent generators. The
+	 * static API remains thread-safe; this instance avoids ThreadLocal lookup in
+	 * the per-voxel path when the caller already owns its generator scratch. */
+	public static final class Sampler
+	{
+		private final GradientCache gradients = new GradientCache();
+
+		public float noise(float x, float y, float z, float periodX, float periodY,
+				float periodZ, float alpha, float[] gradientOut)
+		{
+			return PsrdNoise.noise(x, y, z, periodX, periodY, periodZ, alpha,
+					gradientOut, this.gradients.at(alpha));
+		}
+	}
+
+	private static final class GradientCache
+	{
+		private int alphaBits;
+		private boolean ready;
+		private final float[][] values = new float[289][3];
+
+		float[][] at(float alpha)
+		{
+			int bits = Float.floatToIntBits(alpha);
+			if (!ready || bits != alphaBits)
+			{
+				for (int i = 0; i < values.length; i++)
+					latticeGradient(i, alpha, values[i]);
+				alphaBits = bits;
+				ready = true;
+			}
+			return values;
+		}
+	}
+
+	private static void latticeGradient(float h, float alpha, float[] out)
+	{
+		float theta = h * 3.883222077F;
+		float sz = h * -0.006920415F + 0.996539792F;
+		float psi = h * 0.108705628F;
+		float ct = (float) Math.cos(theta), st = (float) Math.sin(theta);
+		float szp = (float) Math.sqrt(1.0F - sz * sz);
+		if (alpha != 0.0F)
+			gradientWithAlpha(ct, st, szp, sz, psi, alpha, out);
+		else
+		{
+			out[0] = ct * szp;
+			out[1] = st * szp;
+			out[2] = sz;
+		}
+	}
+
+	private static float[] gradientFor(float h, float alpha, float[][] cached)
+	{
+		int index = (int) h;
+		if (index >= 0 && index < cached.length && h == index)
+			return cached[index];
+		// Retain the scalar behavior even for unusual non-integer/invalid inputs.
+		float[] out = new float[3];
+		latticeGradient(h, alpha, out);
+		return out;
+	}
+
 	/** GLSL mod uses floor, unlike Java remainder for negative coordinates. */
 	private static float mod(float x, float divisor)
 	{
@@ -36,6 +106,13 @@ public final class PsrdNoise
 	 * @return the noise value.
 	 */
 	public static float noise(float x, float y, float z, float periodX, float periodY, float periodZ, float alpha, float[] gradientOut)
+	{
+		return noise(x, y, z, periodX, periodY, periodZ, alpha, gradientOut,
+				GRADIENTS.get().at(alpha));
+	}
+
+	private static float noise(float x, float y, float z, float periodX, float periodY,
+			float periodZ, float alpha, float[] gradientOut, float[][] cached)
 	{
 		// uvw = M * x, where M = [0 1 1; 1 0 1; 1 1 0]
 		float uvwx = y + z;
@@ -118,31 +195,8 @@ public final class PsrdNoise
 		float h2 = permute(permute(permute(i2z) + i2y) + i2x);
 		float h3 = permute(permute(permute(i3z) + i3y) + i3x);
 
-		float theta0 = h0 * 3.883222077F, theta1 = h1 * 3.883222077F, theta2 = h2 * 3.883222077F, theta3 = h3 * 3.883222077F;
-		float sz0 = h0 * -0.006920415F + 0.996539792F, sz1 = h1 * -0.006920415F + 0.996539792F, sz2 = h2 * -0.006920415F + 0.996539792F, sz3 = h3 * -0.006920415F + 0.996539792F;
-		float psi0 = h0 * 0.108705628F, psi1 = h1 * 0.108705628F, psi2 = h2 * 0.108705628F, psi3 = h3 * 0.108705628F;
-
-		float Ct0 = (float) Math.cos(theta0), St0 = (float) Math.sin(theta0);
-		float Ct1 = (float) Math.cos(theta1), St1 = (float) Math.sin(theta1);
-		float Ct2 = (float) Math.cos(theta2), St2 = (float) Math.sin(theta2);
-		float Ct3 = (float) Math.cos(theta3), St3 = (float) Math.sin(theta3);
-		float szp0 = (float) Math.sqrt(1.0F - sz0 * sz0), szp1 = (float) Math.sqrt(1.0F - sz1 * sz1), szp2 = (float) Math.sqrt(1.0F - sz2 * sz2), szp3 = (float) Math.sqrt(1.0F - sz3 * sz3);
-
-		float[] g0 = new float[3], g1 = new float[3], g2 = new float[3], g3 = new float[3];
-		if (alpha != 0.0F)
-		{
-			gradientWithAlpha(Ct0, St0, szp0, sz0, psi0, alpha, g0);
-			gradientWithAlpha(Ct1, St1, szp1, sz1, psi1, alpha, g1);
-			gradientWithAlpha(Ct2, St2, szp2, sz2, psi2, alpha, g2);
-			gradientWithAlpha(Ct3, St3, szp3, sz3, psi3, alpha, g3);
-		}
-		else
-		{
-			g0[0] = Ct0 * szp0; g0[1] = St0 * szp0; g0[2] = sz0;
-			g1[0] = Ct1 * szp1; g1[1] = St1 * szp1; g1[2] = sz1;
-			g2[0] = Ct2 * szp2; g2[1] = St2 * szp2; g2[2] = sz2;
-			g3[0] = Ct3 * szp3; g3[1] = St3 * szp3; g3[2] = sz3;
-		}
+		float[] g0 = gradientFor(h0, alpha, cached), g1 = gradientFor(h1, alpha, cached);
+		float[] g2 = gradientFor(h2, alpha, cached), g3 = gradientFor(h3, alpha, cached);
 		float gx0 = g0[0], gy0 = g0[1], gz0 = g0[2];
 		float gx1 = g1[0], gy1 = g1[1], gz1 = g1[2];
 		float gx2 = g2[0], gy2 = g2[1], gz2 = g2[2];

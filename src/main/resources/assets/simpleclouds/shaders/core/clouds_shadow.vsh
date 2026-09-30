@@ -18,6 +18,7 @@ layout(std140) uniform ShadowMatrices {
 layout(location = 0) out float dummy;
 
 #include <simpleclouds:cloud_faces.glsl>
+#include <simpleclouds:cloud_cell_clip.glsl>
 
 void main()
 {
@@ -25,4 +26,5 @@ void main()
 	vec4 finalPos = vec4(transformedPos, 1.0);
 	gl_Position = ShadowProjMat * ShadowModelViewMat * finalPos;
 	dummy = 1.0;
+	if (!cloudCellInsideClip(SidePos.xz)) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
 }

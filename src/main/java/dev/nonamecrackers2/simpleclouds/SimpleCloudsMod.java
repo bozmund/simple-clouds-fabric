@@ -38,6 +38,13 @@ public class SimpleCloudsMod implements ModInitializer
 		// API bootstrap (registers the SimpleCloudsAPI instance for getApi()).
 		dev.nonamecrackers2.simpleclouds.common.api.SimpleCloudsAPIImpl.bootstrap();
 
+		// Register the wire format before command trees are sent to joining players.
+		net.fabricmc.fabric.api.command.v2.ArgumentTypeRegistry.registerArgumentType(
+				id("cloud_type"), dev.nonamecrackers2.simpleclouds.common.command.argument.CloudTypeArgument.class,
+				new dev.nonamecrackers2.simpleclouds.common.command.argument.CloudTypeArgument.Info());
+
+		dev.nonamecrackers2.simpleclouds.common.init.SimpleCloudsSounds.register();
+
 		// Packet registration.
 		dev.nonamecrackers2.simpleclouds.common.packet.SimpleCloudsPacketHandlers.register();
 

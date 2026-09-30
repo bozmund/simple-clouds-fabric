@@ -20,6 +20,7 @@ import com.mojang.renderpearl.api.pipeline.ColorTargetState;
 import com.mojang.renderpearl.api.pipeline.DepthStencilState;
 import com.mojang.renderpearl.api.pipeline.RenderPipeline;
 import com.mojang.blaze3d.pipeline.RenderTarget;
+import com.mojang.blaze3d.pipeline.TextureTarget;
 import com.mojang.renderpearl.api.pipeline.CompareOp;
 import com.mojang.renderpearl.api.pipeline.UniformType;
 import com.mojang.renderpearl.api.commands.CommandEncoder;
@@ -38,25 +39,19 @@ import net.minecraft.resources.Identifier;
 import org.joml.Matrix4f;
 
 /**
- * 26.2 rain pass: one camera-facing quad per drop (the 1.20.1 PrecipitationQuad
- * renderer, without wind tilt). The vertex buffer is rebuilt every frame from
- * the WorldEffects drop list (a few hundred 32-byte vertices -- trivial).
+ * Draws rain/snow batches using world-space vertices from the original
+ * PrecipitationQuad equations. Each batch binds its own precipitation texture.
  */
 public final class RainDrawPipeline implements AutoCloseable
 {
 	private static final Logger LOGGER = LogManager.getLogger("simpleclouds/Pipeline");
 	private static final Identifier RAIN_LOCATION = SimpleCloudsMod.id("core/rain");
-	private static final Identifier RAIN_TEXTURE_ID = Identifier.fromNamespaceAndPath("minecraft", "textures/environment/rain.png");
 
-	// Per vertex (32 bytes): DropPos(3) + Corner(1) + QuadV(1) + Length(1) + Width(1) + UVOffset(1).
+	// Per vertex (20 bytes): world position (3 floats) and UV (2 floats).
 	// The attribute names must match the vsh `in` declarations.
 	private static final VertexFormat VERTEX_FORMAT = VertexFormat.builder(0)
-			.addAttribute("DropPos", GpuFormat.RGB32_FLOAT)
-			.addAttribute("Corner", GpuFormat.R32_FLOAT)
-			.addAttribute("QuadV", GpuFormat.R32_FLOAT)
-			.addAttribute("Length", GpuFormat.R32_FLOAT)
-			.addAttribute("Width", GpuFormat.R32_FLOAT)
-			.addAttribute("UVOffset", GpuFormat.R32_FLOAT)
+			.addAttribute("Position", GpuFormat.RGB32_FLOAT)
+			.addAttribute("UV0", GpuFormat.RG32_FLOAT)
 			.build();
 
 	private final RenderPipeline pipeline;
@@ -69,6 +64,7 @@ public final class RainDrawPipeline implements AutoCloseable
 	private final CloudTransformRing ownTransforms = new CloudTransformRing("simpleclouds.rainTransforms", 256);
 	private GpuBuffer vertexBuffer;
 	private GpuBuffer indexBuffer;
+	private RenderTarget backdrop;
 	private int dropCount;
 	private boolean loggedFirstDraw;
 
@@ -79,6 +75,7 @@ public final class RainDrawPipeline implements AutoCloseable
 		BindGroupLayout bgl = BindGroupLayout.builder()
 				.withUniform("RainPass", UniformType.UNIFORM_BUFFER)
 				.withUniform("RainTexture", UniformType.COMBINED_IMAGE_SAMPLER)
+				.withUniform("SceneColor", UniformType.COMBINED_IMAGE_SAMPLER)
 				.build();
 		this.pipeline = RenderPipeline.builder(RenderPipelines.MATRICES_FOG_SNIPPET)
 				.withLocation(RAIN_LOCATION)
@@ -89,36 +86,50 @@ public final class RainDrawPipeline implements AutoCloseable
 				.withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
 				.withCull(false)
 				.withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT))
-				// Step 5 (original parity): no depth test (ALWAYS_PASS) so the rain is drawn
-				// on top of the scene (the storm base / sky), like the reference's rain curtain.
-				// The LESS_THAN test occluded the sky drops (they sit behind the storm base from
-				// the camera's view), leaving only the ground-level drops visible.
-				.withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, false))
+				// 26.3 uses reversed Z: larger depth is closer. LESS_THAN is the
+				// wrong comparison here, not evidence that precipitation needs no
+				// depth test. Preserve terrain/roof occlusion without writing depth.
+				.withDepthStencilState(new DepthStencilState(CompareOp.GREATER_THAN_OR_EQUAL, false))
 				.build();
 
 		this.alphaUbo = device.createBuffer(() -> "simpleclouds.rainAlpha", GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, 4L);
 	}
 
+	/** Capture the clouds and terrain once, before either rain or snow changes the
+	 * main color target. The fragment shader uses this stable scene for contrast. */
+	public void captureBackdrop()
+	{
+		RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
+		if (this.backdrop == null || this.backdrop.width != main.width || this.backdrop.height != main.height)
+		{
+			if (this.backdrop != null) this.backdrop.destroyBuffers();
+			this.backdrop = new TextureTarget("simpleclouds.rainBackdrop", main.width, main.height,
+					main.getColorTexture().getFormat(), GpuFormat.D32_FLOAT);
+		}
+		RenderSystem.getDevice().createCommandEncoder().copyTextureToTexture(
+				main.getColorTexture(), this.backdrop.getColorTexture(), 0, 0, 0, 0, 0, main.width, main.height);
+	}
+
 	/**
-	 * Builds the dynamic vertex/index buffers for one frame. Each drop is a quad:
-	 * vertices (Corner, QuadV) = (-0.5,0), (0.5,0), (0.5,1), (-0.5,1).
+	 * Builds a dynamic batch of four XYZUV vertices per precipitation quad.
 	 */
-	public void setDrops(List<WorldEffectsDrop> drops, float alpha)
+	public void setDrops(List<float[]> drops, float alpha)
 	{
 		if (drops.isEmpty())
 		{
+			if (this.vertexBuffer != null) this.vertexBuffer.close();
+			if (this.indexBuffer != null) this.indexBuffer.close();
 			this.vertexBuffer = null;
 			this.indexBuffer = null;
+			this.dropCount = 0;
 			return;
 		}
 
-		ByteBuffer data = ByteBuffer.allocateDirect(drops.size() * 4 * 8 * 4).order(ByteOrder.LITTLE_ENDIAN);
-		for (WorldEffectsDrop drop : drops)
+		ByteBuffer data = ByteBuffer.allocateDirect(drops.size() * 4 * 5 * 4).order(ByteOrder.LITTLE_ENDIAN);
+		for (float[] drop : drops)
 		{
-			writeDropVertex(data, drop, -0.5F, 0.0F);
-			writeDropVertex(data, drop, 0.5F, 0.0F);
-			writeDropVertex(data, drop, 0.5F, 1.0F);
-			writeDropVertex(data, drop, -0.5F, 1.0F);
+			if (drop.length != 20) throw new IllegalArgumentException("Expected four XYZUV vertices");
+			for (float value : drop) data.putFloat(value);
 		}
 		data.flip();
 
@@ -149,20 +160,8 @@ public final class RainDrawPipeline implements AutoCloseable
 		}
 	}
 
-	private static void writeDropVertex(ByteBuffer data, WorldEffectsDrop drop, float corner, float quadV)
-	{
-		data.putFloat(drop.x());
-		data.putFloat(drop.y());
-		data.putFloat(drop.z());
-		data.putFloat(corner);
-		data.putFloat(quadV);
-		data.putFloat(drop.length());
-		data.putFloat(drop.width());
-		data.putFloat(drop.uvOffset() + quadV * drop.length() * 0.1F);
-	}
-
 	/** Draws the rain into the main target. */
-	public void draw(Matrix4f viewMatrix)
+	public void draw(Matrix4f viewMatrix, Identifier texture)
 	{
 		if (this.vertexBuffer == null || this.indexBuffer == null)
 			return;
@@ -181,18 +180,19 @@ public final class RainDrawPipeline implements AutoCloseable
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
 		// Color-only pass (the scene depth is only tested against, never read).
 		var compiledPipeline = RenderSystem.getCompiledPipeline(this.pipeline);
-		AbstractTexture rainTexture = Minecraft.getInstance().getTextureManager().getTexture(RAIN_TEXTURE_ID);
-		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.rain", colorView, Optional.empty(), depthView, OptionalDouble.empty());
+		AbstractTexture rainTexture = Minecraft.getInstance().getTextureManager().getTexture(texture);
+		try (RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.rain", colorView, Optional.empty(), depthView, OptionalDouble.empty())) {
 		pass.setPipeline(compiledPipeline);
 		RenderSystem.bindDefaultUniforms(pass);
 		pass.setUniform("DynamicTransforms", transforms);
 		pass.setUniform("RainPass", this.alphaUbo);
 		// (hoisted above the render pass: 26.3 forbids texture uploads inside one)
 		pass.setUniform("RainTexture", rainTexture.getTextureView(), rainTexture.getSampler());
+		pass.setUniform("SceneColor", this.backdrop.getColorTextureView(), rainTexture.getSampler());
 		pass.setVertexBuffer(0, this.vertexBuffer.slice());
 		pass.setIndexBuffer(this.indexBuffer, IndexType.SHORT);
 		pass.drawIndexed(this.dropCount * 6, 1, 0, 0, 0);
-		pass.close();
+		}
 	}
 
 	@Override
@@ -204,5 +204,7 @@ public final class RainDrawPipeline implements AutoCloseable
 			this.vertexBuffer.close();
 		if (this.indexBuffer != null)
 			this.indexBuffer.close();
+		if (this.backdrop != null)
+			this.backdrop.destroyBuffers();
 	}
 }

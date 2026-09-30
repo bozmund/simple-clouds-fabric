@@ -38,8 +38,7 @@ import dev.nonamecrackers2.simpleclouds.client.renderer.SimpleCloudsRenderer;
  *
  * DEVIATIONS from 1.20.1:
  * <ul>
- *   <li>Only the first data-driven cloud type is previewed (the 1.20.1
- *       per-type generator + type selector are not ported).</li>
+	 *   <li>Type selection is supported; editable noise layers remain to be ported.</li>
  *   <li>The preview box is drawn over the live world (no isolated sky-blue
  *       background) at the player position, with an orbit camera
  *       (perspective projection; 1.20.1 used orthographic).</li>
@@ -66,11 +65,16 @@ public class PreviewDrawPipeline implements AutoCloseable
 
 	/**
 	 * Generates the preview instance mesh once (static; no scrolling in the preview).
-	 * Uses the first data-driven cloud type.
+	 * Uses the explicitly selected preview type, independently of world settings.
 	 */
-	public void generateMesh()
+	public void generateMesh(dev.nonamecrackers2.simpleclouds.common.cloud.CloudType type)
 	{
-		List<CpuCloudGenerator.CloudLayerGroup> groups = SimpleCloudsRenderer.dataDrivenGroups();
+		if (this.instanceBuffer != null) this.instanceBuffer.close();
+		this.instanceBuffer = null;
+		this.instanceCount = 0;
+		if (type == null) return;
+		List<CpuCloudGenerator.CloudLayerGroup> groups = SimpleCloudsRenderer.dataDrivenGroups(
+				new dev.nonamecrackers2.simpleclouds.common.cloud.CloudType[]{type});
 		if (groups.isEmpty())
 			return;
 		CpuCloudGenerator generator = new CpuCloudGenerator(List.of(groups.get(0)));
@@ -117,7 +121,8 @@ public class PreviewDrawPipeline implements AutoCloseable
 	public static Matrix4f previewViewMatrix(float camRotX, float camRotY, float zoom, Vector3f offset)
 	{
 		float radX = (float) Math.toRadians(camRotX);
-		float radY = (float) Math.toRadians(Math.PI + camRotY);
+		// Screen3D stores degrees; the half-turn is radians only after conversion.
+		float radY = (float) (Math.PI + Math.toRadians(camRotY));
 		Matrix4f view = new Matrix4f().identity();
 		view.translate(0.0F, 0.0F, -BASE_DISTANCE / Math.max(zoom, 0.05F));
 		view.rotate(radX, 1.0F, 0.0F, 0.0F);

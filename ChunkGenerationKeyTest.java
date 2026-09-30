@@ -17,6 +17,17 @@ public class ChunkGenerationKeyTest
         require(key(1) != key(1,circle(10000,10000,1,0)), "infinite preview confused with empty sky");
         require(key(8,circle(200,0,200,0)) == key(8,circle(200.01f,0,200,0)), "subsample motion churn");
         require(key(1,circle(300,0,100,0)) != key(1,circle(400,0,100,0)), "outer fade intersection omitted");
+        int[] heights = {64,256};
+        require(ChunkGenerationKey.localMaxY(0,0,32,1,List.of(),heights,16) == 16,
+                "empty region wastes full vertical extent");
+        require(ChunkGenerationKey.localMaxY(0,0,32,1,List.of(circle(0,0,100,0)),heights,16) == 64,
+                "short formation uses global maximum height");
+        require(ChunkGenerationKey.localMaxY(0,0,32,1,List.of(circle(0,0,100,0),circle(10000,10000,100,1)),heights,16) == 64,
+                "distant tall formation raises local height");
+        require(ChunkGenerationKey.localMaxY(0,0,32,1,List.of(circle(0,0,100,0),circle(-80,0,100,1)),heights,16) == 256,
+                "nearby tall formation is clipped");
+        require(ChunkGenerationKey.localMaxY(-32,-32,32,1,List.of(circle(-400,-16,100,1)),heights,16) == 16,
+                "negative-coordinate exclusion failed");
         float generated = 4, current = 5, featureX = 20;
         require(featureX + ChunkGenerationKey.drawOffset(generated,current) + current == featureX + generated, "wind translation reverses noise phase");
         for (int phase = -20; phase <= 20; phase++)

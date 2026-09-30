@@ -72,7 +72,7 @@ finish
 	echo "end reason: $END_REASON, sampled $(($(wc -l <"$E/samples.tsv") - 1)) times, loop cycles $(grep -c 'LOOP cycle' "$E/latest.log")"
 	echo "== transform capacity max: $(grep -o 'Dynamic Transforms UBO.*New capacity will be [0-9]*' "$E/latest.log" | grep -o '[0-9]*$' | sort -n | tail -1)"
 	echo "== generation summaries (failed / worstFrameMs / transformWritesPeakPerFrame / pending / staged):"
-	grep -o 'Simple Clouds generation backend=CPU.*' "$E/latest.log" | grep -o 'failed=[0-9]*\|worstFrameMs=[0-9]*\|transformWritesPeakPerFrame=[0-9]*\|pending=[0-9]*\|staged=[0-9]*' | paste -d' ' - - - - -
+	grep -o 'Simple Clouds generation backend=[^ ]*.*' "$E/latest.log" | grep -o 'failed=[0-9]*\|worstFrameMs=[0-9]*\|transformWritesPeakPerFrame=[0-9]*\|pending=[0-9]*\|staged=[0-9]*' | paste -d' ' - - - - -
 	echo "== DEVMEM:"; grep -o '\[DEVMEM\].*' "$E/latest.log"
 	echo "== errors / exceptions:"; grep -iE 'simpleclouds.*(ERROR|Exception)|OutOfMemory|cap exceeded|render pass failed|refused' "$E/latest.log" | cut -c1-220 | sort | uniq -c | head -20
 } >"$E/summary.txt"

@@ -5,11 +5,22 @@ Requires Pillow. Camera/timing must be matched before comparing runs.
 """
 from pathlib import Path
 import sys
+import re
 from PIL import Image, ImageChops
 
-files = sorted(Path(sys.argv[1]).glob("devshot-SHAKE-*.png"))
+def frame_number(path):
+    match = re.fullmatch(r"devshot-SHAKE-(\d+)(?:-(\d+))?\.png", path.name)
+    if match is None:
+        raise SystemExit(f"Unrecognized SHAKE frame name: {path.name}")
+    # Forge names its first frame '-01.png', then '-01-02.png' etc.
+    # Lexical sorting puts the first frame LAST, creating a false final jump.
+    return int(match.group(2) or match.group(1))
+
+files = sorted(Path(sys.argv[1]).glob("devshot-SHAKE-*.png"), key=frame_number)
 if len(files) != 41:
     raise SystemExit(f"Incomplete SHAKE sequence: expected 41 frames, got {len(files)}")
+if [frame_number(path) for path in files] != list(range(1, 42)):
+    raise SystemExit("SHAKE frame indices are missing or duplicated")
 changes = []
 previous = None
 for path in files:

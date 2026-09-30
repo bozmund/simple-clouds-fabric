@@ -31,6 +31,7 @@ layout(location = 1) out float fogDistance;
 
 // GLSL ES 3.0: no C-style array init of the per-face transforms (see clouds.vsh).
 #include <simpleclouds:cloud_faces.glsl>
+#include <simpleclouds:cloud_cell_clip.glsl>
 
 void main()
 {
@@ -44,4 +45,5 @@ void main()
 	// 26.2 slice blends with standard alpha, so it is dropped.)
 
 	vertexColor = vec4(mix(DarknessColorModifier, vec3(1.0), Brightness), Alpha);
+	if (!cloudCellInsideClip(SidePos.xz)) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
 }

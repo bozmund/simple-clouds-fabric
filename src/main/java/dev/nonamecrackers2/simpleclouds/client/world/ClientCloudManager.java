@@ -13,22 +13,66 @@ import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 public class ClientCloudManager extends CloudManager<ClientLevel>
 {
+	private static final Logger LOGGER = LogManager.getLogger();
+	private final CloudScrollSmoother scrollSmoother = new CloudScrollSmoother();
 	private boolean receivedSync;
-	
+
 	public ClientCloudManager(ClientLevel level)
 	{
 		super(level, ClientSideCloudTypeManager.getInstance(), ClientSideCloudSpawningManager.getClientInstance()::getConfig, ClientCloudGenerator::new);
 	}
-	
+
 	@Override
 	public ClientCloudGenerator getCloudGenerator()
 	{
 		return (ClientCloudGenerator)super.getCloudGenerator();
 	}
-	
+
+	@Override
+	public void tick()
+	{
+		float before = this.scrollAngle;
+		super.tick();
+		float corrected = this.scrollSmoother.correct(this.scrollAngle, this.scrollAngle - before);
+		if (corrected != this.scrollAngle)
+		{
+			this.scrollAngle = corrected;
+			this.scrollX = (float)Math.cos(corrected) * SCROLL_OFFSET;
+			this.scrollZ = (float)Math.sin(corrected) * SCROLL_OFFSET;
+		}
+	}
+
+	@Override
+	public void setScrollAngle(float angle)
+	{
+		this.scrollSmoother.reset();
+		super.setScrollAngle(angle);
+		this.scrollX = this.scrollXO = (float)Math.cos(angle) * SCROLL_OFFSET;
+		this.scrollZ = this.scrollZO = (float)Math.sin(angle) * SCROLL_OFFSET;
+	}
+
+	public void acceptServerScrollAngle(float angle)
+	{
+		if (!Float.isFinite(angle))
+		{
+			LOGGER.warn("Ignoring non-finite cloud scroll angle from server");
+			return;
+		}
+		if (!this.receivedSync)
+		{
+			this.setScrollAngle(angle);
+			return;
+		}
+		float difference = this.scrollSmoother.accept(this.scrollAngle, angle);
+		if (Math.abs(difference) * SCROLL_OFFSET > 0.25F)
+			LOGGER.info("[CLOUD-SYNC] smoothing server cloud correction of {} cloud units", Math.abs(difference) * SCROLL_OFFSET);
+	}
+
 	@Override
 	public CloudMode getCloudMode()
 	{
@@ -37,7 +81,7 @@ public class ClientCloudManager extends CloudManager<ClientLevel>
 		else
 			return SimpleCloudsConfig.CLIENT.cloudMode.get();
 	}
-	
+
 	@Override
 	public String getSingleModeCloudTypeRawId()
 	{
@@ -46,23 +90,23 @@ public class ClientCloudManager extends CloudManager<ClientLevel>
 		else
 			return SimpleCloudsConfig.CLIENT.singleModeCloudType.get();
 	}
-	
+
 	@Override
 	protected void resetVanillaWeather()
 	{
 		this.level.setRainLevel(0.0F);
 		this.level.setThunderLevel(0.0F);
 	}
-	
+
 	@Override
 	protected void tickLightning()
 	{
 		if (this.receivedSync)
 			return;
-		
+
 		super.tickLightning();
 	}
-	
+
 	@Override
 	protected void attemptToSpawnLightning()
 	{
@@ -83,7 +127,7 @@ public class ClientCloudManager extends CloudManager<ClientLevel>
 			break;
 		}
 	}
-	
+
 	@Override
 	protected void spawnLightning(CloudType type, float fade, int x, int z, boolean soundOnly)
 	{
@@ -94,35 +138,35 @@ public class ClientCloudManager extends CloudManager<ClientLevel>
 		float maxPitch = 80.0F + spreadnessFactor * 10.0F;
 		SimpleCloudsRenderer.getInstance().getWorldEffectsManager().spawnLightning(new BlockPos(x, y, z), soundOnly, this.random.nextInt(), 4, 2, length, 20.0F, minPitch, maxPitch);
 	}
-	
+
 	@Override
 	protected boolean determineUseVanillaWeather()
 	{
 		return !this.receivedSync || super.determineUseVanillaWeather();
 	}
-	
+
 	@Override
 	public float getCloudSpeed()
 	{
 		return this.receivedSync ? super.getCloudSpeed() : SimpleCloudsConfig.CLIENT.speedModifier.get().floatValue();
 	}
-	
+
 	@Override
 	public int getCloudHeight()
 	{
 		return this.receivedSync ? super.getCloudHeight() : SimpleCloudsConfig.CLIENT.cloudHeight.get();
 	}
-	
+
 	public void setReceivedSync()
 	{
 		this.receivedSync = true;
 	}
-	
+
 	public boolean hasReceivedSync()
 	{
 		return this.receivedSync;
 	}
-	
+
 	public static boolean isAvailableServerSide()
 	{
 		Minecraft mc = Minecraft.getInstance();

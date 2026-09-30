@@ -5,10 +5,8 @@ import com.google.common.base.Joiner;
 import dev.nonamecrackers2.simpleclouds.SimpleCloudsMod;
 import dev.nonamecrackers2.simpleclouds.api.common.cloud.CloudMode;
 import dev.nonamecrackers2.simpleclouds.client.cloud.ClientSideCloudTypeManager;
-import dev.nonamecrackers2.simpleclouds.client.mesh.generator.SingleRegionCloudMeshGenerator;
 import dev.nonamecrackers2.simpleclouds.client.renderer.SimpleCloudsRenderer;
 import dev.nonamecrackers2.simpleclouds.client.world.ClientCloudManager;
-import dev.nonamecrackers2.simpleclouds.common.cloud.SimpleCloudsConstants;
 import dev.nonamecrackers2.simpleclouds.common.config.SimpleCloudsConfig;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
@@ -20,9 +18,14 @@ import nonamecrackers2.crackerslib.common.config.listener.ConfigListener;
 
 public class SimpleCloudsClientConfigListeners
 {
+	private static ConfigListener listener;
+	private static boolean initialized;
+
 	public static void registerListener()
 	{
-		ConfigListener.builder(ModConfig.Type.CLIENT, SimpleCloudsMod.MODID)
+		if (listener != null)
+			return;
+		listener = ConfigListener.builder(ModConfig.Type.CLIENT, SimpleCloudsMod.MODID)
 				.addListener(SimpleCloudsConfig.CLIENT.cloudMode, (o, n) -> requestReload(true))
 				.addListener(SimpleCloudsConfig.CLIENT.shadedClouds, (o, n) -> requestReload(false))
 				.addListener(SimpleCloudsConfig.CLIENT.transparency, (o, n) -> requestReload(false))
@@ -33,6 +36,17 @@ public class SimpleCloudsClientConfigListeners
 				.addListener(SimpleCloudsConfig.CLIENT.singleModeCloudType, (o, n) -> onSingleModeCloudTypeUpdated(n))
 				.addListener(SimpleCloudsConfig.CLIENT.customRainSounds, (o, n) -> reloadResources())
 				.buildAndRegister();
+		net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents.END_CLIENT_TICK.register(client -> {
+			if (!SimpleCloudsConfig.CLIENT_SPEC.isLoaded())
+				return;
+			if (!initialized)
+			{
+				listener.resetCache();
+				initialized = true;
+			}
+			else
+				listener.poll();
+		});
 	}
 	
 	/**
@@ -56,14 +70,8 @@ public class SimpleCloudsClientConfigListeners
 	public static void onSingleModeCloudTypeUpdatedFromServer(String type)
 	{
 		SimpleCloudsConfig.SERVER.singleModeCloudType.set(type);
-		if (SimpleCloudsRenderer.getInstance().getMeshGenerator() instanceof SingleRegionCloudMeshGenerator generator)
-		{
-			ClientSideCloudTypeManager.getInstance().getCloudTypeFromRawId(type).ifPresentOrElse(t -> {
-				generator.setCloudType(t);
-			}, () -> {
-				generator.setCloudType(SimpleCloudsConstants.EMPTY);
-			});
-		}
+		// The active renderer reads this selection and invalidates changed mesh groups.
+		// getMeshGenerator() is a legacy adapter, not the 26.3 render path.
 	}
 	
 	public static void onSingleModeCloudTypeUpdated(String type)
@@ -77,8 +85,7 @@ public class SimpleCloudsClientConfigListeners
 			var types = ClientSideCloudTypeManager.getInstance().getCloudTypes();
 			if (loc != null && types.containsKey(loc) && ClientSideCloudTypeManager.isValidClientSideSingleModeCloudType(types.get(loc)))
 			{
-				if (SimpleCloudsRenderer.getInstance().getMeshGenerator() instanceof SingleRegionCloudMeshGenerator generator)
-					generator.setCloudType(types.get(loc));
+				// Selection is read directly by the active renderer on the next frame.
 			}
 			else
 			{
@@ -99,7 +106,8 @@ public class SimpleCloudsClientConfigListeners
 			Popup.createYesNoPopup(null, () -> {
 				SimpleCloudsRenderer.getInstance().requestReload();
 			}, 300, Component.translatable("gui.simpleclouds.requires_reload.info"));
-			Popup.clearQueue();
+			// Keep queued dialogs: when another Popup is open, the new reload
+			// request is queued too. Clearing here silently discards that request.
 		});
 	}
 	
