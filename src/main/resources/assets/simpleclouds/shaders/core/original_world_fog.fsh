@@ -12,14 +12,18 @@ layout(std140) uniform OriginalWorldFog {
 uniform sampler2D DiffuseSampler;
 uniform sampler2D DiffuseDepthSampler;
 uniform sampler2D CloudDepthSampler;
+uniform sampler2D PreCloudDepthSampler;
 uniform sampler2D StormFogSampler;
 layout(location=0) in vec2 texCoord;
 layout(location=0) out vec4 fragColor;
 void main() {
     vec3 scene = texture(DiffuseSampler,texCoord).rgb;
     float depth = texture(DiffuseDepthSampler,texCoord).r;
-    // Modern reversed-Z: equal/cloud pixels and the clear sky stay untouched.
-    if(depth <= texture(CloudDepthSampler,texCoord).r) {
+    // Modern reversed-Z: cloud pixels (where the cloud pass moved the depth closer and nothing
+    // nearer covered them since) and the clear sky stay untouched.
+    float cloudDepth = texture(CloudDepthSampler,texCoord).r;
+    bool cloudPixel = cloudDepth > texture(PreCloudDepthSampler,texCoord).r && depth <= cloudDepth;
+    if(depth <= 0.0 || cloudPixel) {
         fragColor=vec4(scene,1.0); return;
     }
     vec4 view = InverseProjection * vec4(texCoord*2.0-1.0,depth,1.0);

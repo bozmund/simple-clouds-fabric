@@ -76,9 +76,12 @@ public class CloudsDrawPipeline implements AutoCloseable
 	private final RenderPipeline previewExportPipeline;
 	private com.mojang.blaze3d.pipeline.TextureTarget atmosphericSource;
 	private final RenderPipeline worldFogPipeline;
+	private final RenderPipeline dhFadeGuardPipeline;
+	private com.mojang.blaze3d.pipeline.TextureTarget dhFadeGuardSaved;
+	private boolean dhFadeGuardArmed;
 	private final GpuBuffer[] worldFogRing = new GpuBuffer[3];
 	private int worldFogSlot;
-	private com.mojang.blaze3d.pipeline.TextureTarget worldFogSource, cloudDepthSnapshot;
+	private com.mojang.blaze3d.pipeline.TextureTarget worldFogSource, cloudDepthSnapshot, preCloudDepthSnapshot;
 	private boolean cloudDepthReady, stormFogReady;
 	private boolean worldFogLogged;
 	private int worldFogDraws;
@@ -469,7 +472,18 @@ public class CloudsDrawPipeline implements AutoCloseable
 						.withUniform("DiffuseSampler", UniformType.COMBINED_IMAGE_SAMPLER)
 						.withUniform("DiffuseDepthSampler", UniformType.COMBINED_IMAGE_SAMPLER)
 						.withUniform("CloudDepthSampler", UniformType.COMBINED_IMAGE_SAMPLER)
+						.withUniform("PreCloudDepthSampler", UniformType.COMBINED_IMAGE_SAMPLER)
 						.withUniform("StormFogSampler", UniformType.COMBINED_IMAGE_SAMPLER).build())
+				.withVertexBinding(0, triangleFormat).withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
+				.withCull(false).withDepthStencilState(Optional.empty())
+				.withColorTargetState(ColorTargetState.DEFAULT).build();
+		Identifier dhFadeGuardId = SimpleCloudsMod.id("core/dh_fade_guard");
+		this.dhFadeGuardPipeline = RenderPipeline.builder()
+				.withLocation(dhFadeGuardId).withVertexShader(STORM_FOG_LOCATION).withFragmentShader(dhFadeGuardId)
+				.withBindGroupLayout(BindGroupLayout.builder()
+						.withUniform("SavedSampler", UniformType.COMBINED_IMAGE_SAMPLER)
+						.withUniform("CloudDepthSampler", UniformType.COMBINED_IMAGE_SAMPLER)
+						.withUniform("PreCloudDepthSampler", UniformType.COMBINED_IMAGE_SAMPLER).build())
 				.withVertexBinding(0, triangleFormat).withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
 				.withCull(false).withDepthStencilState(Optional.empty())
 				.withColorTargetState(ColorTargetState.DEFAULT).build();
@@ -984,6 +998,61 @@ public class CloudsDrawPipeline implements AutoCloseable
 			main.copyDepthFrom(this.dhDepthBackup);
 	}
 
+	/**
+	 * Depth just before the clouds are drawn. The world fog treats a pixel as cloud only where
+	 * the clouds changed the depth: with Distant Horizons the clouds are drawn after the solid
+	 * terrain, so the post-cloud snapshot alone also holds terrain and DH depth.
+	 */
+	public void capturePreCloudDepth()
+	{
+		RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
+		if(this.preCloudDepthSnapshot==null || this.preCloudDepthSnapshot.width!=main.width || this.preCloudDepthSnapshot.height!=main.height) {
+			var replacement = new com.mojang.blaze3d.pipeline.TextureTarget("simpleclouds.preCloudDepthSnapshot",
+					main.width,main.height,main.getColorTexture().getFormat(),main.getDepthTexture().getFormat());
+			if(this.preCloudDepthSnapshot!=null) this.preCloudDepthSnapshot.destroyBuffers();
+			this.preCloudDepthSnapshot=replacement;
+		}
+		this.preCloudDepthSnapshot.copyDepthFrom(main);
+	}
+
+	/** Before DH's vanilla fade (executeOutline): keep the colour so cloud pixels can be restored. */
+	public void beginDhFadeGuard()
+	{
+		this.dhFadeGuardArmed = false;
+		RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
+		if (!this.cloudDepthReady || this.preCloudDepthSnapshot == null || this.cloudDepthSnapshot == null
+				|| this.preCloudDepthSnapshot.width != main.width || this.preCloudDepthSnapshot.height != main.height
+				|| this.cloudDepthSnapshot.width != main.width || this.cloudDepthSnapshot.height != main.height) return;
+		if (this.dhFadeGuardSaved == null || this.dhFadeGuardSaved.width != main.width || this.dhFadeGuardSaved.height != main.height)
+		{
+			if (this.dhFadeGuardSaved != null) this.dhFadeGuardSaved.destroyBuffers();
+			this.dhFadeGuardSaved = new com.mojang.blaze3d.pipeline.TextureTarget("simpleclouds.dhFadeGuard",
+					main.width, main.height, main.getColorTexture().getFormat(), null);
+		}
+		RenderSystem.getDevice().createCommandEncoder().copyTextureToTexture(main.getColorTexture(),
+				this.dhFadeGuardSaved.getColorTexture(), 0, 0, 0, 0, 0, main.width, main.height);
+		this.dhFadeGuardArmed = true;
+	}
+
+	/** After DH's vanilla fade: put the saved colour back where the cloud pass drew. */
+	public void endDhFadeGuard()
+	{
+		if (!this.dhFadeGuardArmed) return;
+		this.dhFadeGuardArmed = false;
+		RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
+		if (this.dhFadeGuardSaved.width != main.width || this.dhFadeGuardSaved.height != main.height) return;
+		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
+		try (RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.dhFadeGuard", main.getColorTextureView(), Optional.empty()))
+		{
+			pass.setPipeline(RenderSystem.getCompiledPipeline(this.dhFadeGuardPipeline));
+			pass.setUniform("SavedSampler", this.dhFadeGuardSaved.getColorTextureView(), this.nearestSampler);
+			pass.setUniform("CloudDepthSampler", this.cloudDepthSnapshot.getDepthTextureView(), this.nearestSampler);
+			pass.setUniform("PreCloudDepthSampler", this.preCloudDepthSnapshot.getDepthTextureView(), this.nearestSampler);
+			pass.setVertexBuffer(0, this.triangleBuffer.slice());
+			pass.draw(3, 1, 0, 0);
+		}
+	}
+
 	public void captureCloudDepth()
 	{
 		RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
@@ -1021,6 +1090,9 @@ public class CloudsDrawPipeline implements AutoCloseable
 			pass.setUniform("DiffuseSampler",this.worldFogSource.getColorTextureView(),this.nearestSampler);
 			pass.setUniform("DiffuseDepthSampler",main.getDepthTextureView(),this.nearestSampler);
 			pass.setUniform("CloudDepthSampler",this.cloudDepthSnapshot.getDepthTextureView(),this.nearestSampler);
+			var pre = this.preCloudDepthSnapshot != null && this.preCloudDepthSnapshot.width == main.width
+					&& this.preCloudDepthSnapshot.height == main.height ? this.preCloudDepthSnapshot : this.cloudDepthSnapshot;
+			pass.setUniform("PreCloudDepthSampler",pre.getDepthTextureView(),this.nearestSampler);
 			pass.setUniform("StormFogSampler",this.stormFogReady?this.stormBlurMain.getColorTextureView():this.worldFogSource.getColorTextureView(),this.stormLinearSampler);
 			pass.setVertexBuffer(0,this.triangleBuffer.slice()); pass.draw(3,1,0,0);
 		}
@@ -1820,6 +1892,8 @@ public class CloudsDrawPipeline implements AutoCloseable
 		if (this.atmosphericSource != null) this.atmosphericSource.destroyBuffers();
 		if (this.worldFogSource != null) this.worldFogSource.destroyBuffers();
 		if (this.cloudDepthSnapshot != null) this.cloudDepthSnapshot.destroyBuffers();
+		if (this.preCloudDepthSnapshot != null) this.preCloudDepthSnapshot.destroyBuffers();
+		if (this.dhFadeGuardSaved != null) this.dhFadeGuardSaved.destroyBuffers();
 		for(GpuBuffer buffer:this.worldFogRing) buffer.close();
 		if (this.transitionOld != null) this.transitionOld.destroyBuffers();
 		if (this.transitionNew != null) this.transitionNew.destroyBuffers();

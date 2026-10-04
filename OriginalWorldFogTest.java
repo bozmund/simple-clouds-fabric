@@ -36,7 +36,7 @@ public class OriginalWorldFogTest {
   String pipeline=Files.readString(Path.of(base+"v2/CloudsDrawPipeline.java"));
   String renderer=Files.readString(Path.of(base+"SimpleCloudsRenderer.java"));
   String shader=Files.readString(Path.of("src/main/resources/assets/simpleclouds/shaders/core/original_world_fog.fsh"));
-  require(shader.contains("depth <= texture(CloudDepthSampler")&&!shader.contains("depth*2.0-1.0"),"Legacy depth convention returned");
+  require(shader.contains("depth <= cloudDepth")&&shader.contains("texture(PreCloudDepthSampler")&&!shader.contains("depth*2.0-1.0"),"Legacy depth convention returned");
   require(pipeline.contains("this.cloudDepthSnapshot.copyDepthFrom(main)")&&pipeline.contains("this.cloudDepthReady=false")&&pipeline.contains("this.stormFogReady=false"),"Missing current-frame snapshot lifetime");
   require(pipeline.contains("pass.setUniform(\"DiffuseSampler\",this.worldFogSource.getColorTextureView()"),"Framebuffer feedback");
   int late=renderer.indexOf("public void renderAfterLevel(float");

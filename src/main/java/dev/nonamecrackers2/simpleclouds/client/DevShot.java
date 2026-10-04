@@ -1696,6 +1696,15 @@ public final class DevShot
 						dev.nonamecrackers2.simpleclouds.common.config.SimpleCloudsConfig.CLIENT.frustumCulling.set(false);
 						continue;
 					}
+					if (part.equalsIgnoreCase("CULLAWAY"))
+					{
+						// FPS A/B: generate only camera-facing faces (the original cull).
+						dev.nonamecrackers2.simpleclouds.client.renderer.SimpleCloudsRenderer.devCullAwayFaces = true;
+						dev.nonamecrackers2.simpleclouds.client.renderer.SimpleCloudsRenderer.getOptionalInstance()
+								.ifPresent(r -> r.requestReload());
+						LOGGER.info("[DEVSHOT] CULLAWAY: camera-facing faces only");
+						continue;
+					}
 					if (part.regionMatches(true, 0, "CAM:", 0, 4))
 					{
 						// CAM:x,y,z,pitch,yaw -- a fixed spot from a real save, transparency on then off.

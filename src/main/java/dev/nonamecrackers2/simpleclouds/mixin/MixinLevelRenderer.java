@@ -8,6 +8,13 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.renderpearl.api.commands.RenderPass;
+import net.minecraft.client.renderer.chunk.ChunkSectionsToRender;
+import net.minecraft.client.renderer.feature.FeatureRenderDispatcher;
+
 import dev.nonamecrackers2.simpleclouds.client.renderer.SimpleCloudsRenderer;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -30,6 +37,88 @@ public class MixinLevelRenderer
 	private void simpleclouds$beginFrame(CallbackInfo ci)
 	{
 		SimpleCloudsRenderer.getOptionalInstance().ifPresent(SimpleCloudsRenderer::beginWorldRenderFrame);
+	}
+
+	/**
+	 * With Distant Horizons the clouds are drawn between the opaque stage and the translucent
+	 * stage of the main pass: DH has already applied its LODs (prepareTranslucents HEAD) and the
+	 * solid terrain is in the depth buffer, while translucent terrain, particles and weather are
+	 * still to come and blend over the clouds, as in the original. Drawn at the TAIL instead,
+	 * the clouds were depth-tested against rain particles and every drop left a hole showing the
+	 * world behind the cloud (Jan, 2026-10-04). The vanilla pass spans both stages, so it is
+	 * closed here (close() is idempotent) and the translucent stage gets a fresh pass on the
+	 * same targets.
+	 */
+	@WrapOperation(
+			method = "lambda$addMainPass$0",
+			at = @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/LevelRenderer;executeClassicTransparency(Lnet/minecraft/client/renderer/chunk/ChunkSectionsToRender;Lnet/minecraft/client/renderer/feature/FeatureRenderDispatcher$PreparedFrame;Lcom/mojang/renderpearl/api/commands/RenderPass;)V"),
+			require = 0)
+	private void simpleclouds$cloudsBeforeTranslucent(LevelRenderer self, ChunkSectionsToRender sections,
+			FeatureRenderDispatcher.PreparedFrame frame, RenderPass pass, Operation<Void> original)
+	{
+		SimpleCloudsRenderer renderer = SimpleCloudsRenderer.getOptionalInstance().orElse(null);
+		if (renderer == null || !renderer.wantsCloudsBeforeTranslucent())
+		{
+			original.call(self, sections, frame, pass);
+			return;
+		}
+		pass.close();
+		try
+		{
+			renderer.renderCloudsBeforeTranslucent();
+		}
+		catch (Throwable t)
+		{
+			if (!loggedError)
+			{
+				LOGGER.error("Simple Clouds: cloud render pass failed (further failures suppressed)", t);
+				loggedError = true;
+			}
+		}
+		var main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
+		try (RenderPass translucent = RenderSystem.getDevice().createCommandEncoder().createRenderPass(
+				() -> "simpleclouds.translucentAfterClouds", main.getColorTextureView(), java.util.Optional.empty(),
+				main.getDepthTextureView(), java.util.OptionalDouble.empty()))
+		{
+			RenderSystem.bindDefaultUniforms(translucent);
+			original.call(self, sections, frame, translucent);
+		}
+	}
+
+	/**
+	 * Distant Horizons' vanilla fade runs at the HEAD of executeOutline, after the clouds, and
+	 * blends LOD colour over everything at the vanilla render-distance edge. Cloud pixels get
+	 * their colour back right after it (CloudsDrawPipeline.endDhFadeGuard).
+	 */
+	@WrapOperation(
+			method = "lambda$addMainPass$0",
+			at = @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/LevelRenderer;executeOutline(Lnet/minecraft/client/renderer/feature/FeatureRenderDispatcher$PreparedFrame;)V"),
+			require = 0)
+	private void simpleclouds$guardCloudsFromDhFade(LevelRenderer self, FeatureRenderDispatcher.PreparedFrame frame,
+			Operation<Void> original)
+	{
+		SimpleCloudsRenderer renderer = SimpleCloudsRenderer.getOptionalInstance().orElse(null);
+		if (renderer != null)
+		{
+			try { renderer.beginDhFadeGuard(); }
+			catch (Throwable t) { renderer = null; }
+		}
+		original.call(self, frame);
+		if (renderer != null)
+		{
+			try
+			{
+				renderer.endDhFadeGuard();
+			}
+			catch (Throwable t)
+			{
+				if (!loggedError)
+				{
+					LOGGER.error("Simple Clouds: DH fade guard failed (further failures suppressed)", t);
+					loggedError = true;
+				}
+			}
+		}
 	}
 
 	/**

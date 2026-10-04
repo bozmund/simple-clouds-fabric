@@ -506,7 +506,7 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 			// Keep faces that point away from the camera too (Jan 2026-10-04): with the original
 			// camera-facing cull, the walls around a camera inside a cloud were never generated and
 			// the cloud was see-through from inside.
-			var builder=CloudMeshGenerator.builder().fadeNearOrigin(mode==CloudMode.AMBIENT).testFacesFacingAway(true)
+			var builder=CloudMeshGenerator.builder().fadeNearOrigin(mode==CloudMode.AMBIENT).testFacesFacingAway(!devCullAwayFaces)
 				.shadedClouds(this.settings.shadedClouds()).useTransparency(this.settings.useTransparency())
 				.fixedMeshDataSectionSize(this.settings.useFixedMeshDataSectionSize())
 				.lodConfig(this.settings.getCurrentLod().getConfig())
@@ -653,6 +653,8 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 
 		this.shadowSources.clear();
 		if (this.frameTimings != null) this.frameTimings.mark(2);
+		if (this.cloudsBeforeTranslucent || SimpleCloudsConfig.CLIENT.fogMode.get() == dev.nonamecrackers2.simpleclouds.client.world.FogRenderMode.SCREEN_SPACE)
+			this.drawPipeline.capturePreCloudDepth();
 		if (SimpleCloudsConfig.CLIENT.renderClouds.get() && SimpleCloudsCompatHelper.isPrimaryPass()) {
 			this.meshGenerator.forRenderableMeshChunks(this.cullFrustum,
 				dev.nonamecrackers2.simpleclouds.client.mesh.chunk.MeshChunk::getOpaqueBuffers,(chunk,buffers)->{
@@ -692,11 +694,15 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		if (this.frameTimings != null) this.frameTimings.mark(4);
 		if (stormFogEnabled && overlaysEnabled && SimpleCloudsConfig.CLIENT.renderStormFog.get())
 		{
-			boolean boltLight = devFogFlashes && SimpleCloudsConfig.CLIENT.stormFogLightningFlashes.get()
-					&& !this.mc.options.hideLightningFlash().get();
-			this.collectFogBolts(partialTick, boltLight);
-			this.drawPipeline.drawStormFog(view, activeProjection, camX, camY, camZ, this.getFogEnd(),
-					this.getCloudColor(partialTick), this.fogBolts, this.fogBoltCount, devStormFogDebug);
+			if (this.cloudsBeforeTranslucent)
+			{
+				// Composited straight into the main colour: drawn now, the translucent water
+				// that follows would cover it. Run it at the TAIL (renderAfterLevel) instead.
+				this.pendingStormFogView = new Matrix4f(view);
+				this.pendingStormFogProjection = new Matrix4f(activeProjection);
+			}
+			else
+				this.drawStormFogNow(view, activeProjection, camX, camY, camZ, partialTick);
 		}
 
 		// Sky flash (storm plan step 1): the vanilla 26.2 sky flash is dead (nothing
@@ -709,11 +715,24 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		// only storm was over a kilometre away.
 
 		if (this.frameTimings != null) this.frameTimings.mark(5);
-		if (SimpleCloudsConfig.CLIENT.fogMode.get() == dev.nonamecrackers2.simpleclouds.client.world.FogRenderMode.SCREEN_SPACE)
+		if (this.cloudsBeforeTranslucent || SimpleCloudsConfig.CLIENT.fogMode.get() == dev.nonamecrackers2.simpleclouds.client.world.FogRenderMode.SCREEN_SPACE)
 			this.drawPipeline.captureCloudDepth();
 		this.worldCloudPassReady = true;
 		if (this.frameTimings != null) this.frameTimings.end();
 	}
+
+	private void drawStormFogNow(Matrix4f view, Matrix4f projection, double camX, double camY, double camZ, float partialTick)
+	{
+		boolean boltLight = devFogFlashes && SimpleCloudsConfig.CLIENT.stormFogLightningFlashes.get()
+				&& !this.mc.options.hideLightningFlash().get();
+		this.collectFogBolts(partialTick, boltLight);
+		this.drawPipeline.drawStormFog(view, projection, camX, camY, camZ, this.getFogEnd(),
+				this.getCloudColor(partialTick), this.fogBolts, this.fogBoltCount, devStormFogDebug);
+	}
+
+	/** Set while the DH cloud stage runs before the translucent stage (storm fog waits for the TAIL). */
+	private boolean cloudsBeforeTranslucent;
+	private Matrix4f pendingStormFogView, pendingStormFogProjection;
 
 	private boolean worldCloudPassReady;
 	private boolean worldCloudStageStarted;
@@ -739,6 +758,8 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	/** Reset once per level frame, including frames with no sky pass. */
 	public void beginWorldRenderFrame() {
 		this.worldCloudPassReady = false;
+		this.pendingStormFogView = null;
+		this.pendingStormFogProjection = null;
 		this.worldCloudStageStarted = false;
 		this.worldCloudStageExecutions = 0;
 		this.pipelinePrepared = false;
@@ -804,6 +825,13 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 		// section of CloudsDrawPipeline and PORTING.md).
 		// A1: the shadow map draws the per-chunk buffers (one drawIndexed per chunk
 		// inside a single pass).
+		if (this.pendingStormFogView != null)
+		{
+			// Storm fog of a cloud stage drawn before the translucent stage: after water now.
+			this.drawStormFogNow(this.pendingStormFogView, this.pendingStormFogProjection, camX, camY, camZ, partialTick);
+			this.pendingStormFogView = null;
+			this.pendingStormFogProjection = null;
+		}
 		this.drawPipeline.renderCloudShadowMap(camX, camY, camZ, (float) cloudHeight, this.shadowSources);
 		if (overlaysEnabled)
 		{
@@ -1123,6 +1151,51 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	{
 		this.renderCloudStage(true, stack, projMat, partialTick, camX, camY, camZ);
 	}
+	/**
+	 * DH path: the deferred cloud stage runs between the opaque and translucent stages of the
+	 * main pass (MixinLevelRenderer), so particles and weather blend over the clouds instead of
+	 * punching holes in them. SIMPLECLOUDS_TEST_CLOUDS_AT_TAIL=1 (dev) keeps the TAIL draw.
+	 */
+	public boolean wantsCloudsBeforeTranslucent()
+	{
+		if (!this.deferCloudsForDh || this.worldCloudStageStarted || !this.dhSkyStageDone) return false;
+		if (nonamecrackers2.crackerslib.common.compat.CompatHelper.areShadersRunning()) return false;
+		if (this.mc.level == null || !canRenderInDimension(this.mc.level)) return false;
+		return !("1".equals(System.getenv("SIMPLECLOUDS_DEV")) && "1".equals(System.getenv("SIMPLECLOUDS_TEST_CLOUDS_AT_TAIL")));
+	}
+
+	/** Set when this frame's clouds were drawn before the translucent stage (DH fade guard). */
+	private boolean cloudsDrawnBeforeTranslucent;
+
+	public void beginDhFadeGuard()
+	{
+		if (this.cloudsDrawnBeforeTranslucent && this.drawPipeline != null) this.drawPipeline.beginDhFadeGuard();
+	}
+
+	public void endDhFadeGuard()
+	{
+		if (this.cloudsDrawnBeforeTranslucent && this.drawPipeline != null) this.drawPipeline.endDhFadeGuard();
+		this.cloudsDrawnBeforeTranslucent = false;
+	}
+
+	public void renderCloudsBeforeTranslucent()
+	{
+		var camera = this.mc.gameRenderer.mainCamera();
+		var pos = camera.position();
+		float partialTick = this.mc.getDeltaTracker() != null ? this.mc.getDeltaTracker().getGameTimeDeltaPartialTick(false) : 0.0F;
+		Matrix4f projMat = this.mc.gameRenderer.gameRenderState().levelRenderState.cameraRenderState.projectionMatrix;
+		this.cloudsBeforeTranslucent = true;
+		try
+		{
+			this.renderCloudStage(false, new PoseStack(), projMat, partialTick, pos.x, pos.y, pos.z);
+			this.cloudsDrawnBeforeTranslucent = this.worldCloudPassReady;
+		}
+		finally
+		{
+			this.cloudsBeforeTranslucent = false;
+		}
+	}
+
 	/** Shader pipeline owns late cloud composition; never replaces the shader sky. */
 	public void renderCloudsAfterShaderLevel(PoseStack stack, Matrix4f projMat, float partialTick, double camX, double camY, double camZ)
 	{
@@ -1130,6 +1203,9 @@ public class SimpleCloudsRenderer implements ResourceManagerReloadListener
 	}
 	/** DH LOD depth into the main depth (Minecraft's projection) so late clouds, fog and
 	 * weather are hidden behind DH terrain; restored after the after-level effects. */
+	/** DevShot A/B: the original camera-facing face cull, for FPS comparison (developer runs only). */
+	public static volatile boolean devCullAwayFaces;
+
 	/** DevShot A/B: skip the transparent cube pass (developer runs only). */
 	public static volatile boolean devSkipTransparency;
 
