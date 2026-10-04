@@ -50,26 +50,26 @@ public class SimpleCloudsClientConfigListeners
 	}
 	
 	/**
-	 * Updates the instance of the server config on the client with the value from the server.
+	 * Updates the connection-scoped server copy without mutating the world-owned spec.
 	 * After called, this method will then request a reload from the cloud renderer, which
 	 * will reinitialize the mesh generator so the change in the config value is applied.
 	 */
 	public static void onCloudModeUpdatedFromServer(CloudMode mode)
 	{
-		SimpleCloudsConfig.SERVER.cloudMode.set(mode);
+		ClientServerConfig.updateCloudMode(mode);
 		Popup.createInfoPopup(null, 300, Component.translatable("gui.simpleclouds.reload_confirmation.server.info"), () -> {
 			SimpleCloudsRenderer.getInstance().requestReload();
 		});
 	}
 	
 	/**
-	 * Updates the instance of the server config on the client with the value from the server.
+	 * Updates the connection-scoped server copy without mutating the world-owned spec.
      * After called, this method will then update the single mode cloud type for the single mode cloud mesh
      * generator.
 	 */
 	public static void onSingleModeCloudTypeUpdatedFromServer(String type)
 	{
-		SimpleCloudsConfig.SERVER.singleModeCloudType.set(type);
+		ClientServerConfig.updateSingleModeCloudType(type);
 		// The active renderer reads this selection and invalidates changed mesh groups.
 		// getMeshGenerator() is a legacy adapter, not the 26.3 render path.
 	}

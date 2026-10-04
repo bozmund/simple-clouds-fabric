@@ -67,16 +67,12 @@ public class CloudSpawningDataManager extends SimplePreparableReloadListener<Map
 	{
 		filler.push("cloud_spawning");
 		ImmutableMap.Builder<Identifier, JsonElement> builder = ImmutableMap.builder();
-		manager.listResources("cloud_spawning", id -> id.getPath().endsWith(".json")).forEach((id, resource) -> {
-			try
+		var converter = net.minecraft.resources.FileToIdConverter.json("cloud_spawning");
+		converter.listMatchingResources(manager).forEach((id, resource) -> {
+			try (var reader = resource.openAsReader())
 			{
-				JsonElement element = GSON.fromJson(resource.openAsReader(), JsonElement.class);
-				// Key by <namespace>:<filename-without-.json> (the cloud_spawning/ directory
-				// stripped), so apply() can find the root as simpleclouds:config -- matching
-				// the key normalization the 1.20.1 vanilla SimpleJsonResourceReloadListener did.
-				String path = id.getPath();
-				String name = path.substring(path.lastIndexOf('/') + 1, path.length() - ".json".length());
-				builder.put(Identifier.fromNamespaceAndPath(id.getNamespace(), name), element);
+				JsonElement element = GSON.fromJson(reader, JsonElement.class);
+				builder.put(converter.fileToId(id), element);
 			}
 			catch (Exception e)
 			{

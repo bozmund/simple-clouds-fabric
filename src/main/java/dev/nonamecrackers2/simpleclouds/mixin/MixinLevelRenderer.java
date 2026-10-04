@@ -26,6 +26,12 @@ public class MixinLevelRenderer
 	private static final Logger LOGGER = LogManager.getLogger("simpleclouds/MixinLevelRenderer");
 	private static boolean loggedError;
 
+	@Inject(method = "render(Lcom/mojang/blaze3d/resource/GraphicsResourceAllocator;ZLnet/minecraft/client/renderer/state/level/CameraRenderState;Lcom/mojang/renderpearl/api/buffers/GpuBufferSlice;Lorg/joml/Vector4f;ZZ)V", at = @At("HEAD"), require = 1)
+	private void simpleclouds$beginFrame(CallbackInfo ci)
+	{
+		SimpleCloudsRenderer.getOptionalInstance().ifPresent(SimpleCloudsRenderer::beginWorldRenderFrame);
+	}
+
 	/**
 	 * 26.2 3D previewer: while the previewer screen is open, draw the preview into
 	 * its dedicated offscreen target HERE (the vanilla Projection uniform still holds
@@ -45,12 +51,15 @@ public class MixinLevelRenderer
 			ClientLevel level = mc.level;
 			if (SimpleCloudsRenderer.getOptionalInstance().isEmpty() || !SimpleCloudsRenderer.canRenderInDimension(level))
 				return;
+			// Iris finalizes at this same method's TAIL. Draw its late cloud stage
+			// at the enclosing GameRenderer boundary, after every Iris TAIL callback.
+			if (nonamecrackers2.crackerslib.common.compat.CompatHelper.areShadersRunning()) return;
 
 			var camera = mc.gameRenderer.mainCamera();
 			var pos = camera.position();
 			float partialTick = mc.getDeltaTracker() != null ? mc.getDeltaTracker().getGameTimeDeltaPartialTick(false) : 0.0F;
 
-			SimpleCloudsRenderer.getInstance().renderBeforeLevel(null, null, partialTick, pos.x, pos.y, pos.z);
+			SimpleCloudsRenderer.getInstance().renderAfterLevel(partialTick, pos.x, pos.y, pos.z);
 			// Dev-only deterministic screenshot for dev-relaunch.sh (no-op without run/devshot.request).
 			dev.nonamecrackers2.simpleclouds.client.DevShot.onWorldFrame();
 		}

@@ -1,0 +1,43 @@
+#version 430
+layout(local_size_x = 256) in;
+
+// Input is the original generator's exact 24-byte std430 ABI.
+struct SideInfo { int side; float x; float y; float z; float brightness; float radius; };
+struct CubeInfo { float x; float y; float z; float brightness; float alpha; float radius; };
+layout(std430, binding = 0) readonly buffer OriginalData { uint words[]; } originalData;
+// Both sides and compact cubes use a tightly packed 24-byte draw ABI.
+layout(std430, binding = 1) writeonly buffer DrawData { float values[]; } drawData;
+uniform uint ElementCount;
+uniform bool Transparent;
+uniform float CloudScale;
+uniform float CloudHeight;
+
+void main() {
+    uint n = gl_GlobalInvocationID.x;
+    if (n >= ElementCount) return;
+    uint source = n * 6u;
+    float x = uintBitsToFloat(originalData.words[source + 1u]);
+    float y = uintBitsToFloat(originalData.words[source + 2u]);
+    float z = uintBitsToFloat(originalData.words[source + 3u]);
+    if (!Transparent) {
+        uint target = n * 6u;
+        drawData.values[target] = float(int(originalData.words[source]));
+        drawData.values[target + 1u] = x * CloudScale;
+        drawData.values[target + 2u] = y * CloudScale + CloudHeight;
+        drawData.values[target + 3u] = z * CloudScale;
+        drawData.values[target + 4u] = uintBitsToFloat(originalData.words[source + 5u]) * CloudScale;
+        drawData.values[target + 5u] = uintBitsToFloat(originalData.words[source + 4u]);
+    } else {
+        // Original compact cube: x,y,z,brightness,alpha,radius.
+        x = uintBitsToFloat(originalData.words[source]);
+        y = uintBitsToFloat(originalData.words[source + 1u]);
+        z = uintBitsToFloat(originalData.words[source + 2u]);
+        uint target = n * 6u;
+        drawData.values[target] = x * CloudScale;
+        drawData.values[target + 1u] = y * CloudScale + CloudHeight;
+        drawData.values[target + 2u] = z * CloudScale;
+        drawData.values[target + 3u] = uintBitsToFloat(originalData.words[source + 5u]) * CloudScale;
+        drawData.values[target + 4u] = uintBitsToFloat(originalData.words[source + 3u]);
+        drawData.values[target + 5u] = uintBitsToFloat(originalData.words[source + 4u]);
+    }
+}

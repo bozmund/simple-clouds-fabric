@@ -18,6 +18,9 @@ import dev.nonamecrackers2.simpleclouds.common.world.SyncType;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+import net.fabricmc.fabric.api.entity.event.v1.ServerEntityLevelChangeEvents;
+import net.fabricmc.fabric.api.entity.event.v1.ServerPlayerEvents;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -30,10 +33,9 @@ import net.minecraft.world.level.Level;
  * Ported:
  * - Server tick for cloud manager (ServerTickEvents)
  * - Player join for cloud sync (ServerPlayConnectionEvents.JOIN)
- * - Player dimension change + respawn resync: fabric-entity-events 5.0.5 has no
- *   change-dimension/respawn events and 26.2 moved dimension changes to the
- *   TeleportTransition system, so this polls per-player (dimension key or a
- *   >1024 block position jump) in the tick handler and resends the full sync.
+ * - Player dimension change + respawn resync: immediate Fabric lifecycle events.
+ * - Tick polling retained for long-distance same-level travel, not as the only
+ *   change-level detector (a round trip can happen between two server ticks).
  */
 public class CloudManagerEvents
 {
@@ -45,6 +47,24 @@ public class CloudManagerEvents
 
 	public static void register()
 	{
+		ServerEntityLevelChangeEvents.AFTER_PLAYER_CHANGE_LEVEL.register((player, origin, destination) -> {
+			update(player);
+			rememberSync(player);
+			if ("1".equals(System.getenv("SIMPLECLOUDS_TRACE_VISUAL_CHURN")))
+				org.slf4j.LoggerFactory.getLogger(CloudManagerEvents.class).info(
+					"[CLOUD-LIFECYCLE] immediate dimension sync {} -> {}", origin.dimension().identifier(), destination.dimension().identifier());
+		});
+		ServerPlayerEvents.AFTER_RESPAWN.register((oldPlayer, newPlayer, alive) -> {
+			// Cross-level respawns already fire AFTER_PLAYER_CHANGE_LEVEL.
+			if (oldPlayer.level() == newPlayer.level()) {
+				update(newPlayer);
+				rememberSync(newPlayer);
+			}
+		});
+		ServerLifecycleEvents.SERVER_STOPPED.register(server -> {
+			LAST_SYNCED_DIMENSION.clear();
+			LAST_SYNCED_POSITION.clear();
+		});
 		// Server tick: tick all cloud managers
 		ServerTickEvents.END_SERVER_TICK.register(server ->
 		{

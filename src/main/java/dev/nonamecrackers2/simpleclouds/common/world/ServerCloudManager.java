@@ -69,7 +69,10 @@ public class ServerCloudManager extends CloudManager<ServerLevel>
 	@Override
 	protected void resetVanillaWeather()
 	{
-		((MixinServerLevelAccessor)this.level).simpleclouds$invokeResetWeatherCycle();
+		// WeatherData is server-global in 26.3. A Nether/End/custom-dimension
+		// authority transition must not erase the Overworld's weather cycle.
+		if (this.level.canHaveWeather() && this.level == this.level.getServer().overworld())
+			((MixinServerLevelAccessor)this.level).simpleclouds$invokeResetWeatherCycle();
 		PlayerList list = this.level.getServer().getPlayerList();
 		list.broadcastAll(new ClientboundGameEventPacket(ClientboundGameEventPacket.RAIN_LEVEL_CHANGE, 0.0F), this.level.dimension());
         list.broadcastAll(new ClientboundGameEventPacket(ClientboundGameEventPacket.THUNDER_LEVEL_CHANGE, 0.0F), this.level.dimension());

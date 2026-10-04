@@ -1,7 +1,6 @@
 package dev.nonamecrackers2.simpleclouds.client.mesh.generator;
 
 import java.io.IOException;
-import java.nio.IntBuffer;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
@@ -20,10 +19,10 @@ import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL30;
 import org.lwjgl.opengl.GL41;
 import org.lwjgl.opengl.GL42;
+import org.lwjgl.opengl.GL45;
 
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableMap;
-import com.mojang.blaze3d.platform.TextureUtil;
 import com.mojang.blaze3d.systems.RenderSystem;
 
 import dev.nonamecrackers2.simpleclouds.SimpleCloudsMod;
@@ -57,6 +56,7 @@ public final class MultiRegionCloudMeshGenerator extends CloudMeshGenerator
 	private int requiredRegionTexSize; 
 	private CloudGetter cloudGetter = CloudGetter.EMPTY;
 	private CloudInfo[] cachedTypes = new CloudInfo[0];
+	private CloudInfo[] observedTypes = new CloudInfo[0];
 	private @Nullable ComputeShader regionTextureGenerator;
 	private int cloudRegionTextureId = -1;
 	private int cloudRegionImageBinding = -1;
@@ -70,8 +70,14 @@ public final class MultiRegionCloudMeshGenerator extends CloudMeshGenerator
 	
 	public void setCloudGetter(CloudGetter getter)
 	{
-		this.cloudGetter = Objects.requireNonNull(getter, "Cloud getter cannot be null");
-		this.updateCloudTypes();
+		Objects.requireNonNull(getter, "Cloud getter cannot be null");
+		CloudInfo[] types = getter.getIndexedCloudTypes();
+		if (this.cloudGetter != getter || !Arrays.equals(this.observedTypes, types))
+		{
+			this.observedTypes = Arrays.copyOf(types, types.length);
+			this.updateCloudTypes();
+		}
+		this.cloudGetter = getter;
 	}
 
 	public int getCloudRegionTextureId()
@@ -100,6 +106,7 @@ public final class MultiRegionCloudMeshGenerator extends CloudMeshGenerator
 		super.setupShader();
 		
 		this.cachedTypes = new CloudInfo[0];
+		this.observedTypes = new CloudInfo[0];
 		this.updateCloudTypes = false;
 		
 		this.shader.createAndBindSSBO(NOISE_LAYERS_NAME, GL15.GL_STATIC_DRAW).allocateBuffer(AbstractNoiseSettings.Param.values().length * 4 * MAX_NOISE_LAYERS * MAX_CLOUD_TYPES);
@@ -163,25 +170,23 @@ public final class MultiRegionCloudMeshGenerator extends CloudMeshGenerator
 		
 		if (this.cloudRegionTextureId != -1)
 		{
-			// TODO(26.2): release region texture via GpuTexture API
+			GL11.glDeleteTextures(this.cloudRegionTextureId);
 			this.cloudRegionTextureId = -1;
 		}
 		
-		this.cloudRegionTextureId = 0; // TODO(26.2): allocate GpuTexture
-		GL11.glBindTexture(GL30.GL_TEXTURE_2D_ARRAY, this.cloudRegionTextureId);
-		GL11.glTexParameteri(GL30.GL_TEXTURE_2D_ARRAY, GL11.GL_TEXTURE_WRAP_S, GL12.GL_CLAMP_TO_EDGE);
-		GL11.glTexParameteri(GL30.GL_TEXTURE_2D_ARRAY, GL11.GL_TEXTURE_WRAP_T, GL12.GL_CLAMP_TO_EDGE);
-		GL11.glTexParameteri(GL30.GL_TEXTURE_2D_ARRAY, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_LINEAR);
-		GL11.glTexParameteri(GL30.GL_TEXTURE_2D_ARRAY, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_LINEAR);
-		GL12.glTexImage3D(GL30.GL_TEXTURE_2D_ARRAY, 0, GL30.GL_RG32F, this.requiredRegionTexSize, this.requiredRegionTexSize, this.lodConfig.getLods().length + 1, 0, GL30.GL_RG, GL11.GL_FLOAT, (IntBuffer)null);
-		GL11.glBindTexture(GL30.GL_TEXTURE_2D_ARRAY, 0);
+		this.cloudRegionTextureId = GL45.glCreateTextures(GL30.GL_TEXTURE_2D_ARRAY);
+		GL45.glTextureParameteri(this.cloudRegionTextureId, GL11.GL_TEXTURE_WRAP_S, GL12.GL_CLAMP_TO_EDGE);
+		GL45.glTextureParameteri(this.cloudRegionTextureId, GL11.GL_TEXTURE_WRAP_T, GL12.GL_CLAMP_TO_EDGE);
+		GL45.glTextureParameteri(this.cloudRegionTextureId, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_LINEAR);
+		GL45.glTextureParameteri(this.cloudRegionTextureId, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_LINEAR);
+		GL45.glTextureStorage3D(this.cloudRegionTextureId, 1, GL30.GL_RG32F,
+			this.requiredRegionTexSize, this.requiredRegionTexSize, this.lodConfig.getLods().length + 1);
 		
 		// Assign an image unit to it so any shader can access it
 		if (this.cloudRegionImageBinding != -1)
 			BindingManager.freeImageUnit(this.cloudRegionImageBinding);
 		this.cloudRegionImageBinding = BindingManager.getAvailableImageUnit();
 		BindingManager.useImageUnit(this.cloudRegionImageBinding);
-		GL42.glBindImageTexture(this.cloudRegionImageBinding, this.cloudRegionTextureId, 0, true, 0, GL15.GL_WRITE_ONLY, GL30.GL_RG32F);
 		this.regionTextureGenerator.setImageUnit("regionTexture", this.cloudRegionImageBinding);
 		
 		this.runRegionGenerator(0.0F, 0.0F, 1.0F);
@@ -244,7 +249,20 @@ public final class MultiRegionCloudMeshGenerator extends CloudMeshGenerator
 		this.regionTextureGenerator.forUniform("Offset", (id, loc) -> {
 			GL41.glProgramUniform2f(id, loc, meshOffsetX, meshOffsetZ);
 		});
-		this.regionTextureGenerator.dispatchAndWait(this.requiredRegionTexSize / 16, this.requiredRegionTexSize / 16, 1);
+		int unit = this.cloudRegionImageBinding;
+		int texture = GL30.glGetIntegeri(GL42.GL_IMAGE_BINDING_NAME, unit);
+		int level = GL30.glGetIntegeri(GL42.GL_IMAGE_BINDING_LEVEL, unit);
+		boolean layered = GL30.glGetIntegeri(GL42.GL_IMAGE_BINDING_LAYERED, unit) != 0;
+		int layer = GL30.glGetIntegeri(GL42.GL_IMAGE_BINDING_LAYER, unit);
+		int access = GL30.glGetIntegeri(GL42.GL_IMAGE_BINDING_ACCESS, unit);
+		int format = GL30.glGetIntegeri(GL42.GL_IMAGE_BINDING_FORMAT, unit);
+		try {
+			GL42.glBindImageTexture(unit, this.cloudRegionTextureId, 0, true, 0, GL15.GL_WRITE_ONLY, GL30.GL_RG32F);
+			this.regionTextureGenerator.dispatchAndWait(this.requiredRegionTexSize / 16, this.requiredRegionTexSize / 16, 1);
+			GL42.glMemoryBarrier(GL42.GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL42.GL_TEXTURE_FETCH_BARRIER_BIT);
+		} finally {
+			GL42.glBindImageTexture(unit, texture, level, layered, layer, access, format);
+		}
 	}
 	
 	private void uploadCloudRegionData(float partialTick)
@@ -312,6 +330,9 @@ public final class MultiRegionCloudMeshGenerator extends CloudMeshGenerator
 				LOGGER.warn("Cloud type count exceeds the maximum. Not all cloud types will render.");
 			int copySize = Math.min(MAX_CLOUD_TYPES, toCopy.length);
 			this.cachedTypes = Arrays.copyOf(toCopy, copySize);
+			// A client may initialize before the first server cloud-type sync.
+			// Empty data needs no zero-length mapping; generation skips those chunks.
+			if (copySize == 0) return;
 			
 			LOGGER.debug("Uploading cloud type noise data...");
 			
@@ -382,7 +403,7 @@ public final class MultiRegionCloudMeshGenerator extends CloudMeshGenerator
 		
 		if (this.cloudRegionTextureId != -1)
 		{
-			// TODO(26.2): release region texture via GpuTexture API
+			GL11.glDeleteTextures(this.cloudRegionTextureId);
 			this.cloudRegionTextureId = -1;
 		}
 		

@@ -13,8 +13,7 @@ import org.lwjgl.opengl.GL30;
 import org.lwjgl.opengl.GL43;
 import org.lwjgl.system.MemoryUtil;
 
-import com.mojang.renderpearl.backend.opengl.GlStateManager;
-import com.mojang.blaze3d.opengl.MemoryTracker;
+import org.lwjgl.opengl.GL45;
 import com.mojang.blaze3d.systems.RenderSystem;
 
 public class ShaderStorageBufferObject implements WithBinding
@@ -25,6 +24,11 @@ public class ShaderStorageBufferObject implements WithBinding
 	protected final int binding;
 	protected final int usage;
 	protected @Nullable ByteBuffer buffer;
+	private int allocatedBytes;
+	private static final boolean PROFILE = "1".equals(System.getenv("SIMPLECLOUDS_PROFILE"));
+	private long profileMapNs, profileConsumeNs, profileUnmapNs, profileMaxMapNs;
+	private int profileSamples;
+	private final java.util.Map<Integer, Integer> profileAccessCounts = PROFILE ? new java.util.TreeMap<>() : null;
 	
 	public ShaderStorageBufferObject(int id, int binding, int usage)
 	{
@@ -68,16 +72,21 @@ public class ShaderStorageBufferObject implements WithBinding
 			throw new IllegalArgumentException("Size exceeds the SSBO maximum supported by current hardware, wanted: " + size + " bytes, maximum: " + maxSize + " bytes");
 		RenderSystem.assertOnRenderThread();
 		this.assertValid();
-		GlStateManager._glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, this.id);
-		GlStateManager._glBufferData(GL43.GL_SHADER_STORAGE_BUFFER, buffer, this.usage);
-		GlStateManager._glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, 0);
-		this.buffer = buffer;
+		GL45.glNamedBufferData(this.id, buffer, this.usage);
+		this.allocatedBytes = size;
 	}
 	
 	public int allocateBuffer(int bytes)
 	{
+		RenderSystem.assertOnRenderThread();
+		this.assertValid();
+		if (bytes <= 0) throw new IllegalArgumentException("Invalid buffer size: " + bytes);
 		int size = Math.min(bytes, getMaxSize());
-		this.uploadData(MemoryTracker.create(size));
+		// GPU allocation: do not keep a second, equally large native CPU buffer.
+		GL45.glNamedBufferData(this.id, size, this.usage);
+		GL45.glClearNamedBufferData(this.id, org.lwjgl.opengl.GL30.GL_R8UI,
+			org.lwjgl.opengl.GL30.GL_RED_INTEGER, GL11.GL_UNSIGNED_BYTE, (ByteBuffer)null);
+		this.allocatedBytes = size;
 		return size;
 	}
 	
@@ -102,12 +111,36 @@ public class ShaderStorageBufferObject implements WithBinding
 	{
 		RenderSystem.assertOnRenderThread();
 		this.assertValid();
-		if (size <= 0)
-			throw new IllegalArgumentException("Invalid size, please use a size greater than 0");
-		GlStateManager._glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, this.id);
-		consumer.accept(GL30.glMapBufferRange(GL43.GL_SHADER_STORAGE_BUFFER, 0, size, access, this.buffer));
-		GlStateManager._glUnmapBuffer(GL43.GL_SHADER_STORAGE_BUFFER);
-		GlStateManager._glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, 0);
+		if (size <= 0 || size > this.allocatedBytes)
+			throw new IllegalArgumentException("Invalid mapped size: " + size + ", allocated: " + this.allocatedBytes);
+		long mapStart = PROFILE ? System.nanoTime() : 0;
+		ByteBuffer mapped = GL45.glMapNamedBufferRange(this.id, 0, size, access, (ByteBuffer)null);
+		long mapEnd = PROFILE ? System.nanoTime() : 0;
+		if (mapped == null) throw new IllegalStateException("Could not map SSBO " + this.id);
+		try {
+			consumer.accept(mapped);
+		} finally {
+			long consumeEnd = PROFILE ? System.nanoTime() : 0;
+			if (!GL45.glUnmapNamedBuffer(this.id))
+				throw new IllegalStateException("SSBO mapping became invalid: " + this.id);
+			if (PROFILE) {
+				this.profileAccessCounts.merge(access, 1, Integer::sum);
+				long mapNs = mapEnd - mapStart;
+				this.profileMapNs += mapNs;
+				this.profileConsumeNs += consumeEnd - mapEnd;
+				this.profileUnmapNs += System.nanoTime() - consumeEnd;
+				this.profileMaxMapNs = Math.max(this.profileMaxMapNs, mapNs);
+				if (++this.profileSamples == 120) {
+					LOGGER.info("[SSBO-TIMING] binding={} bytes={} accessCounts={} samples={} mapMeanMs={} mapMaxMs={} consumeMeanMs={} unmapMeanMs={}",
+						this.binding, size, this.profileAccessCounts, this.profileSamples, this.profileMapNs / 120_000_000.0,
+						this.profileMaxMapNs / 1_000_000.0, this.profileConsumeNs / 120_000_000.0,
+						this.profileUnmapNs / 120_000_000.0);
+					this.profileSamples = 0;
+					this.profileMapNs = this.profileConsumeNs = this.profileUnmapNs = this.profileMaxMapNs = 0;
+					this.profileAccessCounts.clear();
+				}
+			}
+		}
 	}
 	
 	public void readData(Consumer<ByteBuffer> consumer, int size)

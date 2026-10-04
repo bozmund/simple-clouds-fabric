@@ -103,7 +103,8 @@ public class CompatHelper
 
 	public static boolean isOculusLoaded()
 	{
-		return isModLoaded("oculus");
+		// Retain legacy callers while recognizing the Fabric provider's actual id.
+		return isModLoaded("oculus") || isModLoaded("iris");
 	}
 
 	public static boolean isOptifineLoaded()

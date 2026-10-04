@@ -1,6 +1,5 @@
 package nonamecrackers2.crackerslib.common.packet;
 
-import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.network.FriendlyByteBuf;
@@ -20,12 +19,12 @@ import net.minecraft.server.level.ServerPlayer;
 public class PacketUtil
 {
 	/**
-	 * Register a play-to-client payload type and its handler.
+	 * Register a clientbound wire format on both logical sides. Client receivers
+	 * are installed separately by the client entrypoint, never by common code.
 	 */
-	public static <T extends CustomPacketPayload> void registerToClient(CustomPacketPayload.Type<T> type, StreamCodec<FriendlyByteBuf, T> codec, ClientPlayNetworking.PlayPayloadHandler<T> handler)
+	public static <T extends CustomPacketPayload> void registerClientboundType(CustomPacketPayload.Type<T> type, StreamCodec<FriendlyByteBuf, T> codec)
 	{
 		PayloadTypeRegistry.clientboundPlay().register(type, codec);
-		ClientPlayNetworking.registerGlobalReceiver(type, handler);
 	}
 
 	/**

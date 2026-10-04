@@ -1,3 +1,4 @@
+import dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudGenerationInputs;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.HashSet;
@@ -9,11 +10,11 @@ import dev.nonamecrackers2.simpleclouds.client.renderer.v2.CpuCloudGenerator;
  * Time, regions, camera and noise phase stay fixed; no game or GPU is needed. */
 public class CloudRelocationParityTest {
     private static Set<String>[] mesh(int x, int z, int lod, boolean storm) {
-        var layer = new CpuCloudGenerator.NoiseLayer(32, .4F, 16, 16, 16, 8, 0, 1);
+        var layer = new CloudGenerationInputs.NoiseLayer(32, .4F, 16, 16, 16, 8, 0, 1);
         var generator = new CpuCloudGenerator(List.of(
-            new CpuCloudGenerator.CloudLayerGroup(List.of(layer), .4F, storm, .8F, 4, 8)));
+            new CloudGenerationInputs.CloudLayerGroup(List.of(layer), .4F, storm, .8F, 4, 8)));
         generator.setRegions(List.of(
-            new CpuCloudGenerator.RegionMask(-24, 12, 100, 1, .15F, -.15F, 1, 0)));
+            new CloudGenerationInputs.RegionMask(-24, 12, 100, 1, .15F, -.15F, 1, 0)));
         var buffers = generator.generate(x, 0, z, x + 32 * lod, 32, z + 32 * lod,
             8, .75F, .25F, -.5F, .1F, lod, 128,
             ByteBuffer.allocate(8 * 1024 * 1024).order(ByteOrder.nativeOrder()),

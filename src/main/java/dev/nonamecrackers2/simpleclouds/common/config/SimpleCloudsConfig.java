@@ -68,6 +68,9 @@ public class SimpleCloudsConfig
 		public final ForgeConfigSpec.ConfigValue<Integer> targetMeshGenFps;
 		public final ForgeConfigSpec.ConfigValue<Boolean> customRainSounds;
 		public final ForgeConfigSpec.ConfigValue<Boolean> renderCustomRain;
+		public final ForgeConfigSpec.ConfigValue<PrecipitationRenderer> precipitationRenderer;
+		public final ForgeConfigSpec.ConfigValue<Integer> weatherParticleBudget;
+		public final ForgeConfigSpec.ConfigValue<Boolean> biomeStormEffects;
 		//Cloud Visuals
 		public final ForgeConfigSpec.ConfigValue<Boolean> cubeNormals;
 		public final ForgeConfigSpec.ConfigValue<Boolean> shadedClouds;
@@ -100,6 +103,12 @@ public class SimpleCloudsConfig
 			this.whitelistAsBlacklist = this.createValue(false, "whitelistAsBlacklist", false, "Specifies if the dimension whitelist should instead be use as a blacklist");
 			
 			builder.comment("Preference").push("preference");
+			this.precipitationRenderer = this.createEnumValue(PrecipitationRenderer.PARTICLE, "precipitationRenderer", false,
+				"Select one precipitation owner. PARTICLE uses Particle Rain when available; ORIGINAL preserves configured vanilla/Simple Clouds rendering. Turn biomeStormEffects off too for the original-only fallback.");
+			this.weatherParticleBudget = this.createRangedIntValue(1500, 0, 20000, "weatherParticleBudget", false,
+				"Maximum Particle Rain particles; the upstream limit is also respected. Zero disables spawning.");
+			this.biomeStormEffects = this.createValue(true, "biomeStormEffects", false,
+				"Enable integrated biome storm fog/wind effects when Immersive Storms is available. Upstream biome/effect settings still apply.");
 			
 			this.fogMode = this.createEnumValue(FogRenderMode.SCREEN_SPACE, "fogMode", false, "Specifies the type of world fog that should be used. Each has their own advantages and disadvantages, ranging from visual discrepancies to possible compatibility issues");
 			

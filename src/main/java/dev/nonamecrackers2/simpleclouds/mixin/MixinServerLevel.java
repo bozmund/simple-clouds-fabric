@@ -44,9 +44,18 @@ public abstract class MixinServerLevel implements CloudManagerHolder<ServerLevel
 	@Inject(method = "advanceWeatherCycle", at = @At("HEAD"), cancellable = true)
 	public void simpleclouds$disableWeatherCycle_advanceWeatherCycle(CallbackInfo ci)
 	{
-		if (!this.cloudManager.shouldUseVanillaWeather())
+		ServerLevel level = (ServerLevel)(Object)this;
+		if (level.canHaveWeather() && !this.cloudManager.shouldUseVanillaWeather())
 		{
-			this.resetWeatherCycle();
+			// 26.3 stores WeatherData on MinecraftServer, shared by dimensions.
+			// Only its primary level may clear that global cycle. Other custom
+			// dimensions suppress their own rain without clearing Overworld rain.
+			if (level == this.server.overworld())
+				this.resetWeatherCycle();
+			else {
+				level.setRainLevel(0.0F);
+				level.setThunderLevel(0.0F);
+			}
 			ci.cancel();
 		}
 	}

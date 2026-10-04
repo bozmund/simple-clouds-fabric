@@ -51,6 +51,13 @@ public final class CloudVertexFormat
 
 	/** Bytes per transparent instance: 24 + Alpha(4) = 28. */
 	public static final int BYTES_PER_INSTANCE_ALPHA = 28;
+	/** Original transparent cube: one instance, eight shared vertices / 36 indices. */
+	public static final VertexFormat CUBE_INSTANCE_FORMAT = VertexFormat.builder(1)
+			.addAttribute(SIDE_POS, GpuFormat.RGB32_FLOAT)
+			.addAttribute(RADIUS, GpuFormat.R32_FLOAT)
+			.addAttribute(BRIGHTNESS, GpuFormat.R32_FLOAT)
+			.addAttribute(ALPHA, GpuFormat.R32_FLOAT)
+			.build();
 
 	private CloudVertexFormat()
 	{

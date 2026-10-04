@@ -13,6 +13,7 @@ import nonamecrackers2.crackerslib.common.config.listener.ConfigListener;
 public class SimpleCloudsConfigListeners
 {
 	private static ConfigListener listener;
+	private static ServerConfigSnapshot lastSyncedConfig;
 
 	public static void registerListener()
 	{
@@ -38,6 +39,7 @@ public class SimpleCloudsConfigListeners
 	public static void setCurrentServer(MinecraftServer server)
 	{
 		currentServer = server;
+		lastSyncedConfig = server == null ? null : ServerConfigSnapshot.capture();
 		if (listener != null)
 		{
 			if (server == null)
@@ -50,7 +52,18 @@ public class SimpleCloudsConfigListeners
 	public static void tick(MinecraftServer server)
 	{
 		if (currentServer == server && listener != null)
+		{
 			listener.poll();
+			if (SimpleCloudsConfig.SERVER_SPEC.isLoaded())
+			{
+				var config = ServerConfigSnapshot.capture();
+				if (!config.equals(lastSyncedConfig))
+				{
+					sendToAll(new dev.nonamecrackers2.simpleclouds.common.packet.impl.SendServerConfigPacket(config));
+					lastSyncedConfig = config;
+				}
+			}
+		}
 	}
 
 	private static void sendToAll(net.minecraft.network.protocol.common.custom.CustomPacketPayload payload)

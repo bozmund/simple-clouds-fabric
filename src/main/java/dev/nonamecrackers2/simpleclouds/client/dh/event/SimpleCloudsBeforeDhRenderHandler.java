@@ -20,6 +20,7 @@ import dev.nonamecrackers2.simpleclouds.client.dh.SimpleCloudsDhCompatHandler;
  */
 public class SimpleCloudsBeforeDhRenderHandler extends DhApiBeforeApplyShaderRenderEvent
 {
+	private static int debugFrames;
 	@Override
 	public void beforeRender(DhApiCancelableEventParam<DhApiRenderParam> event)
 	{
@@ -27,6 +28,10 @@ public class SimpleCloudsBeforeDhRenderHandler extends DhApiBeforeApplyShaderRen
 		Matrix4f projMat = new Matrix4f().setTransposed(params.dhProjectionMatrix.getValuesAsArray());
 		Matrix4f modelView = new Matrix4f().setTransposed(params.mcModelViewMatrix.getValuesAsArray());
 		SimpleCloudsDhCompatHandler._updateCachedDhState(projMat, modelView);
+		if ("1".equals(System.getenv("SIMPLECLOUDS_DEV")) && "1".equals(System.getenv("SIMPLECLOUDS_TEST_DH_MERGE_DEBUG")) && (debugFrames++ % 300) == 0)
+			org.apache.logging.log4j.LogManager.getLogger("simpleclouds/DhDebug").info("[DH-MERGE-DEBUG] pass={} near={} far={} raw={} mat={}",
+					params.renderPass, params.nearClipPlane, params.farClipPlane,
+					java.util.Arrays.toString(params.dhProjectionMatrix.getValuesAsArray()), projMat);
 		SimpleCloudsDhCompatHandler._markPassComplete(false);
 		// v2 26.2: no cloud draw into DH's framebuffer here (see class javadoc).
 	}

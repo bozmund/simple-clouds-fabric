@@ -1,3 +1,4 @@
+import dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudGenerationInputs;
 import java.nio.*;
 import java.util.*;
 import java.security.MessageDigest;
@@ -19,11 +20,11 @@ public class RegionNoiseCacheTest {
     };
     public static void main(String[] args) throws Exception {
         var groups = List.of(
-            new CpuCloudGenerator.CloudLayerGroup(List.of(
-                new CpuCloudGenerator.NoiseLayer(48,.25f,17,13,19,10,0,1),
-                new CpuCloudGenerator.NoiseLayer(32,.1f,11,15,9,8,4,.7f)), .4f,true,.7f,4,20),
-            new CpuCloudGenerator.CloudLayerGroup(List.of(
-                new CpuCloudGenerator.NoiseLayer(48,.2f,19,17,13,12,0,1)), .3f,false,0,0,1));
+            new CloudGenerationInputs.CloudLayerGroup(List.of(
+                new CloudGenerationInputs.NoiseLayer(48,.25f,17,13,19,10,0,1),
+                new CloudGenerationInputs.NoiseLayer(32,.1f,11,15,9,8,4,.7f)), .4f,true,.7f,4,20),
+            new CloudGenerationInputs.CloudLayerGroup(List.of(
+                new CloudGenerationInputs.NoiseLayer(48,.2f,19,17,13,12,0,1)), .3f,false,0,0,1));
         var gen = new CpuCloudGenerator(groups);
         var opaque = ByteBuffer.allocateDirect(16*1024*1024).order(ByteOrder.nativeOrder());
         var transparent = ByteBuffer.allocateDirect(16*1024*1024).order(ByteOrder.nativeOrder());
@@ -36,8 +37,8 @@ public class RegionNoiseCacheTest {
                 // Reuse one worker across group, mask, origin and dimension changes.
                 int x0=boundary ? -16 : 0;
                 gen.setRegions(List.of(
-                    new CpuCloudGenerator.RegionMask(boundary?45:0,0,boundary?170:10000,1,.2f,0,1, boundary?1:0),
-                    new CpuCloudGenerator.RegionMask(-10000,60,90,1,0,0,1,0)),true);
+                    new CloudGenerationInputs.RegionMask(boundary?45:0,0,boundary?170:10000,1,.2f,0,1, boundary?1:0),
+                    new CloudGenerationInputs.RegionMask(-10000,60,90,1,0,0,1,0)),true);
                 float[] oc={0},tc={0},storm={0};
                 opaque.clear(); transparent.clear();
                 var result=gen.generate(x0,0,-16,x0+32,48,16,8,.375f,-.25f,1.125f,.25f,lod,128,

@@ -34,6 +34,9 @@ public class InstanceableMesh
 		this.vertexBufferId = GL15.glGenBuffers();
 		this.indexBufferId = GL15.glGenBuffers();
 		
+		int previousArray = GL11.glGetInteger(GL30.GL_VERTEX_ARRAY_BINDING);
+		int previousBuffer = GL11.glGetInteger(GL15.GL_ARRAY_BUFFER_BINDING);
+		try {
 		GL30.glBindVertexArray(this.arrayObjectId);
 		
 		GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, this.vertexBufferId);
@@ -45,7 +48,10 @@ public class InstanceableMesh
 		this.totalIndices = indexBufferGenerator.apply(this.indexBuffer);
 		GL15.glBufferData(GL15.GL_ELEMENT_ARRAY_BUFFER, this.indexBuffer, GL15.GL_STATIC_DRAW);
 		
-		GL30.glBindVertexArray(0);
+		} finally {
+			GL30.glBindVertexArray(previousArray);
+			GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, previousBuffer);
+		}
 	}
 	
 	public static InstanceableMesh defaultSide()

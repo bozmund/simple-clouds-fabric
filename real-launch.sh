@@ -46,7 +46,20 @@ MEMORY_HIGH="${SC_MEMORY_HIGH:-12G}"
 MEMORY_MAX="${SC_MEMORY_MAX:-14G}"
 LOADER="0.19.5"
 
-if [[ "$WORLD" == */* || "$WORLD" == *\\* || "$WORLD" == "." || "$WORLD" == ".." || ! -f "$PROFILE/saves/$WORLD/level.dat" ]]; then
+if [[ "$WORLD" == */* || "$WORLD" == *\\* || "$WORLD" == "." || "$WORLD" == ".." ]]; then
+	echo "FAIL (preflight): invalid world name '$WORLD'" >&2
+	exit 1
+fi
+QUICKPLAY="$WORLD"
+if [[ "${SC_NEW_WORLD:-0}" == 1 ]]; then
+	# Start on the title screen; DevShot CREATEWORLD/CREATEFLAT creates the world.
+	# Never overwrite an existing save.
+	if [[ -e "$PROFILE/saves/$WORLD" ]]; then
+		echo "FAIL (preflight): SC_NEW_WORLD=1 but world '$WORLD' already exists" >&2
+		exit 1
+	fi
+	QUICKPLAY=""
+elif [[ ! -f "$PROFILE/saves/$WORLD/level.dat" ]]; then
 	echo "FAIL (preflight): Quick Play world '$WORLD' has no level.dat in this profile's saves directory" >&2
 	exit 1
 fi
@@ -135,6 +148,26 @@ systemd-run --user --unit="$UNIT" --collect --quiet \
   --property=Environment=SIMPLECLOUDS_GPU_MAPPED_COUNTERS=${SIMPLECLOUDS_GPU_MAPPED_COUNTERS:-0} \
   --property=Environment=SIMPLECLOUDS_TRACE_VISUAL_CHURN=${SIMPLECLOUDS_TRACE_VISUAL_CHURN:-0} \
   --property=Environment=SIMPLECLOUDS_DEV=${SIMPLECLOUDS_DEV:-0} \
+  --property=Environment=SIMPLECLOUDS_PROFILE=${SIMPLECLOUDS_PROFILE:-0} \
+  --property=Environment=SIMPLECLOUDS_TEST_OIT_MRT=${SIMPLECLOUDS_TEST_OIT_MRT:-auto} \
+  --property=Environment=SIMPLECLOUDS_TEST_OIT_MRT_PARITY=${SIMPLECLOUDS_TEST_OIT_MRT_PARITY:-0} \
+  --property=Environment=SIMPLECLOUDS_TEST_NO_DH_DEFER=${SIMPLECLOUDS_TEST_NO_DH_DEFER:-0} \
+  --property=Environment=SIMPLECLOUDS_TEST_UNCAPPED=${SIMPLECLOUDS_TEST_UNCAPPED:-0} \
+  --property=Environment=SIMPLECLOUDS_TEST_COUNTER_SNAPSHOT=${SIMPLECLOUDS_TEST_COUNTER_SNAPSHOT:-0} \
+  --property=Environment=SIMPLECLOUDS_TEST_COUNTER_EARLY_FLUSH=${SIMPLECLOUDS_TEST_COUNTER_EARLY_FLUSH:-0} \
+  --property=Environment=SIMPLECLOUDS_TEST_COUNTER_RELOAD=${SIMPLECLOUDS_TEST_COUNTER_RELOAD:-0} \
+  --property=Environment=SIMPLECLOUDS_TEST_DH_FOG_LIFECYCLE=${SIMPLECLOUDS_TEST_DH_FOG_LIFECYCLE:-0} \
+  --property=Environment=SIMPLECLOUDS_TEST_NATIVE_BIOME_WEATHER=${SIMPLECLOUDS_TEST_NATIVE_BIOME_WEATHER:-0} \
+  --property=Environment=SIMPLECLOUDS_TEST_WEATHER_LIBRARIES=${SIMPLECLOUDS_TEST_WEATHER_LIBRARIES:-0} \
+  --property=Environment=SIMPLECLOUDS_TEST_FULLPACK_WEATHER_LIFECYCLE=${SIMPLECLOUDS_TEST_FULLPACK_WEATHER_LIFECYCLE:-0} \
+  --property=Environment=SIMPLECLOUDS_TEST_WEATHER_SUSTAINED=${SIMPLECLOUDS_TEST_WEATHER_SUSTAINED:-0} \
+  --property=Environment=SIMPLECLOUDS_TEST_WATER=${SIMPLECLOUDS_TEST_WATER:-0} \
+  --property=Environment=SIMPLECLOUDS_TEST_ROOF=${SIMPLECLOUDS_TEST_ROOF:-0} \
+  --property=Environment=SIMPLECLOUDS_TEST_NATIVE_RAIN_ROOF=${SIMPLECLOUDS_TEST_NATIVE_RAIN_ROOF:-0} \
+  --property=Environment=SIMPLECLOUDS_TEST_PARTICLE_GPU=${SIMPLECLOUDS_TEST_PARTICLE_GPU:-0} \
+  --property=Environment=SIMPLECLOUDS_TEST_GPU_READBACK=${SIMPLECLOUDS_TEST_GPU_READBACK:-0} \
+  --property=Environment=SIMPLECLOUDS_TEST_APPEND_PROBE=${SIMPLECLOUDS_TEST_APPEND_PROBE:-0} \
+  --property=Environment=SIMPLECLOUDS_TEST_ASYNC_GL_RESTORE=${SIMPLECLOUDS_TEST_ASYNC_GL_RESTORE:-0} \
   --expand-environment=no \
   bash -c 'live_display=${DISPLAY-}; live_auth=${XAUTHORITY-}
   live_wayland=${WAYLAND_DISPLAY-}; live_runtime=${XDG_RUNTIME_DIR-}
@@ -149,8 +182,8 @@ systemd-run --user --unit="$UNIT" --collect --quiet \
     --username Bozmund --uuid 90d6544a-1f2d-4f6f-a0ab-209215c4207e \
     --userType mojang --version 26.3-0.19.5 --versionType release --gameVersion 26.3 \
     --accessToken offline --clientId "" \
-    --width 1920 --height 1080 --quickPlaySingleplayer "$8"'"$RAINARG"\
-  _ "$ENVF" "$JAVA" "$XMX" "$NAT" "$CP" "$PROFILE" "$ASSETS" "$WORLD" "$ASSET_INDEX" \
+    --width 1920 --height 1080 ${8:+--quickPlaySingleplayer "$8"}'"$RAINARG"\
+  _ "$ENVF" "$JAVA" "$XMX" "$NAT" "$CP" "$PROFILE" "$ASSETS" "$QUICKPLAY" "$ASSET_INDEX" \
   > "$OUT" 2>&1 \
   || { echo "FAIL (launch): could not start user unit $UNIT"; exit 1; }
 echo "launched the real profile as user unit $UNIT (java log: $OUT, game log: $PROFILE/logs/latest.log)"

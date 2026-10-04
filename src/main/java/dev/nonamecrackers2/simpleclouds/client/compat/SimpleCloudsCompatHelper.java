@@ -29,12 +29,18 @@ public class SimpleCloudsCompatHelper
 	
 	public static boolean renderCustomRain()
 	{
-		return SimpleCloudsConfig.CLIENT.renderCustomRain.get() && !ModList.get().isLoaded("particlerain");
+		return SimpleCloudsConfig.CLIENT.renderCustomRain.get() && !usesParticleRain();
+	}
+	public static boolean usesParticleRain()
+	{
+		return ModList.get().isLoaded("particlerain")
+			&& SimpleCloudsConfig.CLIENT.precipitationRenderer.get()
+				== dev.nonamecrackers2.simpleclouds.common.config.PrecipitationRenderer.PARTICLE;
 	}
 	
 	public static boolean useCustomRainSounds()
 	{
-		return SimpleCloudsConfig.CLIENT.customRainSounds.get();
+		return SimpleCloudsConfig.CLIENT.customRainSounds.get() && !usesParticleRain();
 	}
 	
 	public static @Nullable RenderTarget getMainRenderTarget()

@@ -14,8 +14,8 @@ public final class GpuStormColumns {
 
     public static Result fromFaces(ByteBuffer faces, int x0, int z0, int x1, int z1,
             int lod, float worldBaseY, int cameraGridY, float cameraX, float cameraZ,
-            List<CpuCloudGenerator.CloudLayerGroup> groups,
-            List<CpuCloudGenerator.RegionMask> regions) {
+            List<CloudGenerationInputs.CloudLayerGroup> groups,
+            List<CloudGenerationInputs.RegionMask> regions) {
         if(lod<=0 || x1<=x0 || z1<=z0 || (x1-x0)%lod!=0 || (z1-z0)%lod!=0)
             throw new IllegalArgumentException("Invalid storm column bounds");
         int xCells=(x1-x0)/lod,zCells=(z1-z0)/lod;
@@ -46,7 +46,7 @@ public final class GpuStormColumns {
         return new Result(columns,xCells,zCells,coverage);
     }
 
-    static int selectedGroup(float x,float z,List<CpuCloudGenerator.RegionMask> regions) {
+    static int selectedGroup(float x,float z,List<CloudGenerationInputs.RegionMask> regions) {
         for(var r:regions) {
             float dx=x-r.x(),dz=z-r.z();
             float tx=r.m00()*dx+r.m01()*dz,tz=r.m10()*dx+r.m11()*dz;

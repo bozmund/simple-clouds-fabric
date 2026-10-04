@@ -4,6 +4,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Arrays;
 import java.util.List;
+import static dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudGenerationInputs.*;
 
 import dev.nonamecrackers2.simpleclouds.client.noise.PsrdNoise;
 
@@ -71,45 +72,6 @@ public final class CpuCloudGenerator
 	public static boolean isTransparentEdge(float noise, float fade)
 	{
 		return fade > 0.01F && noise > -fade && noise < 0.0F;
-	}
-
-	/** A single noise layer (mirrors the GLSL NoiseLayer struct / AbstractNoiseSettings.Param). */
-	public record NoiseLayer(float height, float valueOffset, float scaleX, float scaleY, float scaleZ,
-			float fadeDistance, float heightOffset, float valueScale)
-	{
-	}
-
-	/** All noise layers of one cloud type plus its transparency fade (a compute-shader LayerGroup). */
-	/**
-	 * One cloud type's render group (port of the original's LayerGroup SSBO entry).
-	 *
-	 * Step 8 (lighting/darkness): the per-cube brightness is computed from the
-	 * type's storm fields (cube_mesh.comp, TYPE==1 block):
-	 * <pre>
-	 *   storminess = clamp(group.Storminess + fade * 0.1, 0, 1)
-	 *   brightness = clamp(1.0 - storminess * (1.0 - clamp((y - group.StormStart)
-	 *                 / group.StormFadeDistance, 0, 1)), 0, 1)
-	 * </pre>
-	 * where {@code y} is the cube's grid Y (cloud units above the volume base).
-	 * Stormy types (cumulonimbus/nimbostratus/stratus) darken toward their base;
-	 * fair-weather types (cumulus/itty_bitty) stay bright. This is the "not
-	 * uniformly white" shading of the 1.20.1 mod (the light directions are static
-	 * (0,0,0) even in the original, so per-face normal lighting — {@code cubeNormals},
-	 * default off — is a separate, weaker effect).
-	 */
-	public record CloudLayerGroup(List<NoiseLayer> layers, float transparencyFade, boolean stormType,
-			float storminess, float stormStart, float stormFadeDistance)
-	{
-	}
-
-	/**
-	 * X/Z footprint of one spawned cloud formation (a compute-shader CloudRegion entry).
-	 * x/z/radius are in CLOUD UNITS (8 blocks); m00..m11 are the region's rotation+stretch
-	 * transform (CloudRegion.createTransform, dimensionless); groupIndex is the index
-	 * of the formation's cloud type in the active group list.
-	 */
-	public record RegionMask(float x, float z, float radius, float m00, float m01, float m10, float m11, int groupIndex)
-	{
 	}
 
 	private static final float TILE_PERIOD_X = 32.0F;

@@ -1,3 +1,4 @@
+import dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudGenerationInputs;
 import java.nio.*;
 import java.util.*;
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.CpuCloudGenerator;
@@ -13,9 +14,9 @@ public class CloudMotionProbe {
     }
     static Set<String> mesh(float phase, int lod, boolean boundary, boolean advected,
                             boolean productionWiggle, boolean worldFixed) {
-        var layer = new CpuCloudGenerator.NoiseLayer(32, .4f, 16,16,16,8,0,1);
-        var gen = new CpuCloudGenerator(List.of(new CpuCloudGenerator.CloudLayerGroup(List.of(layer),0,false,0,0,1)));
-        gen.setRegions(List.of(new CpuCloudGenerator.RegionMask((boundary ? 40 : 0)-(advected ? phase : 0),0,boundary ? 100 : 10000,1,0,0,1,0)));
+        var layer = new CloudGenerationInputs.NoiseLayer(32, .4f, 16,16,16,8,0,1);
+        var gen = new CpuCloudGenerator(List.of(new CloudGenerationInputs.CloudLayerGroup(List.of(layer),0,false,0,0,1)));
+        gen.setRegions(List.of(new CloudGenerationInputs.RegionMask((boundary ? 40 : 0)-(advected ? phase : 0),0,boundary ? 100 : 10000,1,0,0,1,0)));
         int shift = worldFixed ? 0 : ChunkGenerationKey.latticeShift(phase,8);
         // Match chunkWorkerLoop's real Wiggle uniform when requested. The original
         // fixed-wiggle control isolates translation, not the complete live field.

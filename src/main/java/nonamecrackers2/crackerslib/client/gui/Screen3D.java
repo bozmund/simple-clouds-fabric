@@ -51,6 +51,8 @@ public abstract class Screen3D extends Screen
 	public float camRotX() { return this.camRotX; }
 	public float camRotY() { return this.camRotY; }
 	public float zoom() { return this.zoom; }
+	public float zoomConstant() { return this.zoomConstant; }
+	public float farPlane() { return this.farPlane; }
 	public Vector3f offset() { return this.offset; }
 
 	protected void renderOrigin(boolean flag)
@@ -63,8 +65,8 @@ public abstract class Screen3D extends Screen
 	{
 		if (!super.mouseDragged(event, dragX, dragY))
 		{
-			int button = event.button(); // 26.2: int (0=LEFT, 1=MIDDLE, 2=RIGHT)
-			if (button == 2)
+			int button = event.button(); // 26.3 SDL: 1=LEFT, 2=MIDDLE, 3=RIGHT.
+			if (button == 3)
 			{
 				if (this.canRotate())
 				{
@@ -73,7 +75,7 @@ public abstract class Screen3D extends Screen
 					this.onRotate();
 				}
 			}
-			else if (button == 0)
+			else if (button == 1)
 			{
 				if (this.canMove())
 				{

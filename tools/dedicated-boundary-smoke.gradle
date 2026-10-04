@@ -1,0 +1,18 @@
+// Disposable dedicated test directory, never a play world. EULA is not accepted
+// by this script; Jan separately accepted it for this localhost-only test.
+// Binding, test world and pause settings are in the dedicated test properties.
+allprojects {
+    afterEvaluate {
+        if (plugins.hasPlugin('net.fabricmc.fabric-loom')) {
+            loom.runConfigs.named('server') {
+                runDir('build/dedicated-boundary-smoke')
+                vmArgs('-Xmx2G', '-XX:MaxDirectMemorySize=1G')
+            }
+            tasks.named('runServer', JavaExec) {
+                // Test harness supplies a private FIFO for console commands,
+                // including Minecraft's normal save-and-stop command.
+                standardInput = System.in
+            }
+        }
+    }
+}

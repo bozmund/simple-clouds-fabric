@@ -3,12 +3,15 @@
   "id": "simpleclouds",
   "version": "${version}",
   "name": "Simple Clouds",
-  "description": "Cloud overhaul mod (Fabric 26.2 port). Bundles CrackersLib.",
+  "description": "Cloud overhaul mod (Fabric 26.3 port). Bundles CrackersLib.",
   "authors": ["nonamecrackers2", "symbiote (port)"],
   "license": "PolyForm-Perimeter-1.0.1",
   "environment": "*",
   "mixins": ["simpleclouds.mixins.json"],
   "entrypoints": {
+    "preLaunch": [
+      "dev.nonamecrackers2.simpleclouds.client.compat.ParticleRainAsyncBootstrap"
+    ],
     "main": ["dev.nonamecrackers2.simpleclouds.SimpleCloudsMod"]
   },
   "depends": {

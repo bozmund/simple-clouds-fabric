@@ -51,7 +51,8 @@ float shadowStrengthAt(vec3 pos)
 	vec2 suv = spos.xy * 0.5 + 0.5;
 	if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0)
 		return 0.0; // outside the shadow volume: fully lit
-	float pointZ = (spos.z / spos.w + 1.0) * 0.5;
+	// Zero-to-one shadow projection (26.3 glClipControl): window depth is NDC z.
+	float pointZ = spos.z / spos.w;
 	return texture(ShadowMap, suv).r < pointZ - ShadowBias ? 1.0 : 0.0;
 }
 

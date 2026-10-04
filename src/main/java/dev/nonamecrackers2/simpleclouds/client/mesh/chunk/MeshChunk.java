@@ -1,15 +1,13 @@
 package dev.nonamecrackers2.simpleclouds.client.mesh.chunk;
 
-import java.nio.ByteBuffer;
 import java.util.Optional;
 
 import org.jetbrains.annotations.Nullable;
 
 import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL43;
-import org.lwjgl.system.MemoryUtil;
 
-import com.mojang.blaze3d.opengl.MemoryTracker;
+import org.lwjgl.opengl.GL45;
 import com.mojang.blaze3d.systems.RenderSystem;
 
 import dev.nonamecrackers2.simpleclouds.client.mesh.lod.PreparedChunk;
@@ -181,28 +179,29 @@ public class MeshChunk
 	public static class BufferSet
 	{
 		private int bufferId = -1;
-		private @Nullable ByteBuffer buffer;
 		private int elementCount;
+		private long publicationRevision;
 		private final int bufferSize;
 		private final int maxElements;
 		private final int elementOffset;
 		
 		public BufferSet(int maxElements, int elementOffset, int bytesPerElement)
 		{
-			this.bufferId = GL15.glGenBuffers();
+			this.bufferId = GL45.glCreateBuffers();
 			this.maxElements = maxElements;
 			this.elementOffset = elementOffset;
-			this.bufferSize = maxElements * bytesPerElement;
-			this.buffer = MemoryTracker.create(this.bufferSize);
-			GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, this.bufferId);
-			GL15.glBufferData(GL43.GL_SHADER_STORAGE_BUFFER, this.buffer, GL15.GL_DYNAMIC_DRAW);
-			GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, 0);
+			this.bufferSize = Math.multiplyExact(maxElements, bytesPerElement);
+			GL45.glNamedBufferData(this.bufferId, this.bufferSize, GL15.GL_DYNAMIC_DRAW);
 		}
 		
 		public void setTotalElementCount(int count)
 		{
 			this.elementCount = count;
+			this.publicationRevision++;
 		}
+
+		/** Counts can remain equal while the original GPU mesh changes. */
+		public long getPublicationRevision() { return this.publicationRevision; }
 		
 		public int getElementCount()
 		{
@@ -239,11 +238,6 @@ public class MeshChunk
 				this.bufferId = -1;
 			}
 			
-			if (this.buffer != null)
-			{
-				MemoryUtil.memFree(this.buffer);
-				this.buffer = null;
-			}
 		}
 	}
 }

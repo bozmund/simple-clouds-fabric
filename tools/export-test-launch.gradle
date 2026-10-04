@@ -1,0 +1,33 @@
+// Prepare launch arguments once, so server/client runtime tests need no
+// simultaneous Gradle invocations or mutable project compilation.
+allprojects {
+    afterEvaluate {
+        if (plugins.hasPlugin('net.fabricmc.fabric-loom')) {
+            tasks.register('exportDedicatedTestLaunch') {
+                dependsOn tasks.named('classes'), tasks.named('configureLaunch')
+                doLast {
+                    ['runServer', 'runClient'].each { name ->
+                        def launch = tasks.named(name).get()
+                        def quote = { String value -> '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"' }
+                        // Java does not recursively expand @files inside @files.
+                        // Loom's extra argument file supplies its runtime classpath.
+                        def paths = [launch.classpath.asPath]
+                        launch.allJvmArgs.findAll { it.startsWith('@') }.each { value ->
+                            def lines = file(value.substring(1)).readLines()
+                            if (lines.size() != 2 || lines[0] != '-classpath') {
+                                throw new GradleException("Unexpected Loom argfile format: ${value}")
+                            }
+                            paths.add(lines[1])
+                        }
+                        def args = launch.allJvmArgs.findAll { !it.startsWith('@') } +
+                            ['-classpath', paths.join(File.pathSeparator), launch.mainClass.get()] + launch.args
+                        def target = file("build/dedicated-launch/${name}.args")
+                        target.parentFile.mkdirs()
+                        target.text = args.collect { quote(it.toString()) }.join('\n') + '\n'
+                        println "Exported ${name}: ${args.size()} arguments"
+                    }
+                }
+            }
+        }
+    }
+}

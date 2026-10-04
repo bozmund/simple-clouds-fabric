@@ -1,0 +1,19 @@
+// Isolated A/B fixture: override only the packaged shader, never source files.
+allprojects {
+    afterEvaluate {
+        def resourcesTask = tasks.findByName('processResources')
+        if (resourcesTask != null) {
+            resourcesTask.outputs.upToDateWhen { false }
+            resourcesTask.doLast {
+                if (System.getenv('SIMPLECLOUDS_TEST_ALLOCATION_BASELINE') != '1') return
+                def baseline = file('test-fixtures/original_cube_mesh-allocation-baseline.comp')
+                if (!baseline.isFile()) throw new GradleException('Missing mesh allocation baseline')
+                copy {
+                    from baseline
+                    into new File(resourcesTask.destinationDir, 'assets/simpleclouds/shaders/compute')
+                    rename { 'original_cube_mesh.comp' }
+                }
+            }
+        }
+    }
+}

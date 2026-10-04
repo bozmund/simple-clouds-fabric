@@ -184,13 +184,17 @@ public abstract class CloudManager<T extends Level> implements CloudGetter, ScAP
 	public float getRainLevel(float x, float y, float z)
 	{
 		var info = this.getCloudTypeAtWorldPos(x, z);
-		CloudType type = info.getLeft();
+		return calculateRainLevel(info.getLeft(), info.getRight(), y, this.getCloudHeight());
+	}
+
+	/** Shared original rain envelope; lets effect adapters reuse one cloud lookup. */
+	public static float calculateRainLevel(CloudType type, float fade, float y, int cloudHeight)
+	{
 
 		if (!type.weatherType().includesRain())
 			return 0.0F;
 
-		float fade = info.getRight();
-		float verticalFade = 1.0F - Mth.clamp((y - (type.stormStart() * SimpleCloudsConstants.CLOUD_SCALE + this.getCloudHeight())) / SimpleCloudsConstants.RAIN_VERTICAL_FADE, 0.0F, 1.0F);
+		float verticalFade = 1.0F - Mth.clamp((y - (type.stormStart() * SimpleCloudsConstants.CLOUD_SCALE + cloudHeight)) / SimpleCloudsConstants.RAIN_VERTICAL_FADE, 0.0F, 1.0F);
 		return Math.min(1.0F, Math.max(0.0F, SimpleCloudsConstants.RAIN_THRESHOLD - fade) / SimpleCloudsConstants.RAIN_FADE) * verticalFade;
 	}
 
@@ -390,15 +394,16 @@ public abstract class CloudManager<T extends Level> implements CloudGetter, ScAP
 	{
 		if (!SimpleCloudsConfig.SERVER_SPEC.isLoaded())
 			return false;
+		return useVanillaWeather(level, source, dev.nonamecrackers2.simpleclouds.common.config.ServerConfigSnapshot.capture());
+	}
 
-		boolean flag = SimpleCloudsConfig.SERVER.dimensionWhitelist.get().stream().anyMatch(val -> {
-			return level.dimension().identifier().toString().equals(val);
-		});
-
-		if (SimpleCloudsConfig.SERVER.whitelistAsBlacklist.get() ? flag : !flag)
+	public static boolean useVanillaWeather(Level level, CloudTypeSource source,
+			dev.nonamecrackers2.simpleclouds.common.config.ServerConfigSnapshot config)
+	{
+		if (!config.allowsDimension(level.dimension().identifier().toString()))
 			return true;
 
-		CloudMode mode = SimpleCloudsConfig.SERVER.cloudMode.get();
+		CloudMode mode = config.cloudMode();
 
 		switch (mode)
 		{
@@ -408,7 +413,7 @@ public abstract class CloudManager<T extends Level> implements CloudGetter, ScAP
 		}
 		case SINGLE:
 		{
-			String rawId = SimpleCloudsConfig.SERVER.singleModeCloudType.get();
+			String rawId = config.singleModeCloudType();
 			Identifier id = Identifier.tryParse(rawId);
 			if (id != null)
 			{

@@ -8,6 +8,7 @@ import dev.nonamecrackers2.simpleclouds.client.renderer.SimpleCloudsRenderer;
 import dev.nonamecrackers2.simpleclouds.common.cloud.CloudType;
 import dev.nonamecrackers2.simpleclouds.common.cloud.SimpleCloudsConstants;
 import dev.nonamecrackers2.simpleclouds.common.config.SimpleCloudsConfig;
+import dev.nonamecrackers2.simpleclouds.client.config.ClientServerConfig;
 import dev.nonamecrackers2.simpleclouds.common.world.CloudManager;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
@@ -76,6 +77,8 @@ public class ClientCloudManager extends CloudManager<ClientLevel>
 	@Override
 	public CloudMode getCloudMode()
 	{
+		if (this.receivedSync && ClientServerConfig.get() != null)
+			return ClientServerConfig.get().cloudMode();
 		if (this.receivedSync && SimpleCloudsConfig.SERVER_SPEC.isLoaded())
 			return SimpleCloudsConfig.SERVER.cloudMode.get();
 		else
@@ -85,6 +88,8 @@ public class ClientCloudManager extends CloudManager<ClientLevel>
 	@Override
 	public String getSingleModeCloudTypeRawId()
 	{
+		if (this.receivedSync && ClientServerConfig.get() != null)
+			return ClientServerConfig.get().singleModeCloudType();
 		if (this.receivedSync && SimpleCloudsConfig.SERVER_SPEC.isLoaded())
 			return SimpleCloudsConfig.SERVER.singleModeCloudType.get();
 		else
@@ -142,6 +147,8 @@ public class ClientCloudManager extends CloudManager<ClientLevel>
 	@Override
 	protected boolean determineUseVanillaWeather()
 	{
+		if (this.receivedSync && ClientServerConfig.get() != null)
+			return useVanillaWeather(this.level, this, ClientServerConfig.get());
 		return !this.receivedSync || super.determineUseVanillaWeather();
 	}
 

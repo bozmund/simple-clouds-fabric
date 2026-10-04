@@ -1,3 +1,4 @@
+import dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudGenerationInputs;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Files;
@@ -420,9 +421,9 @@ public class ShaderFaceTest
 
 		// Part 3: the real generator output obeys the culling invariants, including the
 		// cross-chunk border (the "+1 halo" that prevents 32-cell interior walls).
-		var layer = new CpuCloudGenerator.NoiseLayer(16, 3, 16, 16, 16, 1, 0, 0);
-		var genr = new CpuCloudGenerator(List.of(new CpuCloudGenerator.CloudLayerGroup(List.of(layer), 0, false, 0, 0, 1)));
-		genr.setRegions(List.of(new CpuCloudGenerator.RegionMask(0, 0, 10000, 1, 0, 0, 1, 0)));
+		var layer = new CloudGenerationInputs.NoiseLayer(16, 3, 16, 16, 16, 1, 0, 0);
+		var genr = new CpuCloudGenerator(List.of(new CloudGenerationInputs.CloudLayerGroup(List.of(layer), 0, false, 0, 0, 1)));
+		genr.setRegions(List.of(new CloudGenerationInputs.RegionMask(0, 0, 10000, 1, 0, 0, 1, 0)));
 		float scale = 8F, baseY = 128F;
 		ByteBuffer opA = ByteBuffer.allocateDirect(4 * 1024 * 1024).order(ByteOrder.nativeOrder());
 		ByteBuffer opB = ByteBuffer.allocateDirect(4 * 1024 * 1024).order(ByteOrder.nativeOrder());

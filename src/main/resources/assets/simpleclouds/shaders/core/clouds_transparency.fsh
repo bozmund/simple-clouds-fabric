@@ -3,12 +3,7 @@
 
 #include <minecraft:dynamictransforms.glsl>
 
-// 26.2 port of clouds_transparency.fsh. The 1.20.1 original wrote weighted-blended
-// order-independent transparency into two color attachments (accumColor/revealage,
-// per the JCGT weighted blended order paper) which a separate composite pass then
-// divided out. The 26.2 slice draws into the main target with standard alpha
-// blending instead (deviation: no order independence; visually equivalent for the
-// thin single-layer edges this pass handles).
+// Original 1.20.1 weighted-blended OIT equations, with modern uniform bindings.
 //
 // BayerMatrixSampler is declared here (the device does not inject sampler
 // declarations), declared on the bind group layout, and bound in
@@ -17,8 +12,16 @@ uniform sampler2D BayerMatrixSampler;
 
 layout(location = 0) in vec4 vertexColor;
 layout(location = 1) in float fogDistance;
+layout(location = 2) in float vertexDistance;
 
-layout(location = 0) out vec4 fragColor;
+#if defined(ORIGINAL_REVEALAGE_ONLY)
+layout(location = 0) out float revealage;
+#elif defined(ORIGINAL_ACCUM_ONLY)
+layout(location = 0) out vec4 accumColor;
+#else
+layout(location = 0) out vec4 accumColor;
+layout(location = 1) out float revealage;
+#endif
 
 layout(std140) uniform CloudFog {
 	vec4 FogColor;
@@ -38,5 +41,13 @@ void main()
 	vec4 color = vertexColor * vec4(ColorModulator.rgb, 1.0);
 	color = mix(color, FogColor, smoothstep(FogStart, FogEnd, fogDistance));
 
-	fragColor = vec4(color.rgb, color.a);
+	vec4 premul = vec4(color.rgb * color.a, color.a);
+	float z = min(vertexDistance / 1000.0, 1.0);
+	float weight = max(premul.a * 3000.0 * pow(1.0 - z, 3.0), 0.01);
+#ifndef ORIGINAL_REVEALAGE_ONLY
+	accumColor = premul * weight;
+#endif
+#ifndef ORIGINAL_ACCUM_ONLY
+	revealage = premul.a;
+#endif
 }

@@ -46,8 +46,8 @@ public final class GpuStormColumnBits implements AutoCloseable {
 
     public GpuStormColumns.Result fromFaceIds(GpuCloudGeneration source,
             int x0,int y0,int z0,int x1,int y1,int z1,int lod,int cameraGridY,
-            float cameraX,float cameraZ,List<CpuCloudGenerator.CloudLayerGroup> groups,
-            List<CpuCloudGenerator.RegionMask> regions) {
+            float cameraX,float cameraZ,List<CloudGenerationInputs.CloudLayerGroup> groups,
+            List<CloudGenerationInputs.RegionMask> regions) {
         RenderSystem.assertOnRenderThread();
         if (program == 0) throw new IllegalStateException("GPU storm column bitset is closed");
         if (lod <= 0 || x1 <= x0 || y1 <= y0 || z1 <= z0

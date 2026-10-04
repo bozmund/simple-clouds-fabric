@@ -47,6 +47,8 @@ public class WorldEffects
 {
 	private static final org.apache.logging.log4j.Logger LOGGER = 
 			org.apache.logging.log4j.LogManager.getLogger("simpleclouds/WorldEffects");
+	// Per-strike proof lines for the DevShot harness only; silent in normal play.
+	private static final boolean DEV_LOG = "1".equals(System.getenv("SIMPLECLOUDS_DEV"));
 
 	// Scan box constants mirror the 1.20.1 WorldEffects (RAIN_SCAN_WIDTH/2, etc.).
 	private static final int SCAN_RADIUS = 16;
@@ -66,6 +68,8 @@ public class WorldEffects
 
 	/** Live lightning bolts (server-packet spawned; ticked here, rendered by the pipeline). */
 	private final java.util.List<LightningBolt> lightningBolts = new java.util.ArrayList<>();
+	/** Dev-only A/B switch (DevShot NODHBOLT); never set in normal play. */
+	public static volatile boolean devDisableDhLightningOcclusion;
 
 	private final Minecraft mc;
 	private final SimpleCloudsRenderer renderer;
@@ -118,14 +122,15 @@ public class WorldEffects
 		var rainPipeline = this.renderer.getRainPipeline();
 		if (rainPipeline == null || this.drops.isEmpty())
 			return;
-		rainPipeline.captureBackdrop();
 
 		for (Biome.Precipitation type : new Biome.Precipitation[] {Biome.Precipitation.RAIN, Biome.Precipitation.SNOW})
 		{
-			List<float[]> out = new ArrayList<>();
+			List<dev.nonamecrackers2.simpleclouds.client.renderer.v2.RainDrawPipeline.BatchQuad> out = new ArrayList<>();
 			for (PrecipitationQuad drop : this.drops.values())
 				if (drop.getPrecipitation() == type)
-					out.add(drop.vertices(partialTick, camX, camY, camZ));
+					out.add(new dev.nonamecrackers2.simpleclouds.client.renderer.v2.RainDrawPipeline.BatchQuad(
+							drop.vertices(partialTick, camX, camY, camZ),
+							net.minecraft.util.LightCoordsUtil.getLightCoords(this.mc.level, drop.getBlockPos())));
 			rainPipeline.setDrops(out, 1.0F);
 			rainPipeline.draw(viewMatrix, PrecipitationQuad.TEXTURE_BY_PRECIPITATION.get(type));
 		}
@@ -136,6 +141,19 @@ public class WorldEffects
 		// Original: bolts exist. (The port used to gate this on the spawn-time
 		// flash state, which made bolts invisible whenever the flash had lapsed.)
 		return !this.lightningBolts.isEmpty();
+	}
+
+	/** Read-only collision evidence for explicitly opted-in scratch-world tests. */
+	public int[] precipitationCollisionProbe(double planeY) {
+		if (!"1".equals(System.getenv("SIMPLECLOUDS_DEV"))) throw new IllegalStateException("Test-only precipitation probe");
+		int below=0,rain=0,snow=0;
+		for (PrecipitationQuad drop : this.drops.values()) {
+			if(drop.getPrecipitation()==Biome.Precipitation.RAIN) rain++;
+			if(drop.getPrecipitation()==Biome.Precipitation.SNOW) snow++;
+			double endY=drop.getPos().y + Mth.sin(drop.getXRot()-(float)Math.PI/2)*drop.getLength();
+			if (endY < planeY-.05) below++;
+		}
+		return new int[]{this.drops.size(),below,rain,snow};
 	}
 
 	public void forLightning(Consumer<LightningBolt> consumer)
@@ -184,7 +202,16 @@ public class WorldEffects
 		for (int i = 0; i < written; i++)
 			buffer.putFloat(out[i]);
 		buffer.flip();
-		pipeline.drawLightning(viewMatrix, buffer, written / 7);
+		// The original drew bolts against DH's LOD depth; vanilla depth alone lets a
+		// bolt beyond the render distance show through DH terrain.
+		com.mojang.renderpearl.api.textures.GpuTextureView dhDepth = null;
+		org.joml.Matrix4f dhInverseProjection = null;
+		if (dev.nonamecrackers2.simpleclouds.SimpleCloudsMod.dhLoaded() && !devDisableDhLightningOcclusion)
+		{
+			dhDepth =dev.nonamecrackers2.simpleclouds.client.dh.SimpleCloudsDhCompatHandler._getDhDepthView();
+			dhInverseProjection = dev.nonamecrackers2.simpleclouds.client.dh.SimpleCloudsDhCompatHandler._getLastDhInverseProjMat();
+		}
+		pipeline.drawLightning(viewMatrix, buffer, written / 7, dhDepth, dhInverseProjection);
 	}
 
 	/**
@@ -208,6 +235,7 @@ public class WorldEffects
 		// Storm plan step 0/1: every strike (server-spawned, client-spawned or
 		// DevShot-forced) logs its distance to the camera and the flash it is
 		// ALLOWED to apply, so S5 has per-strike proof data.
+		if (DEV_LOG)
 		LOGGER.info("[DEVSHOT-LIGHTNING] strike at {}x{}x{}: distToCam={} blocks, onlySound={}, flash {}",
 			pos.getX(), pos.getY(), pos.getZ(), Math.round(distance), onlySound,
 			distance <= SimpleCloudsConstants.CLOSE_THUNDER_CUTOFF
@@ -243,6 +271,7 @@ public class WorldEffects
 						pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5, attenuation);
 		int delayTicks = net.minecraft.util.Mth.floor(dist / SimpleCloudsConstants.SOUND_METERS_PER_SECOND) * 20;
 		this.mc.getSoundManager().playDelayed(instance, delayTicks);
+		if (DEV_LOG)
 		LOGGER.info("[DEVSHOT-LIGHTNING] thunder: sound={}, delay={} ticks ({} s), pitch={}, volume={}, attenuation={}",
 				sound, delayTicks, String.format(java.util.Locale.ROOT, "%.2f", delayTicks / 20.0),
 				String.format(java.util.Locale.ROOT, "%.2f", pitch),
@@ -274,7 +303,7 @@ public class WorldEffects
 
 	public void modifyLightMapTexture(float partialTick, int pixelX, int pixelY, Vector3f color)
 	{
-		// Slice: no lightmap glow (26.2's LightTexture layout differs).
+		// Intentionally empty in the original 1.20.1 WorldEffects as well.
 	}
 
 	/** 0..1: how much storm-type cloud is above the camera (drives fog/sky tinting). */
@@ -361,29 +390,17 @@ public class WorldEffects
 		int minZ = camZ-radius-zOffset, maxZ = camZ+radius-zOffset;
 		AABB box = new AABB(minX, camY+RAIN_Y_MIN, minZ, maxX, camY+RAIN_Y_MIN+RAIN_Y_SPAN, maxZ);
 
-		// Age the surviving drops; drop the dead ones and the ones that left the
-		// camera-following scan box.
-		Iterator<Map.Entry<Long, PrecipitationQuad>> it = this.drops.entrySet().iterator();
-		while (it.hasNext())
-		{
-			Map.Entry<Long, PrecipitationQuad> entry = it.next();
-			PrecipitationQuad drop = entry.getValue();
-			var pos = drop.getPos();
-			// Match the original's center-of-block containment at scan boundaries.
-			boolean inBox = box.contains(pos.x + 0.5D, pos.y + 0.5D, pos.z + 0.5D);
-			if (drop.isDead() || !inBox)
-				it.remove();
-			else
-				drop.tick();
-		}
-
-		// Spawn drops in the scan box (the original's per-position scan).
-		if (rain <= 0.0F || this.rainDelay != 0 || !level.getBiome(camPos).value().hasPrecipitation())
-			return;
+		// Original order: spawn before reaping/aging. A position occupied by a
+		// dead quad cannot respawn until the following tick; new quads age once.
+		// Original owns precipitation type through the CAMERA biome, including
+		// scan cells across a biome boundary. Per-drop biome lookup changes it.
+		Biome cameraBiome = level.getBiome(camPos).value();
+		if (rain > 0.0F && this.rainDelay == 0 && cameraBiome.hasPrecipitation()) {
 		for (int x = minX; x < maxX; x++)
 		{
 			for (int z = minZ; z < maxZ; z++)
 			{
+				int ground = level.getHeight(Heightmap.Types.MOTION_BLOCKING, x, z);
 				for (int y = camY + RAIN_Y_MIN; y < camY + RAIN_Y_MIN + RAIN_Y_SPAN; y++)
 				{
 					long key = BlockPos.asLong(x, y, z);
@@ -394,20 +411,33 @@ public class WorldEffects
 					// negative for about half the seeds, so it used to pass ~51%.)
 					if (RandomSource.create(key).nextInt(100) > 2)
 						continue;
-					int ground = level.getHeight(Heightmap.Types.MOTION_BLOCKING, x, z);
 					if (ground > y)
 						continue;
 					BlockPos pos = new BlockPos(x, y, z);
-					Biome.Precipitation type = level.getBiome(pos).value().getPrecipitationAt(pos, level.getSeaLevel());
+					Biome.Precipitation type = cameraBiome.getPrecipitationAt(pos, level.getSeaLevel());
 					if (type == Biome.Precipitation.NONE)
 						continue;
 					PrecipitationQuad drop = new PrecipitationQuad(type, level::clip, pos,
 						xRot + this.random.nextFloat()*.1F, yRot + this.random.nextFloat()*.1F,
 						60 + this.random.nextInt(60), rain * (type == Biome.Precipitation.SNOW ? 4.0F : 2.0F));
-					drop.tick(); // Original also advances newly spawned quads this tick.
 					this.drops.put(key, drop);
 				}
 			}
+		}
+		}
+		// Continue aging when rain stops: the original fades surviving quads.
+		Iterator<Map.Entry<Long, PrecipitationQuad>> it = this.drops.entrySet().iterator();
+		while (it.hasNext())
+		{
+			PrecipitationQuad drop = it.next().getValue();
+			BlockPos pos = drop.getBlockPos();
+			// getPos() is already centered; adding .5 there shifted the scan test
+			// a second half-block. Original tests the integer position + .5.
+			boolean inBox = box.contains(pos.getX() + 0.5D, pos.getY() + 0.5D, pos.getZ() + 0.5D);
+			if (drop.isDead() || !inBox)
+				it.remove();
+			else
+				drop.tick();
 		}
 	}
 

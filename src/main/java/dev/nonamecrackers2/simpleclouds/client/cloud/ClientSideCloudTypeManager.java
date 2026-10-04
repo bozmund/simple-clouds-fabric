@@ -18,6 +18,7 @@ public class ClientSideCloudTypeManager implements CloudTypeSource
 	private final CloudTypeDataManager dataManager;
 	private Map<Identifier, CloudType> synced = ImmutableMap.of();
 	private CloudType[] indexed = new CloudType[0];
+	private boolean receivedSynced;
 	
 	private ClientSideCloudTypeManager()
 	{
@@ -38,7 +39,7 @@ public class ClientSideCloudTypeManager implements CloudTypeSource
 	@Override
 	public CloudType[] getIndexedCloudTypes()
 	{
-		if (this.indexed.length > 0)
+		if (this.receivedSynced)
 			return this.indexed;
 		else
 			return this.dataManager.getIndexedCloudTypes();
@@ -46,7 +47,7 @@ public class ClientSideCloudTypeManager implements CloudTypeSource
 	
 	public Map<Identifier, CloudType> getCloudTypes()
 	{
-		if (!this.synced.isEmpty())
+		if (this.receivedSynced)
 			return this.synced;
 		else
 			return this.dataManager.getCloudTypes().collect(java.util.stream.Collectors.toMap(CloudType::id, cloudType -> cloudType));
@@ -55,13 +56,20 @@ public class ClientSideCloudTypeManager implements CloudTypeSource
 	public void receiveSynced(Map<Identifier, CloudType> synced, CloudType[] indexed)
 	{
 		this.synced = ImmutableMap.copyOf(synced);
-		this.indexed = indexed;
+		this.indexed = indexed.clone();
+		this.receivedSynced = true;
 	}
 	
 	public void clearSynced()
 	{
 		this.synced = ImmutableMap.of();
 		this.indexed = new CloudType[0];
+		this.receivedSynced = false;
+	}
+
+	public boolean hasReceivedSynced()
+	{
+		return this.receivedSynced;
 	}
 	
 	public static ClientSideCloudTypeManager getInstance()

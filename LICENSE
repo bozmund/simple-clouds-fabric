@@ -1,8 +1,11 @@
-Simple Clouds — Fabric 26.2 port
+Simple Clouds — Fabric 26.3 port
 Original mod by nonamecrackers2 (PolyForm Perimeter License 1.0.1)
 https://github.com/nonamecrackers2/simple-clouds
 
 CrackersLib bundled (original by nonamecrackers2)
 https://github.com/nonamecrackers2/crackerslib
 
-Ported for personal modpack use on the Symbiote Fabric 26.2 profile.
+Ported for personal modpack use on the Symbiote Fabric 26.3 profile.
+Full original license terms are preserved in LICENSE.md.
+Integrated weather modules retain their separate licenses and namespaces;
+see THIRD-PARTY-NOTICES.md and WEATHER-SOURCE-AND-RELINKING.md.

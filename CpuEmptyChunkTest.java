@@ -1,15 +1,16 @@
+import dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudGenerationInputs;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.List;
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.CpuCloudGenerator;
 
 public class CpuEmptyChunkTest {
-    private static final CpuCloudGenerator.NoiseLayer LAYER =
-        new CpuCloudGenerator.NoiseLayer(16,3,16,16,16,1,0,0);
+    private static final CloudGenerationInputs.NoiseLayer LAYER =
+        new CloudGenerationInputs.NoiseLayer(16,3,16,16,16,1,0,0);
     private static void clippedHeightMatchesFull(int lod, int start, int height) {
-        var layer = new CpuCloudGenerator.NoiseLayer(height,3,16,16,16,1,start,0);
-        var gen = new CpuCloudGenerator(List.of(new CpuCloudGenerator.CloudLayerGroup(List.of(layer),1,true,0,0,1)));
-        gen.setRegions(List.of(new CpuCloudGenerator.RegionMask(0,0,10000,1,0,0,1,0)));
+        var layer = new CloudGenerationInputs.NoiseLayer(height,3,16,16,16,1,start,0);
+        var gen = new CpuCloudGenerator(List.of(new CloudGenerationInputs.CloudLayerGroup(List.of(layer),1,true,0,0,1)));
+        gen.setRegions(List.of(new CloudGenerationInputs.RegionMask(0,0,10000,1,0,0,1,0)));
         ByteBuffer[] full = new ByteBuffer[2];
         float[] fullCoverage = new float[1];
         for (int pass=0;pass<2;pass++) {
@@ -32,14 +33,14 @@ public class CpuEmptyChunkTest {
             clippedHeightMatchesFull(lod,16,32);  // cumulus
             clippedHeightMatchesFull(lod,64,64);  // stratocumulus
         }
-        var gen = new CpuCloudGenerator(List.of(new CpuCloudGenerator.CloudLayerGroup(List.of(LAYER),1,true,0,0,1)));
+        var gen = new CpuCloudGenerator(List.of(new CloudGenerationInputs.CloudLayerGroup(List.of(LAYER),1,true,0,0,1)));
         var opaque = ByteBuffer.allocateDirect(4*1024*1024).order(ByteOrder.nativeOrder());
         var transparent = ByteBuffer.allocateDirect(4*1024*1024).order(ByteOrder.nativeOrder());
         for (int lod : new int[]{1,2,4,8}) {
             // Far outside, then intersecting only the neighbor halo.
             for (var mask : List.of(
-                    new CpuCloudGenerator.RegionMask(10000,10000,1,1,0,0,1,0),
-                    new CpuCloudGenerator.RegionMask(-lod/2f,lod/2f,lod/4f,1,0,0,1,0))) {
+                    new CloudGenerationInputs.RegionMask(10000,10000,1,1,0,0,1,0),
+                    new CloudGenerationInputs.RegionMask(-lod/2f,lod/2f,lod/4f,1,0,0,1,0))) {
                 gen.setRegions(List.of(mask));
                 opaque.clear().putInt(1234);
                 transparent.clear().putInt(5678);

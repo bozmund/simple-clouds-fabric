@@ -3,6 +3,7 @@ package dev.nonamecrackers2.simpleclouds.client.renderer.v2;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.Optional;
 import java.util.OptionalDouble;
 
@@ -22,11 +23,14 @@ import com.mojang.renderpearl.api.pipeline.UniformType;
 import com.mojang.renderpearl.api.commands.CommandEncoder;
 import com.mojang.renderpearl.api.device.GpuDevice;
 import com.mojang.renderpearl.api.commands.RenderPass;
+import com.mojang.renderpearl.api.commands.RenderPassDescriptor;
+import com.mojang.renderpearl.api.pipeline.BlendFactor;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.renderpearl.api.textures.AddressMode;
 import com.mojang.renderpearl.api.textures.FilterMode;
 import com.mojang.renderpearl.api.textures.GpuSampler;
 import com.mojang.renderpearl.api.textures.GpuTextureView;
+import org.jetbrains.annotations.Nullable;
 import com.mojang.renderpearl.api.vertex.VertexFormat;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -59,12 +63,29 @@ public class CloudsDrawPipeline implements AutoCloseable
 	// Transparency pass (cloud edges just below the opaque threshold), 26.2 location.
 	private static final Identifier CLOUDS_TRANSPARENCY_LOCATION = SimpleCloudsMod.id("core/clouds_transparency");
 	// Storm fog overlay (26.2 slice: fullscreen blend pass, see core/storm_fog.fsh).
-	private static final Identifier STORM_FOG_LOCATION = SimpleCloudsMod.id("core/storm_fog");
+	private static final Identifier STORM_FOG_LOCATION = SimpleCloudsMod.id("core/original_storm_fog");
 	private static final Identifier SKY_FLASH_LOCATION = SimpleCloudsMod.id("core/sky_flash");
 	private RenderPipeline transitionPipeline;
 	private com.mojang.blaze3d.pipeline.TextureTarget transitionOld, transitionNew;
 	private RenderTarget cloudDestination;
+	private com.mojang.blaze3d.pipeline.TextureTarget previewTarget;
+	private com.mojang.blaze3d.pipeline.TextureTarget previewExportTarget;
+	private GpuBuffer previewProjection, previewFog;
+	private boolean previewActive;
+	private final RenderPipeline previewCompositePipeline;
+	private final RenderPipeline previewExportPipeline;
 	private com.mojang.blaze3d.pipeline.TextureTarget atmosphericSource;
+	private final RenderPipeline worldFogPipeline;
+	private final GpuBuffer[] worldFogRing = new GpuBuffer[3];
+	private int worldFogSlot;
+	private com.mojang.blaze3d.pipeline.TextureTarget worldFogSource, cloudDepthSnapshot;
+	private boolean cloudDepthReady, stormFogReady;
+	private boolean worldFogLogged;
+	private int worldFogDraws;
+	private int vanillaWeatherReplays;
+	public int getVanillaWeatherReplaysThisFrame() { return this.vanillaWeatherReplays; }
+	public int getWorldFogDrawsThisFrame() { return this.worldFogDraws; }
+	private boolean worldFogStormLogged;
 	// Screen-covering triangle in clip space.
 	private static final float[] FULLSCREEN_TRIANGLE = { -1.0F, -1.0F, 3.0F, -1.0F, -1.0F, 3.0F };
 
@@ -76,12 +97,31 @@ public class CloudsDrawPipeline implements AutoCloseable
 			-1.0F, 1.0F, 1.0F,
 	};
 	private static final int[] QUAD_INDICES = { 0, 1, 2, 0, 2, 3 };
+	// Exact original InstanceableMesh.defaultCube vertex/index order.
+	private static final float[] CUBE_VERTICES = {
+		-1,-1,-1, 1,-1,-1, 1,1,-1, -1,1,-1,
+		1,-1,1, 1,1,1, -1,1,1, -1,-1,1
+	};
+	private static final int[] CUBE_INDICES = {
+		0,1,2,0,2,3, 4,7,6,4,6,5, 7,0,3,7,3,6,
+		1,4,5,1,5,2, 1,0,7,1,7,4, 5,6,3,5,3,2
+	};
 
 	private final RenderPipeline pipeline;
-	private final RenderPipeline previewPipeline;
 	private final RenderPipeline transparencyPipeline;
+	private final RenderPipeline transparencyMrtPipeline;
+	private final RenderPipeline transparencyRevealagePipeline;
+	private final RenderPipeline transparencyCompositePipeline;
+	private com.mojang.blaze3d.pipeline.TextureTarget transparencyAccum, transparencyRevealage;
+	private boolean transparencyActive;
+	private record TransparentDraw(GpuBuffer instances, int count, GpuBufferSlice transforms, GpuBufferSlice clip) { }
+	// Draw metadata only: geometry stays in the original GPU buffers. All uniform
+	// uploads finish before either pass opens, as required by RenderPearl.
+	private final List<TransparentDraw> transparentDraws = new ArrayList<>();
 	private final GpuBuffer quadVertexBuffer;
 	private final GpuBuffer quadIndexBuffer;
+	private final GpuBuffer cubeVertexBuffer;
+	private final GpuBuffer cubeIndexBuffer;
 	private final GpuBuffer lightingUbo;
 	private final GpuBuffer shadingUbo;
 
@@ -93,18 +133,38 @@ public class CloudsDrawPipeline implements AutoCloseable
 			.build();
 	private static final Identifier LIGHTNING_LOCATION = SimpleCloudsMod.id("core/lightning");
 	private final RenderPipeline lightningPipeline;
+	// mat4 inverse DH projection + vec4 (enabled, 1/width, 1/height, unused), std140.
+	private static final int LIGHTNING_OCCLUSION_BYTES = 80;
+	private final GpuBuffer[] lightningOcclusionRing = new GpuBuffer[3];
+	private int lightningOcclusionSlot;
 	private GpuBuffer lightningVertexBuffer;
 	private final GpuBuffer lightningIndexBuffer;
 	private final GpuBuffer fogUbo;
 	// Per-frame ring for the runtime-toggleable CloudShading.UseNormals (config
 	// cubeNormals): the static shading UBO cannot be remapped every frame (26.2
 	// per-frame-UBO rule), so the toggle rides on a ring.
-	private final GpuBuffer[] useNormalsRing = new GpuBuffer[3];
-	private int useNormalsRingSlot = 0;
+	// Both shading records are immutable; live config chooses which to bind.
+	// Rewriting identical data per chunk needlessly synchronizes queued draws.
+	private final GpuBuffer[] shadingModes = new GpuBuffer[2];
 	private static final float[] CLOUD_SHADING_BASE = { 0.0F, 0.0F, 0.15F };
 	private final RenderPipeline stormFogPipeline;
 	private final GpuBuffer triangleBuffer;
-	private final GpuBuffer stormFogUbo;
+	private final GpuBuffer[] stormFogRing = new GpuBuffer[3];
+	private int stormFogSlot;
+	private final RenderPipeline stormCompositePipeline;
+	// Distant Horizons LOD depth written into the main depth before the late cloud pass.
+	private final RenderPipeline dhDepthMergePipeline;
+	private final RenderPipeline dhDepthMergeDebugPipeline;
+	private final GpuBuffer[] dhDepthMergeRing = new GpuBuffer[3];
+	private int dhDepthMergeSlot;
+	private com.mojang.blaze3d.pipeline.TextureTarget dhDepthScratch;
+	private com.mojang.blaze3d.pipeline.TextureTarget dhDepthBackup;
+	private final RenderPipeline stormUpscalePipeline;
+	private final RenderPipeline stormBlurPipeline;
+	private final GpuBuffer[] stormBlurRing = new GpuBuffer[18];
+	private final GpuSampler stormLinearSampler;
+	private com.mojang.blaze3d.pipeline.TextureTarget originalStormFogTarget;
+	private com.mojang.blaze3d.pipeline.TextureTarget stormBlurMain, stormBlurSwap;
 	private final RenderPipeline skyFlashPipeline;
 	private final GpuBuffer skyFlashUbo;
 
@@ -151,6 +211,14 @@ public class CloudsDrawPipeline implements AutoCloseable
 	}
 
 	private final SimpleRenderTarget shadowTarget;
+	private final SimpleRenderTarget stormShadowTarget;
+	private final RenderPipeline stormShadowPipeline;
+	private final GpuBuffer[] stormShadowMatricesRing = new GpuBuffer[3];
+	private final GpuBuffer[] stormShadowParamsRing = new GpuBuffer[3];
+	private int stormShadowSlot;
+	private boolean stormShadowRendered;
+	private final Matrix4f stormShadowView = new Matrix4f();
+	private final Matrix4f stormShadowProjection = new Matrix4f();
 	private final RenderPipeline shadowPipeline;
 	private final RenderPipeline terrainPipeline;
 	// Per-frame shadow uniforms. 26.2 idiom: a MappableRingBuffer (like
@@ -164,7 +232,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 	// createBuffer overload works (all other UBOs use it), so build the ring
 	// manually from zero-initialized data buffers.
 	// Step 5: per-chunk scroll-offset ring (see drawClouds). Rotates like
-	// useNormalsRing: mapping a fixed buffer within a frame and binding it in a
+	// the old mutable shading ring: mapping a fixed buffer within a frame and binding it in a
 	// pass encoded later in that same frame silently kills the pass on this
 	// Mesa/Intel ARL machine (shadowMatricesRing note), so never reuse a slot
 	// that a live pass still references.
@@ -225,33 +293,13 @@ public class CloudsDrawPipeline implements AutoCloseable
 				// NULL depth state and GlCommandEncoder _disableDepthTest()s -- clouds
 				// rendered through all terrain (Jan's 2026-09-12 screenshot).
 				.withColorTargetState(new ColorTargetState(java.util.Optional.empty(), GpuFormat.RGBA8_UNORM, ColorTargetState.WRITE_ALL))
-				.withDepthStencilState(DepthStencilState.DEFAULT)
+				.withDepthStencilState(
+						"1".equals(System.getenv("SIMPLECLOUDS_DEV")) && "1".equals(System.getenv("SIMPLECLOUDS_TEST_CLOUD_NO_DEPTH"))
+								? new DepthStencilState(CompareOp.ALWAYS_PASS, false) : DepthStencilState.DEFAULT)
 				.build();
 
-		// 26.2 previewer pass: the main clouds shader (snippet pipeline) into the
-		// MAIN frame with a screen-controlled orbit view matrix and NO depth test
-		// (the box must float over the world; offscreen color targets do not
-		// receive fragments from standalone passes in 26.2 -- see PreviewDrawPipeline).
-		this.previewPipeline = RenderPipeline.builder(RenderPipelines.MATRICES_FOG_SNIPPET)
-				.withLocation(CLOUDS_LOCATION)
-				.withVertexShader(CLOUDS_VSH)
-				.withFragmentShader(CLOUDS_FSH)
-				.withBindGroupLayout(bgl)
-				.withVertexBinding(0, CloudVertexFormat.QUAD_FORMAT)
-				.withVertexBinding(1, CloudVertexFormat.INSTANCE_FORMAT)
-				.withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
-				.withCull(false)
-				.withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT))
-				// ALWAYS_PASS + no write: the preview box draws over the world without
-				// touching the depth buffer (Optional.empty() here is invalid for the
-				// main target and silently discards the draw).
-				.withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, false))
-				.build();
-
-		// Transparency pass: standard alpha blending into the main target, depth test on
-		// but no depth write (drawn after the opaque clouds). 1.20.1's weighted-blended
-		// two-attachment + composite variant is not ported to 26.2 yet (see
-		// clouds_transparency.fsh header).
+		// Original weighted-blended transparency: accumulate premultiplied weighted
+		// color in RGBA16F and multiply revealage in R8, without changing depth.
 		BindGroupLayout transparencyBgl = BindGroupLayout.builder()
 				.withUniform("CloudShading", UniformType.UNIFORM_BUFFER)
 				.withUniform("CloudFog", UniformType.UNIFORM_BUFFER)
@@ -265,28 +313,86 @@ public class CloudsDrawPipeline implements AutoCloseable
 				.withFragmentShader(CLOUDS_TRANSPARENCY_LOCATION)
 				.withBindGroupLayout(transparencyBgl)
 				.withVertexBinding(0, CloudVertexFormat.QUAD_FORMAT)
-				.withVertexBinding(1, CloudVertexFormat.INSTANCE_ALPHA_FORMAT)
+				.withVertexBinding(1, CloudVertexFormat.CUBE_INSTANCE_FORMAT)
 				.withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
-				.withCull(false)
-				.withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT))
+				// Original transparent cube pass keeps face culling enabled. The
+				// rotated quad winding matches InstanceableMesh.defaultCube.
+				.withCull(true)
+				.withShaderDefine("ORIGINAL_ACCUM_ONLY")
+				.withColorTargetState(new ColorTargetState(Optional.of(new BlendFunction(BlendFactor.ONE, BlendFactor.ONE)), GpuFormat.RGBA16_FLOAT, ColorTargetState.WRITE_ALL))
 				// GREATER_THAN_OR_EQUAL = the inverted-Z "closer or equal" test: LESS_THAN
 				// (normal-Z) can never pass against a cleared (far=0.0) depth, which would
 				// make every transparent face in open air invisible.
 				.withDepthStencilState(new DepthStencilState(CompareOp.GREATER_THAN_OR_EQUAL, false))
 				.build();
+		// RenderPearl currently rejects independent MRT blend functions. Two draws
+		// preserve the original equations/formats/depth without raw GL state hacks.
+		this.transparencyRevealagePipeline = RenderPipeline.builder(RenderPipelines.MATRICES_FOG_SNIPPET)
+				.withLocation(SimpleCloudsMod.id("core/original_revealage"))
+				.withVertexShader(CLOUDS_TRANSPARENCY_LOCATION).withFragmentShader(CLOUDS_TRANSPARENCY_LOCATION)
+				.withShaderDefine("ORIGINAL_REVEALAGE_ONLY").withBindGroupLayout(transparencyBgl)
+				.withVertexBinding(0, CloudVertexFormat.QUAD_FORMAT).withVertexBinding(1, CloudVertexFormat.CUBE_INSTANCE_FORMAT)
+				.withPrimitiveTopology(PrimitiveTopology.TRIANGLES).withCull(true)
+				.withColorTargetState(new ColorTargetState(Optional.of(new BlendFunction(BlendFactor.ZERO, BlendFactor.ONE_MINUS_SRC_COLOR)), GpuFormat.R8_UNORM, ColorTargetState.WRITE_ALL))
+				.withDepthStencilState(new DepthStencilState(CompareOp.GREATER_THAN_OR_EQUAL, false)).build();
+		this.transparencyMrtPipeline = !IndexedCloudBlend.useIndexedBackend() ? null : RenderPipeline.builder(RenderPipelines.MATRICES_FOG_SNIPPET)
+				.withLocation(SimpleCloudsMod.id("core/original_transparency_mrt"))
+				.withVertexShader(CLOUDS_TRANSPARENCY_LOCATION).withFragmentShader(CLOUDS_TRANSPARENCY_LOCATION)
+				.withBindGroupLayout(transparencyBgl)
+				.withVertexBinding(0, CloudVertexFormat.QUAD_FORMAT).withVertexBinding(1, CloudVertexFormat.CUBE_INSTANCE_FORMAT)
+				.withPrimitiveTopology(PrimitiveTopology.TRIANGLES).withCull(true)
+				// Backend scope supplies the original independent revealage blend.
+				// Declared common ONE/ONE is restored before leaving this scope.
+				.withColorTargetState(0,new ColorTargetState(Optional.of(new BlendFunction(BlendFactor.ONE, BlendFactor.ONE)), GpuFormat.RGBA16_FLOAT, ColorTargetState.WRITE_ALL))
+				.withColorTargetState(1,new ColorTargetState(Optional.of(new BlendFunction(BlendFactor.ONE, BlendFactor.ONE)), GpuFormat.R8_UNORM, ColorTargetState.WRITE_ALL))
+				.withDepthStencilState(new DepthStencilState(CompareOp.GREATER_THAN_OR_EQUAL, false)).build();
 
 		// Storm fog overlay: fullscreen triangle, blended, no depth test (drawn last,
 		// on top of everything in the scene).
 		// Plan item 3: the spatial storm fog samples the scene depth (colour-only pass, like the
 		// terrain shadows) and reconstructs world positions with the frame's matrices.
 		BindGroupLayout stormFogBgl = BindGroupLayout.builder()
-				.withUniform("StormFog", UniformType.UNIFORM_BUFFER)
+				.withUniform("OriginalStormFog", UniformType.UNIFORM_BUFFER)
 				.withUniform("DepthSampler", UniformType.COMBINED_IMAGE_SAMPLER)
+				.withUniform("ShadowMap", UniformType.COMBINED_IMAGE_SAMPLER)
+				.withUniform("ShadowMapColor", UniformType.COMBINED_IMAGE_SAMPLER)
 				.build();
 		VertexFormat triangleFormat = VertexFormat.builder(0)
 				.addAttribute(CloudVertexFormat.POSITION, GpuFormat.RG32_FLOAT)
 				.build();
+		Identifier transparencyCompositeId = SimpleCloudsMod.id("core/original_transparency_composite");
+		this.transparencyCompositePipeline = RenderPipeline.builder()
+				.withLocation(transparencyCompositeId).withVertexShader(STORM_FOG_LOCATION).withFragmentShader(transparencyCompositeId)
+				.withBindGroupLayout(BindGroupLayout.builder()
+						.withUniform("AccumTexture", UniformType.COMBINED_IMAGE_SAMPLER)
+						.withUniform("RevealageTexture", UniformType.COMBINED_IMAGE_SAMPLER).build())
+				.withVertexBinding(0, triangleFormat).withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
+				.withCull(false).withDepthStencilState(Optional.empty())
+				// avg * (1-revealage) + destination * revealage; retain scene alpha.
+				.withColorTargetState(new ColorTargetState(new BlendFunction(BlendFactor.SRC_ALPHA,
+						BlendFactor.ONE_MINUS_SRC_ALPHA, BlendFactor.ZERO, BlendFactor.ONE))).build();
 		Identifier transitionId = SimpleCloudsMod.id("core/cloud_transition");
+		Identifier previewCompositeId = SimpleCloudsMod.id("core/original_preview_composite");
+		this.previewCompositePipeline = RenderPipeline.builder()
+				.withLocation(previewCompositeId).withVertexShader(STORM_FOG_LOCATION).withFragmentShader(previewCompositeId)
+				.withBindGroupLayout(BindGroupLayout.builder()
+						.withUniform("CloudsTexture", UniformType.COMBINED_IMAGE_SAMPLER)
+						.withUniform("AccumTexture", UniformType.COMBINED_IMAGE_SAMPLER)
+						.withUniform("RevealageTexture", UniformType.COMBINED_IMAGE_SAMPLER).build())
+				.withVertexBinding(0, triangleFormat).withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
+				.withCull(false).withDepthStencilState(Optional.empty())
+				.withColorTargetState(new ColorTargetState(new BlendFunction(BlendFactor.SRC_ALPHA,
+						BlendFactor.ONE_MINUS_SRC_ALPHA, BlendFactor.ZERO, BlendFactor.ONE))).build();
+		this.previewExportPipeline = RenderPipeline.builder()
+				.withLocation(SimpleCloudsMod.id("core/original_preview_export"))
+				.withVertexShader(STORM_FOG_LOCATION).withFragmentShader(previewCompositeId)
+				.withBindGroupLayout(BindGroupLayout.builder()
+						.withUniform("CloudsTexture", UniformType.COMBINED_IMAGE_SAMPLER)
+						.withUniform("AccumTexture", UniformType.COMBINED_IMAGE_SAMPLER)
+						.withUniform("RevealageTexture", UniformType.COMBINED_IMAGE_SAMPLER).build())
+				.withVertexBinding(0, triangleFormat).withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
+				.withCull(false).withDepthStencilState(Optional.empty())
+				.withColorTargetState(new ColorTargetState(Optional.empty(),GpuFormat.RGBA8_UNORM,ColorTargetState.WRITE_ALL)).build();
 		this.transitionPipeline = RenderPipeline.builder()
 				.withLocation(transitionId).withVertexShader(transitionId).withFragmentShader(transitionId)
 				.withBindGroupLayout(BindGroupLayout.builder()
@@ -296,7 +402,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 				.withCull(false).withDepthStencilState(Optional.empty())
 				.withColorTargetState(new ColorTargetState(java.util.Optional.empty(), GpuFormat.RGBA8_UNORM, ColorTargetState.WRITE_ALL))
 				.build();
-		this.stormFogPipeline = RenderPipeline.builder(RenderPipelines.MATRICES_FOG_SNIPPET)
+		this.stormFogPipeline = RenderPipeline.builder()
 				.withLocation(STORM_FOG_LOCATION)
 				.withVertexShader(STORM_FOG_LOCATION)
 				.withFragmentShader(STORM_FOG_LOCATION)
@@ -304,9 +410,82 @@ public class CloudsDrawPipeline implements AutoCloseable
 				.withVertexBinding(0, triangleFormat)
 				.withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
 				.withCull(false)
-				.withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT))
+				.withColorTargetState(new ColorTargetState(Optional.empty(), GpuFormat.RGBA8_UNORM, ColorTargetState.WRITE_ALL))
 				.withDepthStencilState(Optional.empty())
 				.build();
+		Identifier stormCompositeId = SimpleCloudsMod.id("core/original_storm_composite");
+		this.stormCompositePipeline = RenderPipeline.builder()
+				.withLocation(stormCompositeId).withVertexShader(STORM_FOG_LOCATION).withFragmentShader(stormCompositeId)
+				.withBindGroupLayout(BindGroupLayout.builder()
+						.withUniform("StormFogSampler", UniformType.COMBINED_IMAGE_SAMPLER).build())
+				.withVertexBinding(0, triangleFormat).withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
+				.withCull(false).withDepthStencilState(Optional.empty())
+				.withColorTargetState(new ColorTargetState(new BlendFunction(
+						com.mojang.renderpearl.api.pipeline.BlendFactor.SRC_ALPHA,
+						com.mojang.renderpearl.api.pipeline.BlendFactor.ONE_MINUS_SRC_ALPHA,
+						com.mojang.renderpearl.api.pipeline.BlendFactor.ZERO,
+						com.mojang.renderpearl.api.pipeline.BlendFactor.ONE))).build();
+		Identifier dhDepthMergeId = SimpleCloudsMod.id("core/dh_depth_merge");
+		// Built on the vanilla matrices snippet so the merge reads the Projection uniform the cloud
+		// passes are drawn with (bob/hurt included), not a CPU-side copy of it.
+		this.dhDepthMergePipeline = RenderPipeline.builder(RenderPipelines.MATRICES_FOG_SNIPPET)
+				.withLocation(dhDepthMergeId).withVertexShader(STORM_FOG_LOCATION).withFragmentShader(dhDepthMergeId)
+				.withBindGroupLayout(BindGroupLayout.builder()
+						.withUniform("DhDepthMerge", UniformType.UNIFORM_BUFFER)
+						.withUniform("DhDepthSampler", UniformType.COMBINED_IMAGE_SAMPLER).build())
+				.withVertexBinding(0, triangleFormat).withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
+				.withCull(false)
+				// Reversed-Z: keep whichever surface is closer, vanilla terrain or the LOD.
+				.withDepthStencilState(new DepthStencilState(CompareOp.GREATER_THAN, true))
+				.withColorTargetState(new ColorTargetState(Optional.empty(), GpuFormat.RGBA8_UNORM, ColorTargetState.WRITE_ALL)).build();
+		this.dhDepthMergeDebugPipeline = RenderPipeline.builder()
+				.withLocation(SimpleCloudsMod.id("core/dh_depth_merge_debug")).withVertexShader(STORM_FOG_LOCATION).withFragmentShader(dhDepthMergeId)
+				.withShaderDefine("DH_MERGE_DEBUG")
+				.withBindGroupLayout(BindGroupLayout.builder()
+						.withUniform("DhDepthMerge", UniformType.UNIFORM_BUFFER)
+						.withUniform("DhDepthSampler", UniformType.COMBINED_IMAGE_SAMPLER).build())
+				.withVertexBinding(0, triangleFormat).withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
+				.withCull(false).withDepthStencilState(Optional.empty())
+				.withColorTargetState(new ColorTargetState(Optional.empty(), GpuFormat.RGBA8_UNORM, ColorTargetState.WRITE_ALL)).build();
+		for (int i = 0; i < 3; i++) {
+			final int slot = i;
+			this.dhDepthMergeRing[i] = device.createBuffer(() -> "simpleclouds.dhDepthMerge" + slot,
+					GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(128));
+		}
+		this.stormUpscalePipeline = RenderPipeline.builder()
+				.withLocation(SimpleCloudsMod.id("core/original_storm_upscale"))
+				.withVertexShader(STORM_FOG_LOCATION).withFragmentShader(stormCompositeId)
+				.withBindGroupLayout(BindGroupLayout.builder()
+						.withUniform("StormFogSampler", UniformType.COMBINED_IMAGE_SAMPLER).build())
+				.withVertexBinding(0, triangleFormat).withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
+				.withCull(false).withDepthStencilState(Optional.empty())
+				.withColorTargetState(new ColorTargetState(Optional.empty(), GpuFormat.RGBA8_UNORM, ColorTargetState.WRITE_ALL)).build();
+		Identifier stormBlurId = SimpleCloudsMod.id("core/original_storm_blur");
+		Identifier worldFogId = SimpleCloudsMod.id("core/original_world_fog");
+		this.worldFogPipeline = RenderPipeline.builder()
+				.withLocation(worldFogId).withVertexShader(STORM_FOG_LOCATION).withFragmentShader(worldFogId)
+				.withBindGroupLayout(BindGroupLayout.builder()
+						.withUniform("OriginalWorldFog", UniformType.UNIFORM_BUFFER)
+						.withUniform("DiffuseSampler", UniformType.COMBINED_IMAGE_SAMPLER)
+						.withUniform("DiffuseDepthSampler", UniformType.COMBINED_IMAGE_SAMPLER)
+						.withUniform("CloudDepthSampler", UniformType.COMBINED_IMAGE_SAMPLER)
+						.withUniform("StormFogSampler", UniformType.COMBINED_IMAGE_SAMPLER).build())
+				.withVertexBinding(0, triangleFormat).withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
+				.withCull(false).withDepthStencilState(Optional.empty())
+				.withColorTargetState(ColorTargetState.DEFAULT).build();
+		for(int i=0;i<3;i++) {
+			final int slot=i;
+			this.worldFogRing[i]=device.createBuffer(() -> "simpleclouds.worldFog"+slot,
+					GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(OriginalWorldFogUniforms.BYTES));
+		}
+		this.stormBlurPipeline = RenderPipeline.builder()
+				.withLocation(stormBlurId).withVertexShader(STORM_FOG_LOCATION).withFragmentShader(stormBlurId)
+				.withBindGroupLayout(BindGroupLayout.builder()
+						.withUniform("OriginalBlur", UniformType.UNIFORM_BUFFER)
+						.withUniform("DiffuseSampler", UniformType.COMBINED_IMAGE_SAMPLER).build())
+				.withVertexBinding(0, triangleFormat).withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
+				.withCull(false).withDepthStencilState(Optional.empty())
+				.withColorTargetState(new ColorTargetState(Optional.empty(), GpuFormat.RGBA8_UNORM, ColorTargetState.WRITE_ALL)).build();
 
 		ByteBuffer triangleData = ByteBuffer.allocateDirect(FULLSCREEN_TRIANGLE.length * 4).order(ByteOrder.nativeOrder());
 		for (float v : FULLSCREEN_TRIANGLE)
@@ -314,7 +493,20 @@ public class CloudsDrawPipeline implements AutoCloseable
 		triangleData.flip();
 		this.triangleBuffer = device.createBuffer(() -> "simpleclouds.fullscreenTriangle", GpuBuffer.USAGE_VERTEX, triangleData);
 
-		this.stormFogUbo = device.createBuffer(() -> "simpleclouds.stormFog", GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, (long) StormFogMap.UBO_BYTES);
+		for (int i=0;i<3;i++) {
+			final int slot=i;
+			this.stormFogRing[i] = device.createBuffer(() -> "simpleclouds.originalStormFog"+slot,
+					GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(OriginalStormFogUniforms.BYTES));
+			this.lightningOcclusionRing[i] = device.createBuffer(() -> "simpleclouds.lightningOcclusion"+slot,
+					GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(LIGHTNING_OCCLUSION_BYTES));
+		}
+		this.stormLinearSampler = device.createSampler(AddressMode.CLAMP_TO_EDGE, AddressMode.CLAMP_TO_EDGE,
+				FilterMode.LINEAR, FilterMode.LINEAR, 1, OptionalDouble.empty());
+		for (int i=0;i<this.stormBlurRing.length;i++) {
+			final int slot=i;
+			this.stormBlurRing[i] = device.createBuffer(() -> "simpleclouds.originalStormBlur"+slot,
+					GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(16));
+		}
 
 		// Sky flash (storm plan step 1): same fullscreen-triangle shape as the
 		// storm fog — a short white brightening of the whole screen (see
@@ -339,6 +531,19 @@ public class CloudsDrawPipeline implements AutoCloseable
 		// ---- Cloud shadow map ----
 		this.shadowTarget = new SimpleRenderTarget("simpleclouds.shadow", true, GpuFormat.RGBA8_UNORM);
 		this.shadowTarget.createBuffers(SHADOW_SIZE, SHADOW_SIZE);
+		this.stormShadowTarget = new SimpleRenderTarget("simpleclouds.originalStormShadow", true, GpuFormat.RGBA8_UNORM);
+		this.stormShadowTarget.createBuffers(SHADOW_SIZE, SHADOW_SIZE);
+		Identifier stormShadowId = SimpleCloudsMod.id("core/original_storm_shadow");
+		this.stormShadowPipeline = RenderPipeline.builder()
+				.withLocation(stormShadowId).withVertexShader(stormShadowId).withFragmentShader(stormShadowId)
+				.withBindGroupLayout(BindGroupLayout.builder()
+						.withUniform("ShadowMatrices", UniformType.UNIFORM_BUFFER)
+						.withUniform("StormShadow", UniformType.UNIFORM_BUFFER).build())
+				.withVertexBinding(0, CloudVertexFormat.QUAD_FORMAT)
+				.withVertexBinding(1, CloudVertexFormat.INSTANCE_FORMAT)
+				.withPrimitiveTopology(PrimitiveTopology.TRIANGLES).withCull(false)
+				.withColorTargetState(new ColorTargetState(Optional.empty(), GpuFormat.RGBA8_UNORM, ColorTargetState.WRITE_ALL))
+				.withDepthStencilState(new DepthStencilState(CompareOp.LESS_THAN, true)).build();
 
 		BindGroupLayout shadowBgl = BindGroupLayout.builder()
 				.withUniform("ShadowMatrices", UniformType.UNIFORM_BUFFER)
@@ -381,7 +586,6 @@ public class CloudsDrawPipeline implements AutoCloseable
 		BindGroupLayout atmosphericBgl = BindGroupLayout.builder()
 				.withUniform("AtmosphericPass", UniformType.UNIFORM_BUFFER)
 				.withUniform("DiffuseSampler", UniformType.COMBINED_IMAGE_SAMPLER)
-				.withUniform("DepthSampler", UniformType.COMBINED_IMAGE_SAMPLER) // sky pixels only (the pass runs after the level)
 				.build();
 		// The shader composites a separate scene copy; write its complete result.
 		this.atmosphericPipeline = RenderPipeline.builder()
@@ -392,7 +596,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 				.withVertexBinding(0, triangleFormat)
 				.withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
 				.withCull(false)
-				.withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT))
+				.withColorTargetState(ColorTargetState.DEFAULT)
 				.withDepthStencilState(Optional.empty())
 				.build();
 
@@ -400,6 +604,10 @@ public class CloudsDrawPipeline implements AutoCloseable
 				.withLocation(LIGHTNING_LOCATION)
 				.withVertexShader(LIGHTNING_LOCATION)
 				.withFragmentShader(LIGHTNING_LOCATION)
+				.withBindGroupLayout(BindGroupLayout.builder()
+						.withUniform("LightningOcclusion", UniformType.UNIFORM_BUFFER)
+						.withUniform("DhDepthSampler", UniformType.COMBINED_IMAGE_SAMPLER)
+						.build())
 				.withVertexBinding(0, LIGHTNING_FORMAT)
 				.withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
 				.withCull(false)
@@ -448,6 +656,14 @@ public class CloudsDrawPipeline implements AutoCloseable
 			indexData.putShort((short) i);
 		indexData.flip();
 		this.quadIndexBuffer = device.createBuffer(() -> "simpleclouds.quadIndex", GpuBuffer.USAGE_INDEX, indexData);
+		ByteBuffer cubeData = ByteBuffer.allocateDirect(CUBE_VERTICES.length * 4).order(ByteOrder.nativeOrder());
+		for (float v : CUBE_VERTICES) cubeData.putFloat(v);
+		cubeData.flip();
+		this.cubeVertexBuffer = device.createBuffer(() -> "simpleclouds.originalCube", GpuBuffer.USAGE_VERTEX, cubeData);
+		ByteBuffer cubeIndices = ByteBuffer.allocateDirect(CUBE_INDICES.length * 2).order(ByteOrder.nativeOrder());
+		for (int i : CUBE_INDICES) cubeIndices.putShort((short)i);
+		cubeIndices.flip();
+		this.cubeIndexBuffer = device.createBuffer(() -> "simpleclouds.originalCubeIndex", GpuBuffer.USAGE_INDEX, cubeIndices);
 
 		// UBOs (std140 layout).
 		int uboUsage = GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ;
@@ -461,12 +677,21 @@ public class CloudsDrawPipeline implements AutoCloseable
 			// MAP_WRITE set, the immediate glMapBuffer in GlBuffer$Direct fails on
 			// this Mesa/Intel ARL machine ("Failed to map buffer").
 			this.shadowMatricesRing[slot] = device.createBuffer(() -> "simpleclouds.shadowMatrices" + slot, GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(128));
+			this.stormShadowMatricesRing[slot] = device.createBuffer(() -> "simpleclouds.originalStormMatrices" + slot, uboUsage, zeros(128));
+			this.stormShadowParamsRing[slot] = device.createBuffer(() -> "simpleclouds.originalStormParams" + slot, uboUsage, zeros(16));
 			this.terrainPassRing[slot] = device.createBuffer(() -> "simpleclouds.terrainShadowPass" + slot, GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(112));
-			// std140: mat4 at 0, mat2 columns at 64/80, scalars at 96..128,
-			// vec4 at 144. Matrix columns have a 16-byte stride.
-			this.atmosphericRing[slot] = device.createBuffer(() -> "simpleclouds.atmospheric" + slot, GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(160));
-			// CloudShading layout: vec3 darkness(12) + float useNormals(4) = 16 bytes.
-			this.useNormalsRing[slot] = device.createBuffer(() -> "simpleclouds.useNormals" + slot, GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(16));
+			// std140: inverse matrices at 0/64, mat2 columns at 128/144,
+			// scalars at 160..188, vec4 at 192 (208 bytes total).
+			this.atmosphericRing[slot] = device.createBuffer(() -> "simpleclouds.atmospheric" + slot, GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(OriginalAtmosphericUniforms.BYTES));
+		}
+		for (int mode = 0; mode < this.shadingModes.length; mode++)
+		{
+			final int selectedMode = mode;
+			ByteBuffer shading = zeros(16);
+			shading.putFloat(0, CLOUD_SHADING_BASE[0]).putFloat(4, CLOUD_SHADING_BASE[1])
+					.putFloat(8, CLOUD_SHADING_BASE[2]).putFloat(12, (float)mode);
+			this.shadingModes[mode] = device.createBuffer(() -> "simpleclouds.shadingMode" + selectedMode,
+					GpuBuffer.USAGE_UNIFORM, shading);
 		}
 		for (int i = 0; i < 3; i++)
 		{
@@ -600,18 +825,10 @@ public class CloudsDrawPipeline implements AutoCloseable
 		pass.setUniform("BayerMatrixSampler", bayer.getTextureView(), bayer.getSampler());
 		pass.setUniform("DynamicTransforms", transforms);
 		pass.setUniform("CloudLighting", this.lightingUbo);
-		// UseNormals follows the live config (cubeNormals, default off): write the
-		// full 16-byte CloudShading block into the per-frame ring slot.
-		try (var view = this.useNormalsRing[this.useNormalsRingSlot].slice().map(true, false))
-		{
-			ByteBuffer data = view.data();
-			data.putFloat(0, CLOUD_SHADING_BASE[0]);
-			data.putFloat(4, CLOUD_SHADING_BASE[1]);
-			data.putFloat(8, CLOUD_SHADING_BASE[2]);
-			data.putFloat(12, SimpleCloudsConfig.CLIENT.cubeNormals.get() ? 1.0F : 0.0F);
-		}
-		pass.setUniform("CloudShading", this.useNormalsRing[this.useNormalsRingSlot]);
-		pass.setUniform("CloudFog", this.fogUbo);
+		// Same sixteen bytes as before, without mapping/uploading for every chunk.
+		pass.setUniform("CloudShading", this.shadingModes[SimpleCloudsConfig.CLIENT.cubeNormals.get() ? 1 : 0]);
+		pass.setUniform("CloudFog", this.previewActive ? this.previewFog : this.fogUbo);
+		if (this.previewActive) pass.setUniform("Projection", this.previewProjection);
 		// Per-draw transform slices retain their data until the frame completes.
 		// Rewriting a three-buffer offset ring hundreds of times in one frame
 		// either stalls the GPU or lets queued draws observe a later chunk's offset.
@@ -622,45 +839,199 @@ public class CloudsDrawPipeline implements AutoCloseable
 		pass.setIndexBuffer(this.quadIndexBuffer, IndexType.SHORT);
 		pass.drawIndexed(QUAD_INDICES.length, count, 0, 0, 0);
 		pass.close();
-		this.useNormalsRingSlot = (this.useNormalsRingSlot + 1) % 3;
 	}
 
-	/**
-	 * Plan item 3: spatial storm fog. Marches each pixel's view ray through the coverage map
-	 * (only rays under storm cover and below the clouds' base darken) and lights the fog around
-	 * nearby bolts. See core/storm_fog.fsh and StormFogMap for the uniform layout.
-	 * @param fogTop world Y of the storm clouds' base (the cloud volume's base)
-	 * @param bolts {@code boltCount} entries of [x, y, z, strength, r, g, b, radius]
-	 * @param debugMode 0 normal, 1 reconstructed scene distance, 2 fog amount / camera coverage
-	 */
-	public void drawStormFog(Matrix4f viewMatrix, double camX, double camY, double camZ, float fogTop, float maxDistance,
-			StormFogMap map, float[] bolts, int boltCount, int debugMode)
+	/** Original 200-step GPU shadow-volume raymarch, at original quarter resolution. */
+	public void drawStormFog(Matrix4f viewMatrix, Matrix4f projection, double camX, double camY, double camZ,
+			float fogEnd, float[] color, float[] bolts, int boltCount, int debugMode)
 	{
-		GpuBufferSlice transform = this.frameTransform(viewMatrix, null);
-		if (transform == null)
-			return;
-		try (var view = this.stormFogUbo.slice().map(true, false))
+		if (!this.stormShadowRendered || projection == null) return;
+		this.stormFogSlot = (this.stormFogSlot + 1) % 3;
+		GpuBuffer params = this.stormFogRing[this.stormFogSlot];
+		try (var view = params.slice().map(true, false))
 		{
-			map.writeUniform(view.data(), camX, camY, camZ, fogTop, maxDistance, bolts, boltCount, debugMode);
+			OriginalStormFogUniforms.write(view.data(), projection, viewMatrix,
+					this.stormShadowProjection, this.stormShadowView, camX, camY, camZ,
+					fogEnd, color, bolts, boltCount, debugMode);
 		}
-
 		RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
-		GpuTextureView colorView = main.getColorTextureView();
-		GpuTextureView depthView = main.getDepthTextureView();
-
+		int width=Math.max(1,main.width/4), height=Math.max(1,main.height/4);
+		if (this.originalStormFogTarget == null || this.originalStormFogTarget.width != width || this.originalStormFogTarget.height != height)
+		{
+			if (this.originalStormFogTarget != null) this.originalStormFogTarget.destroyBuffers();
+			this.originalStormFogTarget = new com.mojang.blaze3d.pipeline.TextureTarget("simpleclouds.originalStormFog",
+					width,height,GpuFormat.RGBA8_UNORM,null);
+		}
+		if (this.stormBlurMain == null || this.stormBlurMain.width != main.width || this.stormBlurMain.height != main.height)
+		{
+			if (this.stormBlurMain != null) this.stormBlurMain.destroyBuffers();
+			if (this.stormBlurSwap != null) this.stormBlurSwap.destroyBuffers();
+			this.stormBlurMain = new com.mojang.blaze3d.pipeline.TextureTarget("simpleclouds.originalBlurMain",main.width,main.height,GpuFormat.RGBA8_UNORM,null);
+			this.stormBlurSwap = new com.mojang.blaze3d.pipeline.TextureTarget("simpleclouds.originalBlurSwap",main.width,main.height,GpuFormat.RGBA8_UNORM,null);
+		}
+		// Upload six distinct slices before any render pass; no per-pass mapping alias.
+		for (int i=0;i<6;i++)
+			try (var mapping=this.stormBlurRing[this.stormFogSlot*6+i].slice().map(true,false))
+			{
+				mapping.data().putFloat(0,i%2==0?1.0F/main.width:0).putFloat(4,i%2==1?1.0F/main.height:0)
+						.putFloat(8,10.0F).putFloat(12,0);
+			}
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
-		// COLOR-ONLY pass: the depth is sampled as a texture (attaching and sampling it in one
-		// pass reads back 0, see drawTerrainShadows).
 		var compiledStormFogPipeline = RenderSystem.getCompiledPipeline(this.stormFogPipeline);
-		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.stormFog", colorView, Optional.empty());
-		pass.setPipeline(compiledStormFogPipeline);
-		RenderSystem.bindDefaultUniforms(pass);
-		pass.setUniform("DynamicTransforms", transform);
-		pass.setUniform("StormFog", this.stormFogUbo);
-		pass.setUniform("DepthSampler", depthView, this.nearestSampler);
-		pass.setVertexBuffer(0, this.triangleBuffer.slice());
-		pass.draw(3, 1, 0, 0);
-		pass.close();
+		var compiledCompositePipeline = RenderSystem.getCompiledPipeline(this.stormCompositePipeline);
+		var compiledUpscalePipeline = RenderSystem.getCompiledPipeline(this.stormUpscalePipeline);
+		var compiledBlurPipeline = RenderSystem.getCompiledPipeline(this.stormBlurPipeline);
+		try (RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.originalStormFog",
+				this.originalStormFogTarget.getColorTextureView(), Optional.of(new org.joml.Vector4f())))
+		{
+			pass.setPipeline(compiledStormFogPipeline);
+			pass.setUniform("OriginalStormFog", params);
+			pass.setUniform("DepthSampler", main.getDepthTextureView(), this.nearestSampler);
+			pass.setUniform("ShadowMap", this.stormShadowTarget.getDepthTextureView(), this.stormLinearSampler);
+			pass.setUniform("ShadowMapColor", this.stormShadowTarget.getColorTextureView(), this.nearestSampler);
+			pass.setVertexBuffer(0, this.triangleBuffer.slice()); pass.draw(3,1,0,0);
+		}
+		// Original: alpha-preserving linear upscale, then six alternating full-size blur passes.
+		try (RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.originalStormUpscale", this.stormBlurMain.getColorTextureView(), Optional.empty()))
+		{
+			pass.setPipeline(compiledUpscalePipeline);
+			pass.setUniform("StormFogSampler", this.originalStormFogTarget.getColorTextureView(), this.stormLinearSampler);
+			pass.setVertexBuffer(0,this.triangleBuffer.slice()); pass.draw(3,1,0,0);
+		}
+		for (int i=0;i<6;i++)
+		{
+			RenderTarget source=i%2==0?this.stormBlurMain:this.stormBlurSwap;
+			RenderTarget target=i%2==0?this.stormBlurSwap:this.stormBlurMain;
+			try (RenderPass pass=encoder.createRenderPass(() -> "simpleclouds.originalStormBlur",target.getColorTextureView(),Optional.empty()))
+			{
+				pass.setPipeline(compiledBlurPipeline);
+				pass.setUniform("OriginalBlur",this.stormBlurRing[this.stormFogSlot*6+i]);
+				pass.setUniform("DiffuseSampler",source.getColorTextureView(),this.stormLinearSampler);
+				pass.setVertexBuffer(0,this.triangleBuffer.slice()); pass.draw(3,1,0,0);
+			}
+		}
+		try (RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.originalStormComposite", main.getColorTextureView(), Optional.empty()))
+		{
+			pass.setPipeline(compiledCompositePipeline);
+			pass.setUniform("StormFogSampler", this.stormBlurMain.getColorTextureView(), this.stormLinearSampler);
+			pass.setVertexBuffer(0, this.triangleBuffer.slice()); pass.draw(3,1,0,0);
+		}
+		this.stormFogReady = true;
+	}
+
+	/** Save cloud-only depth before terrain writes to the main depth attachment. */
+	/**
+	 * Writes DH's LOD depth, re-projected with Minecraft's projection, into the main depth so
+	 * the late cloud, fog and weather passes are hidden behind DH terrain. The previous depth
+	 * is kept for {@link #restoreMainDepth()}. Returns false when nothing was changed.
+	 */
+	public boolean mergeDhDepth(GpuTextureView dhDepth, Matrix4f inverseDhProjection, Matrix4f projection)
+	{
+		if (dhDepth == null || inverseDhProjection == null || projection == null
+				|| !inverseDhProjection.isFinite() || !projection.isFinite()) return false;
+		RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
+		if (this.dhDepthScratch == null || this.dhDepthScratch.width != main.width || this.dhDepthScratch.height != main.height)
+		{
+			if (this.dhDepthScratch != null) this.dhDepthScratch.destroyBuffers();
+			if (this.dhDepthBackup != null) this.dhDepthBackup.destroyBuffers();
+			this.dhDepthScratch = new com.mojang.blaze3d.pipeline.TextureTarget("simpleclouds.dhDepthScratch",
+					main.width, main.height, GpuFormat.RGBA8_UNORM, null);
+			this.dhDepthBackup = new com.mojang.blaze3d.pipeline.TextureTarget("simpleclouds.dhDepthBackup",
+					main.width, main.height, main.getColorTexture().getFormat(), main.getDepthTexture().getFormat());
+		}
+		this.dhDepthBackup.copyDepthFrom(main);
+		this.dhDepthMergeSlot = (this.dhDepthMergeSlot + 1) % 3;
+		GpuBuffer params = this.dhDepthMergeRing[this.dhDepthMergeSlot];
+		try (var mapping = params.slice().map(true, false))
+		{
+			inverseDhProjection.get(0, mapping.data());
+			projection.get(64, mapping.data());
+		}
+		if ("1".equals(System.getenv("SIMPLECLOUDS_DEV")) && "1".equals(System.getenv("SIMPLECLOUDS_TEST_DH_MERGE_DEBUG")))
+		{
+			CommandEncoder debugEncoder = RenderSystem.getDevice().createCommandEncoder();
+			try (RenderPass pass = debugEncoder.createRenderPass(() -> "simpleclouds.dhDepthMergeDebug", main.getColorTextureView(), Optional.empty()))
+			{
+				pass.setPipeline(RenderSystem.getCompiledPipeline(this.dhDepthMergeDebugPipeline));
+				pass.setUniform("DhDepthMerge", params);
+				pass.setUniform("DhDepthSampler", dhDepth, this.nearestSampler);
+				pass.setVertexBuffer(0, this.triangleBuffer.slice());
+				pass.draw(3, 1, 0, 0);
+			}
+			return false;
+		}
+		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
+		var compiled = RenderSystem.getCompiledPipeline(this.dhDepthMergePipeline);
+		try (RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.dhDepthMerge",
+				this.dhDepthScratch.getColorTextureView(), Optional.empty(), main.getDepthTextureView(), OptionalDouble.empty()))
+		{
+			pass.setPipeline(compiled);
+			RenderSystem.bindDefaultUniforms(pass);
+			pass.setUniform("DhDepthMerge", params);
+			pass.setUniform("DhDepthSampler", dhDepth, this.nearestSampler);
+			pass.setVertexBuffer(0, this.triangleBuffer.slice());
+			pass.draw(3, 1, 0, 0);
+		}
+		return true;
+	}
+
+	/** Puts back the main depth saved by {@link #mergeDhDepth}. */
+	public void restoreMainDepth()
+	{
+		if (this.dhDepthBackup == null) return;
+		RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
+		if (this.dhDepthBackup.width == main.width && this.dhDepthBackup.height == main.height)
+			main.copyDepthFrom(this.dhDepthBackup);
+	}
+
+	public void captureCloudDepth()
+	{
+		RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
+		if(this.cloudDepthSnapshot==null || this.cloudDepthSnapshot.width!=main.width || this.cloudDepthSnapshot.height!=main.height) {
+			var replacement = new com.mojang.blaze3d.pipeline.TextureTarget("simpleclouds.cloudDepthSnapshot",
+					main.width,main.height,main.getColorTexture().getFormat(),main.getDepthTexture().getFormat());
+			if(this.cloudDepthSnapshot!=null) this.cloudDepthSnapshot.destroyBuffers();
+			this.cloudDepthSnapshot=replacement;
+		}
+		this.cloudDepthSnapshot.copyDepthFrom(main);
+		this.cloudDepthReady=true;
+	}
+
+	/** Original post-fog, executed after terrain and before the mod's weather redraw. */
+	public boolean drawWorldFog(Matrix4f projection, Matrix4f viewRotation, float start, float end, float[] color)
+	{
+		RenderTarget main=Minecraft.getInstance().gameRenderer.mainRenderTarget();
+		if(!this.cloudDepthReady || this.cloudDepthSnapshot.width!=main.width || this.cloudDepthSnapshot.height!=main.height
+				|| !projection.isFinite() || projection.determinant()==0 || !viewRotation.isFinite()) return false;
+		this.worldFogSlot=(this.worldFogSlot+1)%3;
+		GpuBuffer params=this.worldFogRing[this.worldFogSlot];
+		try(var mapping=params.slice().map(true,false)) {
+			OriginalWorldFogUniforms.write(mapping.data(),projection,viewRotation,start,end,color,this.stormFogReady);
+		}
+		if(this.worldFogSource==null || this.worldFogSource.width!=main.width || this.worldFogSource.height!=main.height) {
+			var replacement=new com.mojang.blaze3d.pipeline.TextureTarget("simpleclouds.worldFogSource",main.width,main.height,main.getColorTexture().getFormat(),null);
+			if(this.worldFogSource!=null) this.worldFogSource.destroyBuffers();
+			this.worldFogSource=replacement;
+		}
+		CommandEncoder encoder=RenderSystem.getDevice().createCommandEncoder();
+		encoder.copyTextureToTexture(main.getColorTexture(),this.worldFogSource.getColorTexture(),0,0,0,0,0,main.width,main.height);
+		var compiled=RenderSystem.getCompiledPipeline(this.worldFogPipeline);
+		try(RenderPass pass=encoder.createRenderPass(() -> "simpleclouds.originalWorldFog",main.getColorTextureView(),Optional.empty())) {
+			pass.setPipeline(compiled); pass.setUniform("OriginalWorldFog",params);
+			pass.setUniform("DiffuseSampler",this.worldFogSource.getColorTextureView(),this.nearestSampler);
+			pass.setUniform("DiffuseDepthSampler",main.getDepthTextureView(),this.nearestSampler);
+			pass.setUniform("CloudDepthSampler",this.cloudDepthSnapshot.getDepthTextureView(),this.nearestSampler);
+			pass.setUniform("StormFogSampler",this.stormFogReady?this.stormBlurMain.getColorTextureView():this.worldFogSource.getColorTextureView(),this.stormLinearSampler);
+			pass.setVertexBuffer(0,this.triangleBuffer.slice()); pass.draw(3,1,0,0);
+		}
+		if((!this.worldFogLogged || (this.stormFogReady && !this.worldFogStormLogged)) && "1".equals(System.getenv("SIMPLECLOUDS_DEV"))) {
+			this.worldFogLogged=true;
+			if(this.stormFogReady) this.worldFogStormLogged=true;
+			LOGGER.info("[WORLD-FOG] executed {}x{} start={} end={} storm={} reversedZ=true",main.width,main.height,start,end,this.stormFogReady);
+		}
+		if (++this.worldFogDraws > 1)
+			LOGGER.error("Simple Clouds ERROR: world fog executed more than once in the current frame");
+		return true;
 	}
 
 	/**
@@ -709,25 +1080,135 @@ public class CloudsDrawPipeline implements AutoCloseable
 			net.minecraft.client.renderer.state.level.WeatherRenderState state,
 			net.minecraft.world.phys.Vec3 cameraPos, Matrix4f viewMatrix)
 	{
-		GpuBufferSlice transform = this.frameTransform(viewMatrix, null);
-		if (transform == null)
-			return;
 		// Uploads the instance buffer for those columns - device work, so it has to happen
 		// before a render pass is open (26.3 refuses any command while one is).
 		weather.prepare(cameraPos, state);
 		RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
+		var modelView = RenderSystem.getModelViewStack();
+		modelView.pushMatrix();
+		// prepare() already subtracts camera position. Vanilla render() binds its
+		// own DynamicTransforms from this stack, overriding caller-bound slices.
+		modelView.set(new Matrix4f(viewMatrix).setTranslation(0,0,0));
 		try (RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.vanillaWeather",
 				main.getColorTextureView(), Optional.empty(),
 				main.getDepthTextureView(), OptionalDouble.empty()))
 		{
 			RenderSystem.bindDefaultUniforms(pass);
-			pass.setUniform("DynamicTransforms", transform);
 			weather.render(state, pass);
+			this.vanillaWeatherReplays++;
+		} finally {
+			modelView.popMatrix();
+		}
+		if ((!this.vanillaWeatherLogged || (!this.vanillaSnowLogged && !state.snowColumns.isEmpty())) && "1".equals(System.getenv("SIMPLECLOUDS_DEV"))) {
+			this.vanillaWeatherLogged=true;
+			if (!state.snowColumns.isEmpty()) this.vanillaSnowLogged=true;
+			LOGGER.info("[DEFERRED-WEATHER] rendered rain={} snow={} intensity={} afterWorldFog=true",state.rainColumns.size(),state.snowColumns.size(),state.intensity);
+		}
+	}
+	private boolean vanillaWeatherLogged;
+	private boolean vanillaSnowLogged;
+
+	/** Clear both original OIT attachments once, before any transparent chunk. */
+	public void beginTransparency()
+	{
+		if (this.transparencyActive) throw new IllegalStateException("Nested cloud transparency pass");
+		RenderTarget main = this.cloudDestination != null ? this.cloudDestination : Minecraft.getInstance().gameRenderer.mainRenderTarget();
+		if (this.transparencyAccum == null || this.transparencyAccum.width != main.width || this.transparencyAccum.height != main.height)
+		{
+			if (this.transparencyAccum != null) this.transparencyAccum.destroyBuffers();
+			if (this.transparencyRevealage != null) this.transparencyRevealage.destroyBuffers();
+			this.transparencyAccum = new com.mojang.blaze3d.pipeline.TextureTarget("simpleclouds.originalAccum", main.width, main.height, GpuFormat.RGBA16_FLOAT, null);
+			this.transparencyRevealage = new com.mojang.blaze3d.pipeline.TextureTarget("simpleclouds.originalRevealage", main.width, main.height, GpuFormat.R8_UNORM, null);
+		}
+		// 26.3 GlCommandEncoder configures MRT draw buffers after attachment
+		// clears. On a new FBO, attachment 1 is not yet a draw buffer, so its
+		// first clear is ignored (revealage remains zero -> black background).
+		// Clear each texture explicitly; correct on the first offscreen frame too.
+		var clearEncoder=RenderSystem.getDevice().createCommandEncoder();
+		clearEncoder.clearColorTexture(this.transparencyAccum.getColorTexture(),new org.joml.Vector4f(0));
+		clearEncoder.clearColorTexture(this.transparencyRevealage.getColorTexture(),new org.joml.Vector4f(1,0,0,0));
+		this.transparentDraws.clear();
+		this.transparencyActive = true;
+	}
+
+	/** Composite once after all chunks, never sample from the destination attachment. */
+	public void endTransparency()
+	{
+		if (!this.transparencyActive) return;
+		this.transparencyActive = false;
+		if (this.transparentDraws.isEmpty()) return;
+		RenderTarget main = this.cloudDestination != null ? this.cloudDestination : Minecraft.getInstance().gameRenderer.mainRenderTarget();
+		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
+		OitMrtParityProbe.Sample parity = this.transparencyMrtPipeline == null ? null : OitMrtParityProbe.begin();
+		if (this.transparencyMrtPipeline == null || parity != null)
+			this.drawTransparencyAttachments(encoder, main, false);
+		if (parity != null)
+		{
+			parity.capture(this.transparencyAccum, this.transparencyRevealage, false);
+			encoder.clearColorTexture(this.transparencyAccum.getColorTexture(),new org.joml.Vector4f(0));
+			encoder.clearColorTexture(this.transparencyRevealage.getColorTexture(),new org.joml.Vector4f(1,0,0,0));
+		}
+		if (this.transparencyMrtPipeline != null)
+			this.drawTransparencyAttachments(encoder, main, true);
+		if (parity != null)
+		{
+			IndexedCloudBlend.verifyRestored();
+			parity.capture(this.transparencyAccum, this.transparencyRevealage, true);
+		}
+		// Preview resolves opaque color and OIT together over the GUI background.
+		if (this.previewActive) return;
+		if ("1".equals(System.getenv("SIMPLECLOUDS_DEV"))
+				&& "1".equals(System.getenv("SIMPLECLOUDS_DIAGNOSTIC_SKIP_OIT_RESOLVE"))) return;
+		var compiled = RenderSystem.getCompiledPipeline(this.transparencyCompositePipeline);
+		try (RenderPass pass = RenderSystem.getDevice().createCommandEncoder().createRenderPass(
+				() -> "simpleclouds.originalTransparencyComposite", main.getColorTextureView(), Optional.empty()))
+		{
+			pass.setPipeline(compiled);
+			pass.setUniform("AccumTexture", this.transparencyAccum.getColorTextureView(), this.stormLinearSampler);
+			pass.setUniform("RevealageTexture", this.transparencyRevealage.getColorTextureView(), this.stormLinearSampler);
+			pass.setVertexBuffer(0, this.triangleBuffer.slice()); pass.draw(3,1,0,0);
 		}
 	}
 
-	/** Draws the transparent cloud edges after the opaque pass (no depth write, blended). */
+	private void drawTransparencyAttachments(CommandEncoder encoder, RenderTarget main, boolean mrt)
+	{
+		var accumPipeline = RenderSystem.getCompiledPipeline(this.transparencyPipeline);
+		var revealPipeline = RenderSystem.getCompiledPipeline(this.transparencyRevealagePipeline);
+		AbstractTexture bayer = Minecraft.getInstance().getTextureManager().getTexture(BAYER_TEXTURE);
+		// Like the original whole-field pass, not two framebuffer changes per chunk.
+		for (int attachment=0;attachment<(mrt?1:2);attachment++)
+		{
+			GpuTextureView target = attachment==0 ? this.transparencyAccum.getColorTextureView() : this.transparencyRevealage.getColorTextureView();
+			try (IndexedCloudBlend scope=mrt?IndexedCloudBlend.open():null;
+				RenderPass pass = mrt ? encoder.createRenderPass(RenderPassDescriptor.builder(() -> "simpleclouds.originalTransparencyMrt")
+					.withColorAttachment(this.transparencyAccum.getColorTextureView())
+					.withColorAttachment(this.transparencyRevealage.getColorTextureView())
+					.withDepthAttachment(main.getDepthTextureView()).build())
+				: encoder.createRenderPass(() -> "simpleclouds.originalTransparency", target,
+					Optional.empty(), main.getDepthTextureView(), OptionalDouble.empty()))
+			{
+				pass.setPipeline(mrt?RenderSystem.getCompiledPipeline(this.transparencyMrtPipeline):(attachment==0 ? accumPipeline : revealPipeline));
+				RenderSystem.bindDefaultUniforms(pass);
+				if (this.previewActive) pass.setUniform("Projection", this.previewProjection);
+				pass.setUniform("BayerMatrixSampler", bayer.getTextureView(), bayer.getSampler());
+				pass.setUniform("CloudShading", this.shadingUbo);
+				pass.setUniform("CloudFog", this.previewActive ? this.previewFog : this.fogUbo);
+				pass.setUniform("CloudOffset", this.offsetZero);
+				pass.setVertexBuffer(0, this.cubeVertexBuffer.slice());
+				pass.setIndexBuffer(this.cubeIndexBuffer, IndexType.SHORT);
+				for (TransparentDraw draw : this.transparentDraws)
+				{
+					pass.setUniform("DynamicTransforms", draw.transforms());
+					pass.setUniform("CloudClip", draw.clip());
+					pass.setVertexBuffer(1, draw.instances().slice());
+					pass.drawIndexed(CUBE_INDICES.length, draw.count(), 0, 0, 0);
+				}
+			}
+		}
+	}
+
+	/** Draws transparent edges into the original two attachments (no depth write). */
 	private boolean loggedFirstTransparencyDraw = false;
 
 	/** Transparency variant of {@link #drawClouds} for one chunk (A1: persistent
@@ -743,15 +1224,12 @@ public class CloudsDrawPipeline implements AutoCloseable
 	{
 		if (instances == null || count == 0)
 			return;
+		if (!this.transparencyActive) throw new IllegalStateException("Transparency draw outside frame pass");
 		if (!this.loggedFirstTransparencyDraw)
 		{
 			this.loggedFirstTransparencyDraw = true;
 			LOGGER.info("Simple Clouds clouds: first transparent draw, {} instances", count);
 		}
-
-		RenderTarget main = this.cloudDestination != null ? this.cloudDestination : Minecraft.getInstance().gameRenderer.mainRenderTarget();
-		GpuTextureView colorView = main.getColorTextureView();
-		GpuTextureView depthView = main.getDepthTextureView();
 
 // ColorModulator.a carries the fade alpha (the 1.20.1 chunk fade-in, step 3):
 		Matrix4f shiftedView = new Matrix4f(viewMatrix).translate(offX, offY, offZ);
@@ -760,62 +1238,104 @@ public class CloudsDrawPipeline implements AutoCloseable
 		if (transforms == null || cellClip == null)
 			return;
 
-		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
-		var compiledTransparencyPipeline = RenderSystem.getCompiledPipeline(this.transparencyPipeline);
-		AbstractTexture bayer = Minecraft.getInstance().getTextureManager().getTexture(BAYER_TEXTURE);
-		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.transparency", colorView, Optional.empty(), depthView, OptionalDouble.empty());
-		pass.setPipeline(compiledTransparencyPipeline);
-		RenderSystem.bindDefaultUniforms(pass);
-		// (hoisted above the render pass: 26.3 forbids texture uploads inside one)
-		pass.setUniform("BayerMatrixSampler", bayer.getTextureView(), bayer.getSampler());
-		pass.setUniform("DynamicTransforms", transforms);
-		pass.setUniform("CloudShading", this.shadingUbo);
-		pass.setUniform("CloudFog", this.fogUbo);
-		pass.setUniform("CloudOffset", this.offsetZero);
-		pass.setUniform("CloudClip", cellClip);
-		pass.setVertexBuffer(0, this.quadVertexBuffer.slice());
-		pass.setVertexBuffer(1, instances.slice());
-		pass.setIndexBuffer(this.quadIndexBuffer, IndexType.SHORT);
-		pass.drawIndexed(QUAD_INDICES.length, count, 0, 0, 0);
-		pass.close();
+		this.transparentDraws.add(new TransparentDraw(instances,count,transforms,cellClip));
 	}
 
-	/**
-	 * 26.2 previewer: draws the static preview box (instance data in "box space",
-	 * center at (0, (BOX_Y0+BOX_Y1)/2, 0)) into the MAIN frame with the screen's
-	 * orbit view matrix, no depth test (draws over the world). The orbit view maps
-	 * the box center to (0, 0, -distance) in the frame's view space -- i.e.
-	 * straight in front of the player -- so no extra model offset is needed.
-	 */
-	public void drawPreview(Matrix4f orbitView, GpuBuffer instances, int count)
+	/** Original editor target: independent depth, orthographic camera and white tint. */
+	public void beginPreview(Matrix4f projection)
 	{
-		if (instances == null || count == 0)
-			return;
-		GpuBufferSlice transforms = this.frameTransform(orbitView, null);
-		if (transforms == null)
-			return;
+		var main=Minecraft.getInstance().gameRenderer.mainRenderTarget();
+		this.beginPreview(projection,main.width,main.height,new org.joml.Vector4f(0));
+	}
+
+	/** Independent export dimensions; never resize the user's window or main target. */
+	public void beginPreview(Matrix4f projection,int width,int height,org.joml.Vector4f background)
+	{
+		if(width<1 || height<1 || width>8192 || height>8192 || !background.isFinite())
+			throw new IllegalArgumentException("Invalid cloud image target");
+		if (this.previewActive || this.cloudDestination != null || this.transparencyActive)
+			throw new IllegalStateException("Nested preview render");
+		if (this.previewTarget == null || this.previewTarget.width != width || this.previewTarget.height != height)
+		{
+			if (this.previewTarget != null) this.previewTarget.destroyBuffers();
+			this.previewTarget = new com.mojang.blaze3d.pipeline.TextureTarget("simpleclouds.originalPreview",
+					width, height, GpuFormat.RGBA8_UNORM, GpuFormat.D32_FLOAT);
+		}
+		if (this.previewProjection == null)
+		{
+			this.previewProjection = this.device.createBuffer(() -> "simpleclouds.previewProjection",
+					GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(64));
+			this.previewFog = this.device.createBuffer(() -> "simpleclouds.previewFog",
+					GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_READ, zeros(28));
+			try (var mapping = this.previewFog.slice().map(true, false))
+			{
+				// Disable fog for finite preview distances without equal-edge smoothstep.
+				mapping.data().putFloat(16, Float.MAX_VALUE / 2).putFloat(20, Float.MAX_VALUE).putFloat(24, 0.05F);
+			}
+		}
+		try (var mapping = this.previewProjection.slice().map(true, false)) { writeMatrix(mapping.data(), 0, projection); }
+		var clear = RenderPassDescriptor.builder(() -> "simpleclouds.originalPreviewClear")
+				.withColorAttachment(this.previewTarget.getColorTextureView(), Optional.of(new org.joml.Vector4f(background)))
+				.withDepthAttachment(this.previewTarget.getDepthTextureView(), OptionalDouble.of(0)).build();
+		try (RenderPass ignored = this.device.createCommandEncoder().createRenderPass(clear)) { }
+		this.cloudDestination = this.previewTarget;
+		this.previewActive = true;
+	}
+
+	public void drawPreview(Matrix4f view, GpuBuffer instances, int count)
+	{
+		if (!this.previewActive) throw new IllegalStateException("Preview draw outside target");
+		this.drawClouds(view, instances, count, 1, 0, 0, 0);
+	}
+
+	public void finishPreview()
+	{
+		if (!this.previewActive || this.transparencyActive) throw new IllegalStateException("Incomplete preview pass");
 		RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
-		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
-		var compiledPreviewPipeline = RenderSystem.getCompiledPipeline(this.previewPipeline);
-		AbstractTexture bayer = Minecraft.getInstance().getTextureManager().getTexture(BAYER_TEXTURE);
-		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.preview", main.getColorTextureView(),
-				Optional.empty(), main.getDepthTextureView(), OptionalDouble.empty());
-		pass.setPipeline(compiledPreviewPipeline);
-		RenderSystem.bindDefaultUniforms(pass);
-		// (hoisted above the render pass: 26.3 forbids texture uploads inside one)
-		pass.setUniform("BayerMatrixSampler", bayer.getTextureView(), bayer.getSampler());
-		pass.setUniform("DynamicTransforms", transforms);
-		pass.setUniform("CloudLighting", this.lightingUbo);
-		pass.setUniform("CloudShading", this.shadingUbo);
-		pass.setUniform("CloudFog", this.fogUbo);
-		// The preview box lives in box space (no world scroll) — zero offset.
-		pass.setUniform("CloudOffset", this.offsetZero);
-		pass.setUniform("CloudClip", this.clipDisabled);
-		pass.setVertexBuffer(0, this.quadVertexBuffer.slice());
-		pass.setVertexBuffer(1, instances.slice());
-		pass.setIndexBuffer(this.quadIndexBuffer, IndexType.SHORT);
-		pass.drawIndexed(QUAD_INDICES.length, count, 0, 0, 0);
-		pass.close();
+		var compiled = RenderSystem.getCompiledPipeline(this.previewCompositePipeline);
+		try (RenderPass pass = this.device.createCommandEncoder().createRenderPass(
+				() -> "simpleclouds.originalPreviewComposite", main.getColorTextureView(), Optional.empty()))
+		{
+			pass.setPipeline(compiled);
+			pass.setUniform("CloudsTexture", this.previewTarget.getColorTextureView(), this.stormLinearSampler);
+			pass.setUniform("AccumTexture", this.transparencyAccum.getColorTextureView(), this.stormLinearSampler);
+			pass.setUniform("RevealageTexture", this.transparencyRevealage.getColorTextureView(), this.stormLinearSampler);
+			pass.setVertexBuffer(0, this.triangleBuffer.slice()); pass.draw(3, 1, 0, 0);
+		}
+	}
+
+	/** Restore world state even if generation, a draw or shader compilation fails. */
+	public RenderTarget resolvePreviewForExport()
+	{
+		RenderSystem.assertOnRenderThread();
+		if(this.previewActive || this.previewTarget==null || this.transparencyAccum==null)
+			throw new IllegalStateException("No completed cloud preview to export");
+		if(this.previewExportTarget==null || this.previewExportTarget.width!=this.previewTarget.width
+				|| this.previewExportTarget.height!=this.previewTarget.height) {
+			if(this.previewExportTarget!=null) this.previewExportTarget.destroyBuffers();
+			this.previewExportTarget=new com.mojang.blaze3d.pipeline.TextureTarget("simpleclouds.previewExport",
+					this.previewTarget.width,this.previewTarget.height,GpuFormat.RGBA8_UNORM,null);
+		}
+		try(RenderPass pass=this.device.createCommandEncoder().createRenderPass(
+				()->"simpleclouds.previewExportResolve",this.previewExportTarget.getColorTextureView(),Optional.empty())) {
+			// Write straight RGBA with no scene blend: includes both opaque and OIT
+			// clouds, preserves coverage alpha, excludes world terrain and GUI.
+			pass.setPipeline(RenderSystem.getCompiledPipeline(this.previewExportPipeline));
+			pass.setUniform("CloudsTexture",this.previewTarget.getColorTextureView(),this.stormLinearSampler);
+			pass.setUniform("AccumTexture",this.transparencyAccum.getColorTextureView(),this.stormLinearSampler);
+			pass.setUniform("RevealageTexture",this.transparencyRevealage.getColorTextureView(),this.stormLinearSampler);
+			pass.setVertexBuffer(0,this.triangleBuffer.slice()); pass.draw(3,1,0,0);
+		}
+		return this.previewExportTarget;
+	}
+	public com.mojang.renderpearl.api.textures.GpuSampler previewSampler() {return this.stormLinearSampler;}
+
+	public void abortPreview()
+	{
+		this.previewActive = false;
+		this.cloudDestination = null;
+		this.transparencyActive = false;
+		this.transparentDraws.clear();
 	}
 
 	/**
@@ -827,6 +1347,47 @@ public class CloudsDrawPipeline implements AutoCloseable
 	public record InstanceSource(GpuBuffer buffer, int count, CloudWorldCoverage.Rect clip)
 	{
 		public InstanceSource(GpuBuffer buffer, int count) { this(buffer, count, null); }
+	}
+
+	/** Original storm geometry volume; no CPU coverage map or geometry readback. */
+	public void renderOriginalStormShadow(double camX, double camZ, float cloudHeight,
+			float span, float angle, float windX, float windZ, List<InstanceSource> sources)
+	{
+		this.stormShadowRendered = false;
+		if (sources == null || sources.isEmpty()) return;
+		this.stormShadowView.set(OriginalStormShadowTransform.view(camX, camZ, cloudHeight, span, angle, windX, windZ));
+		this.stormShadowProjection.set(OriginalStormShadowTransform.projection(span));
+		this.stormShadowSlot = (this.stormShadowSlot + 1) % 3;
+		GpuBuffer matrices = this.stormShadowMatricesRing[this.stormShadowSlot];
+		GpuBuffer params = this.stormShadowParamsRing[this.stormShadowSlot];
+		try (var mapping = matrices.slice().map(true, false))
+		{
+			writeMatrix(mapping.data(), 0, this.stormShadowView);
+			writeMatrix(mapping.data(), 64, this.stormShadowProjection);
+		}
+		try (var mapping = params.slice().map(true, false))
+		{
+			mapping.data().putFloat(0, cloudHeight).putFloat(4, 1.0F / OriginalStormShadowTransform.CLOUD_SCALE);
+		}
+		var compiled = RenderSystem.getCompiledPipeline(this.stormShadowPipeline);
+		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
+		try (RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.originalStormShadow",
+				this.stormShadowTarget.getColorTextureView(), Optional.of(new org.joml.Vector4f()),
+				this.stormShadowTarget.getDepthTextureView(), OptionalDouble.of(1.0)))
+		{
+			pass.setPipeline(compiled);
+			pass.setUniform("ShadowMatrices", matrices);
+			pass.setUniform("StormShadow", params);
+			pass.setVertexBuffer(0, this.quadVertexBuffer.slice());
+			pass.setIndexBuffer(this.quadIndexBuffer, IndexType.SHORT);
+			for (InstanceSource source : sources)
+			{
+				if (source.count() <= 0) continue;
+				pass.setVertexBuffer(1, source.buffer().slice());
+				pass.drawIndexed(QUAD_INDICES.length, source.count(), 0, 0, 0);
+			}
+		}
+		this.stormShadowRendered = true;
 	}
 
 	public void renderCloudShadowMap(double camX, double camY, double camZ, float cloudHeight, List<InstanceSource> sources)
@@ -858,7 +1419,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 				0.0F, 1.0F, 0.0F, 0.0F,
 				(float) -camX, (float) -camZ, -lightPlane, 1.0F);
 		org.joml.Matrix4f shadowProj = new org.joml.Matrix4f().setOrtho(
-				-SHADOW_RADIUS, SHADOW_RADIUS, -SHADOW_RADIUS, SHADOW_RADIUS, 0.0F, depthFar);
+				-SHADOW_RADIUS, SHADOW_RADIUS, -SHADOW_RADIUS, SHADOW_RADIUS, 0.0F, depthFar, true); // 26.3 ZERO_TO_ONE clip control
 
 		this.shadowMatricesIdx = (this.shadowMatricesIdx + 1) % 3;
 		GpuBuffer matricesBuf = this.shadowMatricesRing[this.shadowMatricesIdx];
@@ -916,7 +1477,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 				0.0F, 1.0F, 0.0F, 0.0F,
 				(float) -camX, (float) -camZ, -lightPlane, 1.0F);
 		org.joml.Matrix4f shadowProj = new org.joml.Matrix4f().setOrtho(
-				-SHADOW_RADIUS, SHADOW_RADIUS, -SHADOW_RADIUS, SHADOW_RADIUS, 0.0F, depthFar);
+				-SHADOW_RADIUS, SHADOW_RADIUS, -SHADOW_RADIUS, SHADOW_RADIUS, 0.0F, depthFar, true); // 26.3 ZERO_TO_ONE clip control
 		org.joml.Matrix4f shadowViewProj = new org.joml.Matrix4f(shadowProj).mul(shadowView); // mul() mutates
 
 		this.terrainPassIdx = (this.terrainPassIdx + 1) % 3;
@@ -975,6 +1536,16 @@ public class CloudsDrawPipeline implements AutoCloseable
 	 */
 	public void drawLightning(Matrix4f viewMatrix, java.nio.ByteBuffer vertexData, int vertexCount)
 	{
+		this.drawLightning(viewMatrix, vertexData, vertexCount, null, null);
+	}
+
+	/**
+	 * @param dhDepth Distant Horizons LOD depth (reversed-Z), or null without DH
+	 * @param dhInverseProjection inverse of DH's projection for that depth, or null
+	 */
+	public void drawLightning(Matrix4f viewMatrix, java.nio.ByteBuffer vertexData, int vertexCount,
+			@Nullable GpuTextureView dhDepth, @Nullable Matrix4f dhInverseProjection)
+	{
 		if (vertexCount <= 0)
 			return;
 		if (vertexCount % 24 != 0)
@@ -991,12 +1562,24 @@ public class CloudsDrawPipeline implements AutoCloseable
 		RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
 		GpuTextureView colorView = main.getColorTextureView();
 		GpuTextureView depthView = main.getDepthTextureView();
+		boolean occlude = dhDepth != null && dhInverseProjection != null && dhInverseProjection.isFinite();
+		this.lightningOcclusionSlot = (this.lightningOcclusionSlot + 1) % 3;
+		GpuBuffer occlusion = this.lightningOcclusionRing[this.lightningOcclusionSlot];
+		try (var mapping = occlusion.slice().map(true, false))
+		{
+			(occlude ? dhInverseProjection : new Matrix4f()).get(0, mapping.data());
+			mapping.data().putFloat(64, occlude ? 1.0F : 0.0F).putFloat(68, 1.0F / main.width)
+					.putFloat(72, 1.0F / main.height).putFloat(76, 0.0F);
+		}
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
 		var compiledLightningPipeline = RenderSystem.getCompiledPipeline(this.lightningPipeline);
 		try (RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.lightning", colorView, Optional.empty(), depthView, OptionalDouble.empty())) {
 		pass.setPipeline(compiledLightningPipeline);
 		RenderSystem.bindDefaultUniforms(pass);
 		pass.setUniform("DynamicTransforms", transforms);
+		pass.setUniform("LightningOcclusion", occlusion);
+		// Never sampled while disabled; any depth view not attached to this pass will do.
+		pass.setUniform("DhDepthSampler", occlude ? dhDepth : this.stormShadowTarget.getDepthTextureView(), this.nearestSampler);
 		pass.setIndexBuffer(this.lightningIndexBuffer, IndexType.SHORT);
 		// Reuse the fixed index window for every section; never truncate a large bolt.
 		for (int first = 0; first < sections; first += 4096 / 24)
@@ -1019,42 +1602,27 @@ public class CloudsDrawPipeline implements AutoCloseable
 	 * @param shift the formation's time offset (shader's ShiftMovement)
 	 * @param densityMult 0..1 cross-fade multiplier (transition blending)
 	 * @param density the formation's base density
-	 * @param fovDeg the level projection's vertical FOV in degrees
-	 * @param aspect window aspect (width/height)
+	 * @param projection the active world projection, including camera effects
 	 */
-	public void drawAtmosphericClouds(org.joml.Matrix4f viewMatrix, org.joml.Matrix2f transform,
-			float shift, float densityMult, float density, float r, float g, float b, float a,
-			float fovDeg, float aspect)
+	public void drawAtmosphericClouds(org.joml.Matrix4f viewMatrix, org.joml.Matrix4f projection, org.joml.Matrix2f transform,
+			float shift, float densityMult, float density, float r, float g, float b, float a)
 	{
 		float cloudDensity = density * densityMult;
 		if (cloudDensity <= 0.01F)
+			return;
+		// During the first loading frame the extracted camera can still have a
+		// zero/uninitialised projection. Defer this optional layer until ready;
+		// do not poison the entire cloud render pass with an inverse of zero.
+		if (projection == null || !projection.isFinite() || !viewMatrix.isFinite()
+				|| projection.determinant() == 0.0F || viewMatrix.determinant() == 0.0F)
 			return;
 
 		this.atmosphericIdx = (this.atmosphericIdx + 1) % 3;
 		GpuBuffer buf = this.atmosphericRing[this.atmosphericIdx];
 		try (var view = buf.slice().map(true, false))
 		{
-			ByteBuffer data = view.data();
-			writeMatrix(data, 0, viewMatrix);
-			float[] t = new float[4];
-			transform.get(t);
-			data.putFloat(64, t[0]);  // m00
-			data.putFloat(68, t[1]);  // m01
-			data.putFloat(80, t[2]);  // m10 (second std140 column)
-			data.putFloat(84, t[3]);  // m11
-			data.putFloat(96, 128.0F);              // PixelScale
-			data.putFloat(100, 10000.0F);           // SpanX
-			data.putFloat(104, 10000.0F);           // SpanZ
-			data.putFloat(108, 30000.0F);           // MaxDist
-			data.putFloat(112, 10000.0F);           // FadeStart
-			data.putFloat(116, shift);             // ShiftMovement
-			data.putFloat(120, cloudDensity);      // CloudDensity
-			data.putFloat(124, (float) Math.tan(Math.toRadians(fovDeg) / 2.0));
-			data.putFloat(128, aspect);
-			data.putFloat(144, r);
-			data.putFloat(148, g);
-			data.putFloat(152, b);
-			data.putFloat(156, a);
+			OriginalAtmosphericUniforms.write(view.data(), projection, viewMatrix, transform,
+					shift, cloudDensity, r, g, b, a);
 		}
 
 		RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
@@ -1068,19 +1636,17 @@ public class CloudsDrawPipeline implements AutoCloseable
 			this.atmosphericSource = replacement;
 		}
 		encoder.copyTextureToTexture(main.getColorTexture(), this.atmosphericSource.getColorTexture(), 0,0,0,0,0, main.width,main.height);
-		// No depth attachment: the 3-arg overload (colour-only pass, empty
-		// DepthStencilState). The depth is SAMPLED instead: this runs after the whole
-		// level, so only sky pixels may get the layer -- the original drew it right
-		// after the sky, under terrain and clouds (Jan saw the streaks over blocks).
+		// Runs immediately after the sky. Subsequent terrain/cloud/weather draws
+		// occlude this layer naturally, matching original ordering without a mask.
 		var compiledAtmosphericPipeline = RenderSystem.getCompiledPipeline(this.atmosphericPipeline);
-		RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.atmosphericClouds", colorView, Optional.empty());
-		pass.setPipeline(compiledAtmosphericPipeline);
-		pass.setUniform("AtmosphericPass", buf);
-		pass.setUniform("DiffuseSampler", this.atmosphericSource.getColorTextureView(), this.nearestSampler);
-		pass.setUniform("DepthSampler", main.getDepthTextureView(), this.nearestSampler);
-		pass.setVertexBuffer(0, this.triangleBuffer.slice());
-		pass.draw(3, 1, 0, 0);
-		pass.close();
+		try (RenderPass pass = encoder.createRenderPass(() -> "simpleclouds.atmosphericClouds", colorView, Optional.empty()))
+		{
+			pass.setPipeline(compiledAtmosphericPipeline);
+			pass.setUniform("AtmosphericPass", buf);
+			pass.setUniform("DiffuseSampler", this.atmosphericSource.getColorTextureView(), this.nearestSampler);
+			pass.setVertexBuffer(0, this.triangleBuffer.slice());
+			pass.draw(3, 1, 0, 0);
+		}
 	}
 
 	/** Two reusable full-scene targets avoid screen-door holes while retaining
@@ -1178,6 +1744,7 @@ public class CloudsDrawPipeline implements AutoCloseable
 
 	private org.joml.Vector4f cloudModulator(float alpha)
 	{
+		if (this.previewActive) return null;
 		if (this.cloudR == 1.0F && this.cloudG == 1.0F && this.cloudB == 1.0F && alpha >= 1.0F)
 			return null;
 		return new org.joml.Vector4f(this.cloudR, this.cloudG, this.cloudB, alpha);
@@ -1186,6 +1753,10 @@ public class CloudsDrawPipeline implements AutoCloseable
 	/** Once per rendered frame, before the first transform of that frame. */
 	public void beginFrame()
 	{
+		this.cloudDepthReady=false;
+		this.worldFogDraws=0;
+		this.vanillaWeatherReplays=0;
+		this.stormFogReady=false;
 		this.ownTransforms.reset();
 		this.cellClips.reset();
 		this.peakFrameTransforms = Math.max(this.peakFrameTransforms, this.frameTransforms);
@@ -1239,21 +1810,43 @@ public class CloudsDrawPipeline implements AutoCloseable
 
 	public void close()
 	{
+		if (this.previewTarget != null) this.previewTarget.destroyBuffers();
+		if (this.previewExportTarget != null) this.previewExportTarget.destroyBuffers();
+		if (this.previewProjection != null) this.previewProjection.close();
+		if (this.previewFog != null) this.previewFog.close();
+		this.transparentDraws.clear();
+		if (this.transparencyAccum != null) this.transparencyAccum.destroyBuffers();
+		if (this.transparencyRevealage != null) this.transparencyRevealage.destroyBuffers();
 		if (this.atmosphericSource != null) this.atmosphericSource.destroyBuffers();
+		if (this.worldFogSource != null) this.worldFogSource.destroyBuffers();
+		if (this.cloudDepthSnapshot != null) this.cloudDepthSnapshot.destroyBuffers();
+		for(GpuBuffer buffer:this.worldFogRing) buffer.close();
 		if (this.transitionOld != null) this.transitionOld.destroyBuffers();
 		if (this.transitionNew != null) this.transitionNew.destroyBuffers();
 		// A1: the per-chunk instance GpuBuffers are owned by the renderer's chunk cache
 		// (freed there on eviction / shutdown).
 		this.triangleBuffer.close();
-		this.stormFogUbo.close();
+		for (GpuBuffer b : this.stormFogRing) b.close();
+		for (GpuBuffer b : this.dhDepthMergeRing) b.close();
+		if (this.dhDepthScratch != null) this.dhDepthScratch.destroyBuffers();
+		if (this.dhDepthBackup != null) this.dhDepthBackup.destroyBuffers();
+		for (GpuBuffer b : this.lightningOcclusionRing) b.close();
+		if (this.originalStormFogTarget != null) this.originalStormFogTarget.destroyBuffers();
+		if (this.stormBlurMain != null) this.stormBlurMain.destroyBuffers();
+		if (this.stormBlurSwap != null) this.stormBlurSwap.destroyBuffers();
+		for (GpuBuffer b : this.stormBlurRing) b.close();
+		this.stormLinearSampler.close();
 		this.shadowTarget.destroyBuffers();
+		this.stormShadowTarget.destroyBuffers();
+		for (GpuBuffer b : this.stormShadowMatricesRing) b.close();
+		for (GpuBuffer b : this.stormShadowParamsRing) b.close();
 		for (GpuBuffer b : this.shadowMatricesRing)
 			b.close();
 		for (GpuBuffer b : this.terrainPassRing)
 			b.close();
 		for (GpuBuffer b : this.atmosphericRing)
 			b.close();
-		for (GpuBuffer b : this.useNormalsRing)
+		for (GpuBuffer b : this.shadingModes)
 			b.close();
 		if (this.lightningVertexBuffer != null)
 			this.lightningVertexBuffer.close();
@@ -1261,6 +1854,8 @@ public class CloudsDrawPipeline implements AutoCloseable
 		this.nearestSampler.close();
 		this.quadVertexBuffer.close();
 		this.quadIndexBuffer.close();
+		this.cubeVertexBuffer.close();
+		this.cubeIndexBuffer.close();
 		this.lightingUbo.close();
 		this.shadingUbo.close();
 		this.fogUbo.close();

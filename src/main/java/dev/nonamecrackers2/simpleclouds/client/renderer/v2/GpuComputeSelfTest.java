@@ -46,9 +46,9 @@ public final class GpuComputeSelfTest {
         try (var gpu=new GpuCloudGeneration()) {
             if(!gpu.init()) throw new IllegalStateException("GPU test unavailable on " + GpuCloudGeneration.backendClassName());
             for(float offset:new float[]{10,-10,10,.4f}) {
-                var layer=new CpuCloudGenerator.NoiseLayer(32,offset,16,16,16,8,0,1);
+                var layer=new CloudGenerationInputs.NoiseLayer(32,offset,16,16,16,8,0,1);
                 int count=gpu.generate(-8,0,-8,8,32,8,0,0,0,10000,20000,List.of(layer),0);
-                var cpu=new CpuCloudGenerator(List.of(new CpuCloudGenerator.CloudLayerGroup(List.of(layer),0,false,0,0,1)));
+                var cpu=new CpuCloudGenerator(List.of(new CloudGenerationInputs.CloudLayerGroup(List.of(layer),0,false,0,0,1)));
                 var result=cpu.generate(-8,0,-8,8,32,8,8,0,0,0,0,1,0,
                     ByteBuffer.allocateDirect(4*1024*1024).order(ByteOrder.nativeOrder()),
                     ByteBuffer.allocateDirect(4*1024*1024).order(ByteOrder.nativeOrder()),
@@ -87,8 +87,8 @@ public final class GpuComputeSelfTest {
                 GpuCloudGeneration.LOGGER.info("[GPU-SELFTEST] offset={} faces={} exact CPU match, dispatch+readback={} us",
                     offset,count,gpu.lastGenerateNanos()/1000);
             }
-            var deltaGroup = new CpuCloudGenerator.CloudLayerGroup(List.of(
-                new CpuCloudGenerator.NoiseLayer(32,.4f,16,16,16,8,0,1)),0,false,0,0,1);
+            var deltaGroup = new CloudGenerationInputs.CloudLayerGroup(List.of(
+                new CloudGenerationInputs.NoiseLayer(32,.4f,16,16,16,8,0,1)),0,false,0,0,1);
             gpu.generate(-8,0,-8,8,32,8,0,0,0,10000,20000,deltaGroup,
                 new GpuCloudGeneration.Sampling(1,0,0,0,0,0));
             int oldCount = gpu.instanceCount();
@@ -158,9 +158,9 @@ public final class GpuComputeSelfTest {
             boolean refused=false;
             for(int lod:new int[]{1,2,4,8}) for(int phase=0;phase<2;phase++) {
                 var layers=List.of(
-                    new CpuCloudGenerator.NoiseLayer(64,.35f,17,19,13,12,0,1),
-                    new CpuCloudGenerator.NoiseLayer(32,.1f,11,13,19,8,8,.4f));
-                var group=new CpuCloudGenerator.CloudLayerGroup(layers,.4f,true,.7f,8,24);
+                    new CloudGenerationInputs.NoiseLayer(64,.35f,17,19,13,12,0,1),
+                    new CloudGenerationInputs.NoiseLayer(32,.1f,11,13,19,8,8,.4f));
+                var group=new CloudGenerationInputs.CloudLayerGroup(layers,.4f,true,.7f,8,24);
                 float sx=phase==0?.375f:-2.125f, sy=phase==0?-.25f:.75f, sz=phase==0?1.125f:-1.625f;
                 float wiggle=(sx+sy+sz)/5, base=phase==0?128:-32;
                 int x0=-8*lod,x1=8*lod;
@@ -185,9 +185,9 @@ public final class GpuComputeSelfTest {
             // The world renderer must pass its configured cutoff to BOTH backends.
             // Zero is a strong boundary fixture: opaque faces stay unchanged while
             // transparent edge cubes disappear entirely.
-            var cutoffGroup=new CpuCloudGenerator.CloudLayerGroup(List.of(
-                new CpuCloudGenerator.NoiseLayer(64,.35f,17,19,13,12,0,1),
-                new CpuCloudGenerator.NoiseLayer(32,.1f,11,13,19,8,8,.4f)),
+            var cutoffGroup=new CloudGenerationInputs.CloudLayerGroup(List.of(
+                new CloudGenerationInputs.NoiseLayer(64,.35f,17,19,13,12,0,1),
+                new CloudGenerationInputs.NoiseLayer(32,.1f,11,13,19,8,8,.4f)),
                 .4f,true,.7f,8,24);
             gpu.generate(-8,0,-8,8,64,8,0,0,0,10000,20000,cutoffGroup,
                 new GpuCloudGeneration.Sampling(1,128,.375f,-.25f,1.125f,.25f,0));
@@ -203,11 +203,11 @@ public final class GpuComputeSelfTest {
             if(!before.equals(state())) throw new AssertionError("Cutoff compute changed render state");
             for(int lod:new int[]{1,2,4}) {
                 var groups=List.of(
-                    new CpuCloudGenerator.CloudLayerGroup(List.of(new CpuCloudGenerator.NoiseLayer(64,10,16,16,16,8,0,1)),0,false,0,0,1),
-                    new CpuCloudGenerator.CloudLayerGroup(List.of(new CpuCloudGenerator.NoiseLayer(64,10,16,16,16,8,0,1)),0,true,.6f,0,64));
+                    new CloudGenerationInputs.CloudLayerGroup(List.of(new CloudGenerationInputs.NoiseLayer(64,10,16,16,16,8,0,1)),0,false,0,0,1),
+                    new CloudGenerationInputs.CloudLayerGroup(List.of(new CloudGenerationInputs.NoiseLayer(64,10,16,16,16,8,0,1)),0,true,.6f,0,64));
                 var regions=List.of(
-                    new CpuCloudGenerator.RegionMask(-4*lod,0,4*lod,1,0,0,1,0),
-                    new CpuCloudGenerator.RegionMask(4*lod,0,4*lod,1,0,0,1,1));
+                    new CloudGenerationInputs.RegionMask(-4*lod,0,4*lod,1,0,0,1,0),
+                    new CloudGenerationInputs.RegionMask(4*lod,0,4*lod,1,0,0,1,1));
                 int x0=-8*lod,x1=8*lod,z0=-8*lod,z1=8*lod;
                 gpu.generateRegions(x0,0,z0,x1,32,z1,0,0,0,groups,regions,
                     new GpuCloudGeneration.Sampling(lod,128,0,0,0,0));
@@ -264,13 +264,13 @@ public final class GpuComputeSelfTest {
                     GpuCloudGeneration.LOGGER.info("[GPU-SELFTEST] counts-only region LOD=1 faces={} without geometry readback",gpu.instanceCount());
                 }
             }
-            var emptyGroup=new CpuCloudGenerator.CloudLayerGroup(
-                List.of(new CpuCloudGenerator.NoiseLayer(64,10,16,16,16,8,0,1)),0,false,0,0,1);
+            var emptyGroup=new CloudGenerationInputs.CloudLayerGroup(
+                List.of(new CloudGenerationInputs.NoiseLayer(64,10,16,16,16,8,0,1)),0,false,0,0,1);
             if(gpu.generateRegions(-8,0,-8,8,32,8,0,0,0,List.of(emptyGroup),List.of(),
                     new GpuCloudGeneration.Sampling(1,128,0,0,0,0))!=0)
                 throw new AssertionError("Empty masked world rendered clouds");
             if(!before.equals(state())) throw new AssertionError("Region compute changed texture or pixel-store state");
-            var partialRegions=List.of(new CpuCloudGenerator.RegionMask(0,0,300,1,0,0,1,0));
+            var partialRegions=List.of(new CloudGenerationInputs.RegionMask(0,0,300,1,0,0,1,0));
             gpu.generateRegions(-8,0,-8,9,12,11,0,0,0,List.of(emptyGroup),partialRegions,
                 new GpuCloudGeneration.Sampling(1,128,0,0,0,0));
             var partialCpu=new CpuCloudGenerator(List.of(emptyGroup));
@@ -284,14 +284,14 @@ public final class GpuComputeSelfTest {
             if(!before.equals(state())) throw new AssertionError("Partial workgroup changed caller state");
             GpuCloudGeneration.LOGGER.info("[GPU-SELFTEST] partial workgroups 17x12x19 faces={} exact CPU parity",gpu.instanceCount());
             var weatherGroups=List.of(
-                new CpuCloudGenerator.CloudLayerGroup(List.of(
-                    new CpuCloudGenerator.NoiseLayer(64,.4f,17,19,13,12,0,1),
-                    new CpuCloudGenerator.NoiseLayer(32,.1f,11,13,19,8,8,.4f)),.4f,true,.7f,8,24),
-                new CpuCloudGenerator.CloudLayerGroup(List.of(
-                    new CpuCloudGenerator.NoiseLayer(64,.6f,15,17,21,10,0,1)),.3f,false,.4f,4,20));
+                new CloudGenerationInputs.CloudLayerGroup(List.of(
+                    new CloudGenerationInputs.NoiseLayer(64,.4f,17,19,13,12,0,1),
+                    new CloudGenerationInputs.NoiseLayer(32,.1f,11,13,19,8,8,.4f)),.4f,true,.7f,8,24),
+                new CloudGenerationInputs.CloudLayerGroup(List.of(
+                    new CloudGenerationInputs.NoiseLayer(64,.6f,15,17,21,10,0,1)),.3f,false,.4f,4,20));
             var weatherRegions=List.of(
-                new CpuCloudGenerator.RegionMask(-3,0,280,32,8,-8,32,0),
-                new CpuCloudGenerator.RegionMask(3,0,280,28,-10,10,28,1));
+                new CloudGenerationInputs.RegionMask(-3,0,280,32,8,-8,32,0),
+                new CloudGenerationInputs.RegionMask(3,0,280,28,-10,10,28,1));
             for(int lod:new int[]{1,2,4}) {
                 var sample=new GpuCloudGeneration.Sampling(lod,128,.375f,-.25f,1.125f,.25f);
                 gpu.generateRegions(-8*lod,0,-8*lod,8*lod,64,8*lod,0,0,0,
@@ -392,9 +392,9 @@ public final class GpuComputeSelfTest {
             if(!before.equals(state())) throw new AssertionError("Counts-only full chunk changed caller state");
             GpuCloudGeneration.LOGGER.info("[GPU-SELFTEST] counts-only full chunk opaque={} transparent={} exact CPU parity without geometry readback",
                 gpu.instanceCount(),gpu.transparentInstanceCount());
-            var tallGroup=new CpuCloudGenerator.CloudLayerGroup(List.of(
-                new CpuCloudGenerator.NoiseLayer(32,10,16,16,16,8,0,1)),0,false,0,0,1);
-            var tallRegions=List.of(new CpuCloudGenerator.RegionMask(0,0,300,1,0,0,1,0));
+            var tallGroup=new CloudGenerationInputs.CloudLayerGroup(List.of(
+                new CloudGenerationInputs.NoiseLayer(32,10,16,16,16,8,0,1)),0,false,0,0,1);
+            var tallRegions=List.of(new CloudGenerationInputs.RegionMask(0,0,300,1,0,0,1,0));
             gpu.generateRegions(-16,0,-16,16,256,16,0,0,0,List.of(tallGroup),tallRegions,
                 new GpuCloudGeneration.Sampling(1,128,0,0,0,0));
             var tallCpu=new CpuCloudGenerator(List.of(tallGroup));
@@ -408,7 +408,7 @@ public final class GpuComputeSelfTest {
             assertFaceIds(gpu,-16,0,-16,16,256,16,1,128);
             if(!before.equals(state())) throw new AssertionError("Tall GPU dispatch changed caller state");
             GpuCloudGeneration.LOGGER.info("[GPU-SELFTEST] tall 32x256x32 cells opaque={} exact CPU parity",gpu.instanceCount());
-            try { gpu.generate(0,0,0,1024,1024,1024,0,0,0,0,1,List.of(new CpuCloudGenerator.NoiseLayer(32,1,16,16,16,8,0,1)),0); }
+            try { gpu.generate(0,0,0,1024,1024,1024,0,0,0,0,1,List.of(new CloudGenerationInputs.NoiseLayer(32,1,16,16,16,8,0,1)),0); }
             catch(IllegalArgumentException expected) { refused=true; }
             if(!refused) throw new AssertionError("Unsafe volume accepted");
         }
@@ -530,9 +530,9 @@ public final class GpuComputeSelfTest {
     }
 
     private static void assertTransparentDelta(GpuCloudGeneration gpu) {
-        var group = new CpuCloudGenerator.CloudLayerGroup(List.of(
-            new CpuCloudGenerator.NoiseLayer(64,.35f,17,19,13,12,0,1),
-            new CpuCloudGenerator.NoiseLayer(32,.1f,11,13,19,8,8,.4f)),.4f,true,.7f,8,24);
+        var group = new CloudGenerationInputs.CloudLayerGroup(List.of(
+            new CloudGenerationInputs.NoiseLayer(64,.35f,17,19,13,12,0,1),
+            new CloudGenerationInputs.NoiseLayer(32,.1f,11,13,19,8,8,.4f)),.4f,true,.7f,8,24);
         int stride=CloudVertexFormat.BYTES_PER_INSTANCE_ALPHA;
         gpu.generate(-8,0,-8,8,64,8,0,0,0,10000,20000,group,
             new GpuCloudGeneration.Sampling(1,128,.375f,-.25f,1.125f,.25f));

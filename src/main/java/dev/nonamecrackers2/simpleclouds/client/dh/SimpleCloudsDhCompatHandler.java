@@ -4,6 +4,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.joml.Matrix4f;
 
+import com.mojang.renderpearl.api.textures.GpuTextureView;
 import com.seibel.distanthorizons.api.DhApi;
 import com.seibel.distanthorizons.api.interfaces.config.IDhApiConfigValue;
 import com.seibel.distanthorizons.api.methods.events.DhApiEventRegister;
@@ -40,11 +41,35 @@ public class SimpleCloudsDhCompatHandler
 	private static int dhFramebufferId;
 	
 	private static boolean passComplete;
-	
+	// Survives the end-of-pass reset: lightning is drawn after DH's pass has finished.
+	private static Matrix4f lastDhInverseProjMat;
+
 	public static void _updateCachedDhState(Matrix4f projMat, Matrix4f modelViewMat)
 	{
 		dhProjMat = projMat;
 		dhModelViewMat = modelViewMat;
+		if (projMat != null && projMat.determinant() != 0.0F)
+			lastDhInverseProjMat = new Matrix4f(projMat).invert();
+	}
+
+	/** Inverse of the last DH projection, for reconstructing distances from DH depth; null before DH has rendered. */
+	public static Matrix4f _getLastDhInverseProjMat()
+	{
+		return lastDhInverseProjMat;
+	}
+
+	/** DH's LOD depth texture view for this frame, or null when DH has not created it. */
+	public static GpuTextureView _getDhDepthView()
+	{
+		var proxy = DhApi.Delayed.renderProxy;
+		if (proxy == null)
+			return null;
+		var result = proxy.getDhDepthTextureBlazeWrapper();
+		if (!result.success || result.payload == null)
+			return null;
+		// BlazeTextureWrapper unwraps to { GpuTexture, GpuTextureView, GpuSampler }.
+		return result.payload.getWrappedMcObject() instanceof Object[] parts && parts.length > 1
+				&& parts[1] instanceof GpuTextureView view ? view : null;
 	}
 	
 	public static void _updateDhFramebufferId(int id)

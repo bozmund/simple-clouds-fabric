@@ -172,14 +172,14 @@ public final class GpuCloudGeneration implements AutoCloseable {
     /** Validated bounded dispatch; shader guards partial workgroups. */
     public int generate(int x0, int y0, int z0, int x1, int y1, int z1,
             float centerX, float centerY, float centerZ, float fadeStart, float fadeEnd,
-            List<CpuCloudGenerator.NoiseLayer> layers, float transparencyFade) {
+            List<CloudGenerationInputs.NoiseLayer> layers, float transparencyFade) {
         return generate(x0,y0,z0,x1,y1,z1,centerX,centerY,centerZ,fadeStart,fadeEnd,
-            new CpuCloudGenerator.CloudLayerGroup(layers,transparencyFade,false,0,0,1),new Sampling(1,0,0,0,0,0));
+            new CloudGenerationInputs.CloudLayerGroup(layers,transparencyFade,false,0,0,1),new Sampling(1,0,0,0,0,0));
     }
 
     public int generate(int x0, int y0, int z0, int x1, int y1, int z1,
             float centerX, float centerY, float centerZ, float fadeStart, float fadeEnd,
-            CpuCloudGenerator.CloudLayerGroup group, Sampling sampling) {
+            CloudGenerationInputs.CloudLayerGroup group, Sampling sampling) {
         return generateInternal(x0,y0,z0,x1,y1,z1,centerX,centerY,centerZ,fadeStart,fadeEnd,
             List.of(group),List.of(),false,sampling,false);
     }
@@ -187,7 +187,7 @@ public final class GpuCloudGeneration implements AutoCloseable {
     /** Opt-in region compute path. No world renderer calls this until parity and scheduling are validated. */
     public int generateRegions(int x0,int y0,int z0,int x1,int y1,int z1,
             float centerX,float centerY,float centerZ,
-            List<CpuCloudGenerator.CloudLayerGroup> groups,List<CpuCloudGenerator.RegionMask> regions,Sampling sampling) {
+            List<CloudGenerationInputs.CloudLayerGroup> groups,List<CloudGenerationInputs.RegionMask> regions,Sampling sampling) {
         return generateInternal(x0,y0,z0,x1,y1,z1,centerX,centerY,centerZ,0,1,
             groups,regions,true,sampling,false);
     }
@@ -195,7 +195,7 @@ public final class GpuCloudGeneration implements AutoCloseable {
     /** Starts one bounded region dispatch without reading back its output this frame. */
     public void submitRegions(int x0,int y0,int z0,int x1,int y1,int z1,
             float centerX,float centerY,float centerZ,
-            List<CpuCloudGenerator.CloudLayerGroup> groups,List<CpuCloudGenerator.RegionMask> regions,Sampling sampling) {
+            List<CloudGenerationInputs.CloudLayerGroup> groups,List<CloudGenerationInputs.RegionMask> regions,Sampling sampling) {
         generateInternal(x0,y0,z0,x1,y1,z1,centerX,centerY,centerZ,0,1,
             groups,regions,true,sampling,true);
     }
@@ -233,7 +233,7 @@ public final class GpuCloudGeneration implements AutoCloseable {
 
     private int generateInternal(int x0, int y0, int z0, int x1, int y1, int z1,
             float centerX, float centerY, float centerZ, float fadeStart, float fadeEnd,
-            List<CpuCloudGenerator.CloudLayerGroup> groups,List<CpuCloudGenerator.RegionMask> regions,
+            List<CloudGenerationInputs.CloudLayerGroup> groups,List<CloudGenerationInputs.RegionMask> regions,
             boolean regionMode, Sampling sampling, boolean deferReadback) {
         RenderSystem.assertOnRenderThread();
         if(pendingFence!=0) throw new IllegalStateException("Previous GPU dispatch is still pending");
@@ -401,7 +401,7 @@ public final class GpuCloudGeneration implements AutoCloseable {
             return instanceCount;
     }
 
-    private void uploadRegions(int x0,int z0,int dx,int dz,int lod,List<CpuCloudGenerator.RegionMask> regions) {
+    private void uploadRegions(int x0,int z0,int dx,int dz,int lod,List<CloudGenerationInputs.RegionMask> regions) {
         int width=dx+2,height=dz+2;
         if(regionTexture==0 || regionTextureWidth!=width || regionTextureHeight!=height) {
             if(regionTexture!=0) GL11.glDeleteTextures(regionTexture);

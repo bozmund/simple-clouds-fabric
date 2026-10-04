@@ -75,6 +75,7 @@ public class SimpleCloudsClientEvents
 
 	public static void register()
 	{
+		dev.nonamecrackers2.simpleclouds.client.command.ClientCloudCommandAccess.register();
 		dev.nonamecrackers2.simpleclouds.client.config.SimpleCloudsClientConfigListeners.registerListener();
 		// Config presets (1.20.1 registerClientPresets port): must be registered
 		// and gathered before any ConfigScreen is constructed (the constructor
@@ -135,20 +136,41 @@ public class SimpleCloudsClientEvents
 
 		// Client-side data: the ClientCloudManager (created in the ClientLevel constructor)
 		// requires the client spawning manager to exist, so initialize it at mod init.
-		// Note: we do NOT register the client data managers as reload listeners here —
-		// they share Fabric listener IDs with the server-side ones registered in
-		// SimpleCloudsEvents, which would collide in integrated (singleplayer) sessions.
-		// In practice the client receives cloud types via join sync (SendCloudTypesPacket).
+		// Separate CLIENT_RESOURCES and SERVER_DATA managers each own their IDs;
+		// the original client presets must load even before a world/server exists.
 		ClientSideCloudSpawningManager.optionalInitializeOnClient(
 				ClientSideCloudTypeManager.getInstance().getClientSideDataManager());
+		var clientResources=net.fabricmc.fabric.api.resource.ResourceManagerHelper.get(net.minecraft.server.packs.PackType.CLIENT_RESOURCES);
+		clientResources.registerReloadListener(ClientSideCloudTypeManager.getInstance().getClientSideDataManager());
+		clientResources.registerReloadListener(ClientSideCloudSpawningManager.getClientInstance());
+		clientResources.registerReloadListener(new dev.nonamecrackers2.simpleclouds.client.renderer.CloudRendererReloadListener());
 
 		// Client tick: lazily initialize the renderer on the first tick (the Vulkan device
 		// and resources are guaranteed up by then) and tick world effects. The old
 		// LevelRenderer.tick hook (baseTick/tick) is gone in 26.2, so drive it here.
+		ClientTickEvents.START_CLIENT_TICK.register(client -> {
+			SimpleCloudsConfigLoader.loadClientConfigs();
+			dev.nonamecrackers2.simpleclouds.client.compat.WeatherLibraryControl.tick();
+		});
 		ClientTickEvents.END_CLIENT_TICK.register(client ->
 		{
+			dev.nonamecrackers2.simpleclouds.client.dh.DhChatDispatch.tick(client);
+			dev.nonamecrackers2.simpleclouds.client.compat.VoiceChatDispatch.tick(client);
+			dev.nonamecrackers2.simpleclouds.client.compat.OwnedWeatherParticles.tick(client.level);
+            dev.nonamecrackers2.simpleclouds.client.compat.ParticleWeatherBridge.tick(client.level);
 			// Load client + common configs once (guarded by isLoaded inside the loader).
 			SimpleCloudsConfigLoader.loadClientConfigs();
+			dev.nonamecrackers2.simpleclouds.client.DedicatedClientProbe.tick(client);
+			dev.nonamecrackers2.simpleclouds.client.SleepClientProbe.tick(client);
+			dev.nonamecrackers2.simpleclouds.client.PreviewRuntimeProbe.tickClient(client);
+			dev.nonamecrackers2.simpleclouds.client.WeatherIntegrationProbe.tick(client);
+			dev.nonamecrackers2.simpleclouds.client.CounterSnapshotRuntimeProbe.tick(client);
+			dev.nonamecrackers2.simpleclouds.client.DhFogLifecycleProbe.tick(client);
+			dev.nonamecrackers2.simpleclouds.client.NativeBiomeWeatherProbe.tick(client);
+			dev.nonamecrackers2.simpleclouds.client.compat.ImmersiveDhFogLifecycle.tick(client);
+            dev.nonamecrackers2.simpleclouds.client.FullPackWeatherLifecycleProbe.tick(client);
+			dev.nonamecrackers2.simpleclouds.client.CloudImageApiProbe.tick(client);
+			dev.nonamecrackers2.simpleclouds.client.ParticleGpuAppendFixture.tick(client);
 
 			// Step 3 (superflat reference scenes): on the title screen (no level yet),
 			// create + load the superflat world if the devshot request carries

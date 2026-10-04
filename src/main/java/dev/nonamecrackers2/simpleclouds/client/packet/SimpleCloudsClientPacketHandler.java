@@ -7,6 +7,8 @@ import org.apache.logging.log4j.Logger;
 
 import dev.nonamecrackers2.simpleclouds.client.cloud.ClientSideCloudTypeManager;
 import dev.nonamecrackers2.simpleclouds.client.config.SimpleCloudsClientConfigListeners;
+import dev.nonamecrackers2.simpleclouds.client.config.ClientServerConfig;
+import dev.nonamecrackers2.simpleclouds.common.packet.impl.SendServerConfigPacket;
 import dev.nonamecrackers2.simpleclouds.client.mesh.generator.MultiRegionCloudMeshGenerator;
 import dev.nonamecrackers2.simpleclouds.client.renderer.SimpleCloudsRenderer;
 import dev.nonamecrackers2.simpleclouds.client.world.ClientCloudManager;
@@ -66,6 +68,22 @@ public class SimpleCloudsClientPacketHandler
 		//LOGGER.debug("Updating client-side cloud manager");
 	}
 
+	public static void handleSendServerConfigPacket(SendServerConfigPacket packet)
+	{
+		var previous = ClientServerConfig.get();
+		ClientServerConfig.receive(packet.config());
+		LOGGER.debug("Received server cloud config: mode={} dimensions={} blacklist={}",
+				packet.config().cloudMode(), packet.config().dimensionWhitelist().size(), packet.config().whitelistAsBlacklist());
+		// Initial config may precede manager sync. Its full-sync handler handles
+		// reinitialization then; later mode changes also need a different generator.
+		if (previous != null && previous.cloudMode() != packet.config().cloudMode())
+			SimpleCloudsRenderer.getOptionalInstance().ifPresent(SimpleCloudsRenderer::requestReload);
+		else if (previous == null && ClientCloudManager.isAvailableServerSide())
+			SimpleCloudsRenderer.getOptionalInstance().ifPresent(renderer -> {
+				if (renderer.needsReinitialization()) renderer.requestReload();
+			});
+	}
+
 	public static void handleUpdateCloudManagerPacket(UpdateCloudManagerPacket packet, CloudManager<ClientLevel> manager)
 	{
 		if (TRACE_VISUAL_CHURN)
@@ -109,7 +127,7 @@ public class SimpleCloudsClientPacketHandler
 		manager.setSeed(packet.seed());
 		manager.getCloudGenerator().setClouds(packet.cloudRegions());
 		SimpleCloudsRenderer renderer = SimpleCloudsRenderer.getInstance();
-		if (SimpleCloudsConfig.SERVER_SPEC.isLoaded())
+		if (ClientServerConfig.get() != null || SimpleCloudsConfig.SERVER_SPEC.isLoaded())
 		{
 			if (renderer.needsReinitialization())
 			{
@@ -119,7 +137,7 @@ public class SimpleCloudsClientPacketHandler
 		}
 		else
 		{
-			LOGGER.warn("Server spec is not loaded");
+			LOGGER.warn("Server configuration has not been synchronized");
 		}
 		LOGGER.debug("Received cloud manager info");
 	}

@@ -1,5 +1,7 @@
 package dev.nonamecrackers2.simpleclouds.client;
 
+import dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudGenerationInputs;
+
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -94,6 +96,8 @@ public final class DevShot
 	private static boolean checked;
 	private static boolean done;
 	private static boolean testNight;
+	private static boolean matchedMotion;
+	private static boolean matchedMotionStarted;
 	private static boolean syncProbe; // SYNCPROBE token: inject one known periodic angle correction
 	private static int framesLeft;
 	private static int framesTotal;
@@ -114,6 +118,10 @@ public final class DevShot
 	// known distances: 200/1500/3000/8000 blocks north of the camera).
 	private static boolean hold; // HOLD token (step 7): after the last view, keep the run active on that view so FPSLOG can sample one scene
 	private static boolean storm;
+	// BOLTFAR: low forced strikes beyond the vanilla render distance (DH terrain occlusion).
+	private static boolean boltFar;
+	private static int boltFarIdx;
+	private static long boltFarNextTick = -1;
 	// Repeatable STORM scene (Claude, 2026-09-15): the fixture spawns at full size and barely
 	// shrinks during a run (a region ages 20x faster while no spawn region sees it, so with the
 	// old 72000-tick lifetime S3/S4/S5 showed a different storm size in every run), and the
@@ -133,6 +141,206 @@ public final class DevShot
 	// the storm cell center, pitch -20).
 	private static boolean flatWorld;
 	private static boolean flatCreateAttempted;
+	private static boolean nativeSnowScratchWorld;
+	private static boolean weatherCycleScratchWorld;
+	private static java.util.List<net.minecraft.nbt.CompoundTag> weatherCycleClouds;
+	private static boolean weatherCycleClearVerified, weatherCycleWetVerified;
+	private static boolean pauseScratchWorld, pauseRequested, pauseVerified, pauseResumeVerified;
+	private static boolean waterScratchWorld, waterAboveVerified, waterInsideVerified, waterExitVerified;
+	private static boolean roofScratchWorld, roofOpenVerified, roofClosedVerified, roofExitVerified;
+	private static boolean glassRoofScratchWorld;
+	private static net.minecraft.world.level.block.Block roofBlock() {
+		return glassRoofScratchWorld ? net.minecraft.world.level.block.Blocks.GLASS : net.minecraft.world.level.block.Blocks.STONE;
+	}
+	private static int roofX,roofY,roofZ;
+	private static boolean roofProbeEnabled() {
+		return roofScratchWorld && "1".equals(System.getenv("SIMPLECLOUDS_DEV"))
+				&& "1".equals(System.getenv("SIMPLECLOUDS_TEST_ROOF"));
+	}
+	private static void initializeExistingRoofProbe(Minecraft mc) {
+		if(!"1".equals(System.getenv("SIMPLECLOUDS_DEV")) || !"1".equals(System.getenv("SIMPLECLOUDS_TEST_ROOF"))) return;
+		var server=mc.getSingleplayerServer();
+		if(server==null) return;
+		String existing=server.getWorldData().getLevelName();
+		glassRoofScratchWorld=existing.equals("CodexGlassRoof20261001");
+		roofScratchWorld=existing.equals("CodexRoof20261001") || existing.equals("CodexSnowRoof20261001") || glassRoofScratchWorld;
+	}
+	private static void setRoof(Minecraft mc,boolean covered) {
+		var server=mc.getSingleplayerServer();
+		if(server==null) throw new IllegalStateException("Roof fixture requires integrated server");
+		server.execute(() -> {
+			try {
+				Exception commandFailure=null;
+				try {
+					server.getCommands().getDispatcher().execute("fill "+(roofX-32)+" "+roofY+" "+(roofZ-32)+" "+(roofX+32)+" "+roofY+" "+(roofZ+32)+" minecraft:"+(covered?(glassRoofScratchWorld?"glass":"stone"):"air"),server.createCommandSourceStack());
+				} catch(com.mojang.brigadier.exceptions.CommandSyntaxException failure) { commandFailure=failure; }
+				// fill reports an error when an already-correct plane changes zero
+				// blocks. Accept that only after checking every authoritative block.
+				for(int x=roofX-32;x<=roofX+32;x++) for(int z=roofZ-32;z<=roofZ+32;z++) {
+					var state=server.overworld().getBlockState(new net.minecraft.core.BlockPos(x,roofY,z));
+					if(covered ? !state.is(roofBlock()) : !state.isAir()) {
+						if(commandFailure!=null) throw commandFailure;
+						throw new IllegalStateException("Roof plane does not match requested state");
+					}
+				}
+				LOGGER.info("[ROOF-PROBE] authoritative covered={} planeY={} material={}",covered,roofY,glassRoofScratchWorld?"glass":"stone");
+			} catch(Exception e) { LOGGER.error("Simple Clouds ERROR: roof fixture preparation failed",e); }
+		});
+	}
+	private static void prepareRoofProbe(Minecraft mc) {
+		if(!roofProbeEnabled()) return;
+		View view=currentView(); view.y=68; view.pitch=-35;
+		roofX=(int)Math.floor(view.x); roofY=74; roofZ=(int)Math.floor(view.z);
+		syncViewToServer(mc,view); setRoof(mc,false);
+	}
+	private static void changeRoofProbe(Minecraft mc,int frame) {
+		if(!roofProbeEnabled()) return;
+		if(frame==21) setRoof(mc,true);
+		if(frame==61) setRoof(mc,false);
+	}
+	private static void observeRoofProbe(Minecraft mc,int frame) {
+		if(!roofProbeEnabled()) return;
+		int[] probe=SimpleCloudsRenderer.getInstance().getWorldEffectsManager().precipitationCollisionProbe(roofY);
+		if(frame>=10 && frame<=20 && !roofOpenVerified && probe[0]>0 && probe[1]>0) {
+			roofOpenVerified=true; LOGGER.info("[ROOF-PROBE] open verified quads={} belowPlane={} rain={} snow={}",probe[0],probe[1],probe[2],probe[3]);
+			NativeRainRoofProbe.verify(mc,roofY,false,"open");
+		}
+		if(frame>=30 && frame<=50 && !roofClosedVerified && probe[0]>0 && probe[1]==0
+				&& mc.level.getBlockState(new net.minecraft.core.BlockPos(roofX,roofY,roofZ)).is(roofBlock())) {
+			roofClosedVerified=true; LOGGER.info("[ROOF-PROBE] shelter collision verified quads={} belowPlane=0 rain={} snow={}",probe[0],probe[2],probe[3]);
+			NativeRainRoofProbe.verify(mc,roofY,true,"covered");
+		}
+		if(frame>=70 && !roofExitVerified && probe[0]>0 && probe[1]>0
+				&& mc.level.getBlockState(new net.minecraft.core.BlockPos(roofX,roofY,roofZ)).isAir()) {
+			roofExitVerified=true; LOGGER.info("[ROOF-PROBE] exit verified quads={} belowPlane={} rain={} snow={}",probe[0],probe[1],probe[2],probe[3]);
+			NativeRainRoofProbe.verify(mc,roofY,false,"reopened");
+		}
+	}
+	private static boolean waterProbeEnabled() {
+		return waterScratchWorld && "1".equals(System.getenv("SIMPLECLOUDS_DEV"))
+				&& "1".equals(System.getenv("SIMPLECLOUDS_TEST_WATER"));
+	}
+	private static void prepareWaterProbe(Minecraft mc) {
+		if(!waterProbeEnabled()) return;
+		View view=currentView();
+		int x=(int)Math.floor(view.x), z=(int)Math.floor(view.z);
+		view.y=68; view.pitch=30;
+		syncViewToServer(mc,view);
+		var server=mc.getSingleplayerServer();
+		if(server==null) throw new IllegalStateException("Water fixture requires integrated server");
+		server.execute(() -> {
+			try {
+				var source=server.createCommandSourceStack();
+				var commands=server.getCommands().getDispatcher();
+				commands.execute("fill "+(x-13)+" 57 "+(z-13)+" "+(x+13)+" 65 "+(z+13)+" minecraft:glass",source);
+				commands.execute("fill "+(x-12)+" 58 "+(z-12)+" "+(x+12)+" 64 "+(z+12)+" minecraft:water",source);
+				commands.execute("fill "+(x-12)+" 65 "+(z-12)+" "+(x+12)+" 65 "+(z+12)+" minecraft:air",source);
+				LOGGER.info("[WATER-PROBE] authoritative pool center={},{} surfaceY=65",x,z);
+			} catch(Exception e) { LOGGER.error("Simple Clouds ERROR: water fixture preparation failed",e); }
+		});
+	}
+	private static void changeWaterProbe(Minecraft mc,int frame) {
+		if(!waterProbeEnabled() || (frame!=21 && frame!=61)) return;
+		View view=currentView(); view.y=frame==21 ? 60 : 68; view.pitch=frame==21 ? -35 : 30;
+		syncViewToServer(mc,view);
+	}
+	private static void observeWaterProbe(Minecraft mc,int frame) {
+		if(!waterProbeEnabled()) return;
+		var fluid=mc.gameRenderer.mainCamera().getFluidInCamera();
+		int fog=SimpleCloudsRenderer.getInstance().getWorldFogDrawsThisFrame();
+		if(frame>=10 && frame<=20 && !waterAboveVerified && fluid==net.minecraft.world.level.material.FogType.NONE && fog==1) {
+			waterAboveVerified=true; LOGGER.info("[WATER-PROBE] above verified fluid={} fogPasses={}",fluid,fog);
+		}
+		if(frame>=30 && frame<=50 && !waterInsideVerified && fluid==net.minecraft.world.level.material.FogType.WATER && fog==0) {
+			waterInsideVerified=true; LOGGER.info("[WATER-PROBE] submerged verified fluid={} fogPasses={}",fluid,fog);
+		}
+		if(frame>=70 && !waterExitVerified && fluid==net.minecraft.world.level.material.FogType.NONE && fog==1) {
+			waterExitVerified=true; LOGGER.info("[WATER-PROBE] exit verified fluid={} fogPasses={}",fluid,fog);
+		}
+	}
+	private static int pausedFrames;
+	private static long pauseRequestedAt, pauseBaselineAt, pausedTick, pausedCycles;
+	private static float pausedScrollX, pausedScrollY, pausedScrollZ;
+	private static boolean pauseProbeEnabled() {
+		return pauseScratchWorld && "1".equals(System.getenv("SIMPLECLOUDS_DEV"))
+				&& "1".equals(System.getenv("SIMPLECLOUDS_TEST_PAUSE"));
+	}
+	/** Real Esc menu and integrated-server pause; never mutates normal play worlds. */
+	private static void observePauseFrame(Minecraft mc) {
+		if (!pauseProbeEnabled() || !pauseRequested || pauseVerified || mc.level==null) return;
+		var server=mc.getSingleplayerServer();
+		if (!mc.isPaused() || server==null || !server.isPaused()) {
+			if(System.nanoTime()-pauseRequestedAt>5_000_000_000L)
+				throw new IllegalStateException("Pause fixture did not enter actual singleplayer pause");
+			return;
+		}
+		var manager=CloudManager.get(mc.level);
+		var renderer=SimpleCloudsRenderer.getInstance();
+		if (++pausedFrames==3) {
+			pauseBaselineAt=System.nanoTime(); pausedTick=mc.level.getGameTime();
+			pausedCycles=renderer.getPublishedBatchCount();
+			pausedScrollX=manager.getScrollX(); pausedScrollY=manager.getScrollY(); pausedScrollZ=manager.getScrollZ();
+			shoot(mc,"devshot-PAUSE-START.png");
+		}
+		if(pausedFrames<3) return;
+		if(mc.level.getGameTime()!=pausedTick || renderer.getPublishedBatchCount()!=pausedCycles
+				|| manager.getScrollX()!=pausedScrollX || manager.getScrollY()!=pausedScrollY || manager.getScrollZ()!=pausedScrollZ)
+			throw new IllegalStateException("Simple Clouds ERROR: world/scroll/GPU generation advanced while paused");
+		if(pausedFrames>=120 && System.nanoTime()-pauseBaselineAt>=1_500_000_000L) {
+			shoot(mc,"devshot-PAUSE.png");
+			pauseVerified=true;
+			LOGGER.info("[PAUSE-PROBE] frozen verified frames={} elapsedNs={} tick={} cycles={} scroll={},{},{}",pausedFrames,
+					System.nanoTime()-pauseBaselineAt,pausedTick,pausedCycles,pausedScrollX,pausedScrollY,pausedScrollZ);
+			mc.setScreenAndShow(null);
+		}
+	}
+	private static void changePauseProbe(Minecraft mc,int frame) {
+		if(!pauseProbeEnabled()) return;
+		if(frame==21 && !pauseRequested) {
+			pauseRequested=true; pauseRequestedAt=System.nanoTime(); mc.pauseGame(false);
+		}
+		if(frame>=30 && pauseVerified && !pauseResumeVerified && !mc.isPaused()
+				&& mc.level.getGameTime()>pausedTick && SimpleCloudsRenderer.getInstance().getPublishedBatchCount()>pausedCycles) {
+			pauseResumeVerified=true;
+			LOGGER.info("[PAUSE-PROBE] resume verified tick={} cycles={}",mc.level.getGameTime(),SimpleCloudsRenderer.getInstance().getPublishedBatchCount());
+		}
+	}
+
+	private static boolean weatherCycleEnabled() {
+		return weatherCycleScratchWorld && "1".equals(System.getenv("SIMPLECLOUDS_DEV"))
+				&& "1".equals(System.getenv("SIMPLECLOUDS_TEST_WEATHER_CYCLE"));
+	}
+	private static void changeWeatherCycle(Minecraft mc, int frame) {
+		if (!weatherCycleEnabled() || (frame!=21 && frame!=61)) return;
+		var manager=CloudManager.get(mc.level);
+		var server=mc.getSingleplayerServer();
+		if (manager==null || server==null) return;
+		if (frame==21) weatherCycleClouds=manager.getClouds().stream().map(CloudRegion::toTag).toList();
+		var tags=frame==21 ? java.util.List.<net.minecraft.nbt.CompoundTag>of() : weatherCycleClouds;
+		if(tags==null) return;
+		manager.getCloudGenerator().setClouds(tags.stream().map(CloudRegion::new).toList());
+		server.execute(() -> {
+			var authoritative=CloudManager.get(server.overworld());
+			if(authoritative==null) return;
+			authoritative.getCloudGenerator().setClouds(tags.stream().map(CloudRegion::new).toList());
+			if(authoritative instanceof dev.nonamecrackers2.simpleclouds.common.world.ServerCloudManager serverManager)
+				serverManager.queueSync(dev.nonamecrackers2.simpleclouds.common.world.SyncType.CLOUD_FORMATIONS);
+			LOGGER.info("[WEATHER-CYCLE] authoritative phase={} formations={}",frame==21?"clear":"wet",tags.size());
+		});
+	}
+	private static void observeWeatherCycle(Minecraft mc, int frame) {
+		if(!weatherCycleEnabled()) return;
+		float rain=mc.level.getRainLevel(1.0F);
+		int replays=SimpleCloudsRenderer.getInstance().getDeferredWeatherReplaysThisFrame();
+		if(frame>=30 && frame<=50 && !weatherCycleClearVerified && rain==0 && replays==0) {
+			weatherCycleClearVerified=true;
+			LOGGER.info("[WEATHER-CYCLE] clear verified rain={} replays={}",rain,replays);
+		}
+		if(frame>=70 && !weatherCycleWetVerified && rain>0 && replays>0) {
+			weatherCycleWetVerified=true;
+			LOGGER.info("[WEATHER-CYCLE] wet verified rain={} replays={}",rain,replays);
+		}
+	}
 	private static boolean understorm;
 	private static int seqFrame; // 1 = file1 taken, then 2..seqCount
 	private static long seqNextFrameTick = -1;
@@ -285,7 +493,7 @@ public final class DevShot
 				mc.gameRenderer.mainCamera().position().z);
 			float[] candX = new float[] { 0.0F, 10.0F, -10.0F, 20.0F, -20.0F, 14.0F, -14.0F, 26.0F };
 			float[] candZ = new float[] { 0.0F, 10.0F, -10.0F, -20.0F, 20.0F, 14.0F, -14.0F, -26.0F };
-			List<CpuCloudGenerator.CloudLayerGroup> groups = SimpleCloudsRenderer.dataDrivenGroups();
+			List<CloudGenerationInputs.CloudLayerGroup> groups = SimpleCloudsRenderer.dataDrivenGroups();
 			Map<net.minecraft.resources.Identifier, Integer> typeToGroup = SimpleCloudsRenderer.dataDrivenGroupIndices();
 			int best = 0;
 			int bestCount = 0; // 0 (empty noise field) is never acceptable
@@ -408,7 +616,7 @@ public final class DevShot
 			}
 			float px = (float) (mc.player.getX() / 8.0);
 			float pz = (float) (mc.player.getZ() / 8.0);
-			List<CpuCloudGenerator.CloudLayerGroup> groups = SimpleCloudsRenderer.dataDrivenGroups();
+			List<CloudGenerationInputs.CloudLayerGroup> groups = SimpleCloudsRenderer.dataDrivenGroups();
 			Map<net.minecraft.resources.Identifier, Integer> typeToGroup = SimpleCloudsRenderer.dataDrivenGroupIndices();
 			float[] dxs = { -30.0F, -10.0F, 10.0F, 30.0F };
 			float[] dzs = { -280.0F, -260.0F, -240.0F, -220.0F };
@@ -527,7 +735,7 @@ public final class DevShot
 		// clouds in view are then the single formation placed overhead of the
 		// player, and no storm fog grays the frame.
 		Map<net.minecraft.resources.Identifier, Integer> typeToGroup = SimpleCloudsRenderer.dataDrivenGroupIndices();
-		List<CpuCloudGenerator.CloudLayerGroup> groups = SimpleCloudsRenderer.dataDrivenGroups();
+		List<CloudGenerationInputs.CloudLayerGroup> groups = SimpleCloudsRenderer.dataDrivenGroups();
 		CloudType[] types = ClientSideCloudTypeManager.getInstance().getIndexedCloudTypes();
 		float px = (float) (mc.player.getX() / 8.0);
 		float pz = (float) (mc.player.getZ() / 8.0);
@@ -585,7 +793,7 @@ public final class DevShot
 	 * by a single test formation of the given type) and returns the opaque instance
 	 * count — i.e. how dense the world-fixed noise field is there for that type.
 	 */
-	private static int probeDensity(List<CpuCloudGenerator.CloudLayerGroup> allGroups,
+	private static int probeDensity(List<CloudGenerationInputs.CloudLayerGroup> allGroups,
 			Map<net.minecraft.resources.Identifier, Integer> typeToGroup, CloudType type, float cx, float cz)
 	{
 		Integer group = typeToGroup.get(type.id());
@@ -597,7 +805,7 @@ public final class DevShot
 			// Radius 2000 so the 16-unit probe window sits at the CENTER of the mask:
 			// REGION_EDGE_FADE_FACTOR is 0.005, so a small radius puts the whole window
 			// in the edge falloff (up to -5 noise) and everything is culled.
-			gen.setRegions(List.of(new CpuCloudGenerator.RegionMask(cx, cz, 2000.0F, 1.0F, 0.0F, 0.0F, 1.0F, group)));
+			gen.setRegions(List.of(new CloudGenerationInputs.RegionMask(cx, cz, 2000.0F, 1.0F, 0.0F, 0.0F, 1.0F, group)));
 			float[] oc = new float[1];
 			float[] tc = new float[1];
 			float[] sc = new float[1];
@@ -763,6 +971,14 @@ public final class DevShot
 	/** Probes the terrain, builds the queued views, and moves to the first one. */
 	private static void setupViews(Minecraft mc)
 	{
+		if (matchedMotion)
+		{
+			mc.getWindow().setWindowed(1280,720);
+			mc.options.fov().set(70);
+			boolean uncapped = "1".equals(System.getenv("SIMPLECLOUDS_TEST_UNCAPPED"));
+			mc.options.framerateLimit().set(uncapped ? 260 : 60);
+			LOGGER.info("[DEVSHOT] MATCHSHAKE window=1280x720 fov=70 fpsCap={} camera=0,80,0 yaw=0 pitch=-35; test only", uncapped ? 260 : 60);
+		}
 		viewSetupDone = true;
 		fillWaitDone = false;
 		if (!noSpawn)
@@ -809,10 +1025,10 @@ public final class DevShot
 			}
 			else if (v.file1.startsWith("devshot-SHAKE-"))
 			{
-				v.x = v.gridCross ? Math.floor(beach[0] / 256.0) * 256.0 - 2.0 : beach[0];
-				v.y = beach[1] + 24.0;
-				v.z = beach[2];
-				v.yaw = (float)beach[3];
+				v.x = matchedMotion ? 0 : v.gridCross ? Math.floor(beach[0] / 256.0) * 256.0 - 2.0 : beach[0];
+				v.y = matchedMotion ? 80 : beach[1] + 24.0;
+				v.z = matchedMotion ? 0 : beach[2];
+				v.yaw = matchedMotion ? 0 : (float)beach[3];
 			}
 			else if (v.file1.endsWith("D.png"))
 			{
@@ -869,7 +1085,14 @@ public final class DevShot
 			for (View v : views)
 			{
 				String f = v.file1;
-				if (f.endsWith("S1.png") || f.endsWith("S5-01.png"))
+				if (f.endsWith("BF-01.png"))
+				{
+					// Ground + 1 at the probe origin; the beach fallback height can sit inside hills.
+					v.x = beach[0];
+					v.z = beach[2];
+					v.groundAtTarget = true;
+				}
+				else if (f.endsWith("S1.png") || f.endsWith("S5-01.png"))
 				{
 					// Ground level at the probe origin, facing north (the near edge
 					// of the formation is ~400 blocks away, inside the 32-chunk
@@ -905,6 +1128,22 @@ public final class DevShot
 					v.x = (stormCxCu + 250.0) * 8.0;
 					v.y = 2600.0;
 					v.z = stormCzCu * 8.0;
+				}
+				else if (f.endsWith("IC.png") || f.endsWith("IC2.png") || f.endsWith("IC3.png")
+						|| f.endsWith("IC4.png") || f.endsWith("IC5.png") || f.contains("devshot-ICL"))
+				{
+					// IC3 = IC2 without the DH depth merge (same scene, A/B within one run).
+					dev.nonamecrackers2.simpleclouds.client.renderer.SimpleCloudsRenderer.devDisableDhMerge = f.endsWith("IC3.png") || f.endsWith("IC5.png");
+					v.x = stormCxCu * 8.0;
+					v.y = f.endsWith("ICL1.png") ? 300.0 : f.endsWith("ICL2.png") ? 500.0 : f.endsWith("ICL3.png") ? 700.0 : 900.0;
+					v.z = stormCzCu * 8.0;
+				}
+				else if (f.endsWith("SF1.png") || f.endsWith("SF2.png") || f.endsWith("SF3.png"))
+				{
+					// STORMFAR: ground level 1500 / 3000 blocks south of the S1 spot.
+					v.x = px;
+					v.z = pz + (f.endsWith("SF1.png") ? 1500.0 : 3000.0);
+					v.groundAtTarget = true;
 				}
 				else if (f.endsWith("U-01.png"))
 				{
@@ -967,6 +1206,37 @@ public final class DevShot
 		}
 		if (!noSpawn)
 			syncTestCloudScene(mc, fastClouds);
+		prepareWaterProbe(mc);
+		prepareRoofProbe(mc);
+		if (nativeSnowScratchWorld && "1".equals(System.getenv("SIMPLECLOUDS_TEST_SNOW")))
+		{
+			View snowView=views.stream().filter(v -> v.file1.startsWith("devshot-SHAKE-")).findFirst().orElseThrow();
+			int centerX=Mth.floor(snowView.x), centerZ=Mth.floor(snowView.z);
+			var server = mc.getSingleplayerServer();
+			if (server != null) server.execute(() -> {
+				try {
+					// Vanilla limits BLOCK volume, not the number of quart-biome cells.
+					// Load only these nine disposable fixture chunks, then use small slices.
+					for(int x=(centerX-16)>>4;x<=(centerX+16)>>4;x++)
+						for(int z=(centerZ-16)>>4;z<=(centerZ+16)>>4;z++) server.overworld().getChunk(x,z);
+					int changed=0;
+					for(int bottom=-64;bottom<=120;bottom+=16) {
+						String command="fillbiome "+(centerX-16)+" "+bottom+" "+(centerZ-16)+" "+(centerX+16)+" "+Math.min(bottom+15,120)+" "+(centerZ+16)+" minecraft:snowy_plains";
+						try {
+							changed+=server.getCommands().getDispatcher().execute(command,server.createCommandSourceStack().withSuppressedOutput());
+						} catch(com.mojang.brigadier.exceptions.CommandSyntaxException error) {
+							// A previously prepared slice is already correct. No other
+							// permission, volume, loading or syntax error is accepted.
+							if(error.getType()!=net.minecraft.server.commands.FillBiomeCommand.ERROR_NO_BIOMES_SET) throw error;
+						}
+					}
+					LOGGER.info("[DEVSHOT] native snow fixture changed={}",changed);
+				} catch(com.mojang.brigadier.exceptions.CommandSyntaxException error) {
+					LOGGER.error("[DEVSHOT] native snow fixture preparation failed",error);
+				}
+				LOGGER.info("[DEVSHOT] native snow fixture center={},{} biome={}", centerX,centerZ,server.overworld().getBiome(new net.minecraft.core.BlockPos(centerX,80,centerZ)).unwrapKey());
+			});
+		}
 	}
 
 	private static void syncTestCloudScene(Minecraft mc, boolean fastClouds)
@@ -976,7 +1246,7 @@ public final class DevShot
 		if (clientManager == null || testServer == null) return;
 		var formationTags = clientManager.getClouds().stream().map(CloudRegion::toTag).toList();
 		float angle = clientManager.getScrollAngle();
-		float speed = fastClouds ? 32.0F : 1.0F;
+		float speed = matchedMotion ? 0.0F : fastClouds ? 32.0F : 1.0F;
 		dev.nonamecrackers2.simpleclouds.common.config.SimpleCloudsConfig.CLIENT.speedModifier.set((double)speed);
 		clientManager.setCloudSpeed(speed);
 		testServer.execute(() -> {
@@ -994,6 +1264,23 @@ public final class DevShot
 		});
 	}
 
+	private static void releaseMatchedMotion(Minecraft mc)
+	{
+		if (matchedMotionStarted) return;
+		matchedMotionStarted = true;
+		dev.nonamecrackers2.simpleclouds.common.config.SimpleCloudsConfig.CLIENT.speedModifier.set(1.0);
+		CloudManager.get(mc.level).setCloudSpeed(1.0F);
+		var server = mc.getSingleplayerServer();
+		if (server == null) throw new IllegalStateException("Matched motion requires integrated server");
+		server.execute(() -> {
+			var manager = CloudManager.get(server.overworld());
+			manager.setCloudSpeed(1.0F);
+			if (manager instanceof dev.nonamecrackers2.simpleclouds.common.world.ServerCloudManager sm)
+				sm.queueSync(dev.nonamecrackers2.simpleclouds.common.world.SyncType.BASE_PROPERTIES);
+		});
+		LOGGER.info("[DEVSHOT] matched motion released at first capture; phase={}",CloudManager.get(mc.level).getScrollAngle());
+	}
+
 	private static int viewIdx = -1;
 	private static long viewGenerationBase;
 	private static long viewStartedTick;
@@ -1007,6 +1294,20 @@ public final class DevShot
 		terrainWaitStartNs = System.nanoTime();
 		terrainReadyLogged = false;
 		View v = views.get(idx);
+		if (v.file1.startsWith("devshot-JAN-"))
+		{
+			// CAM A/B at one real-save spot: A all on, B no storm fog, C no screen-space world
+			// fog, D no transparent cubes pass, E no terrain cloud shadows, F clouds only.
+			char k = v.file1.charAt("devshot-JAN-".length());
+			boolean all = k == 'F';
+			dev.nonamecrackers2.simpleclouds.client.renderer.SimpleCloudsRenderer.setStormFogEnabled(!(k == 'B' || all));
+			dev.nonamecrackers2.simpleclouds.common.config.SimpleCloudsConfig.CLIENT.fogMode.set(k == 'C' || all
+					? dev.nonamecrackers2.simpleclouds.client.world.FogRenderMode.VANILLA
+					: dev.nonamecrackers2.simpleclouds.client.world.FogRenderMode.SCREEN_SPACE);
+			dev.nonamecrackers2.simpleclouds.client.renderer.SimpleCloudsRenderer.devSkipTransparency = k == 'D' || all;
+			dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudsDrawPipeline.TERRAIN_SHADOWS_ENABLED = !(k == 'E' || all);
+			LOGGER.info("[DEVSHOT] {}: component A/B case {}", v.file1, k);
+		}
 		shotAngle = v.pitch;
 		shotYaw = v.yaw;
 		if (v.pin)
@@ -1074,10 +1375,13 @@ public final class DevShot
 		String[] parts = content.split("\\s+");
 		String name = null;
 		long seed = 0;
+		boolean normalTerrain = false;
 		for (int i = 0; i + 2 < parts.length; i++)
 		{
-			if (parts[i].equalsIgnoreCase("CREATEFLAT"))
+			// CREATEWORLD: same as CREATEFLAT but with the default (normal terrain) preset.
+			if (parts[i].equalsIgnoreCase("CREATEFLAT") || parts[i].equalsIgnoreCase("CREATEWORLD"))
 			{
+				normalTerrain = parts[i].equalsIgnoreCase("CREATEWORLD");
 				name = parts[i + 1];
 				try
 				{
@@ -1089,16 +1393,25 @@ public final class DevShot
 		if (name == null)
 			return;
 		flatCreateAttempted = true;
-		flatWorld = true;
-		LOGGER.info("[DEVSHOT] CREATEFLAT: creating superflat world '{}' seed {} (26.2 createFreshLevel)", name, seed);
+		nativeSnowScratchWorld = name.equals("CodexNativeSnow20261001") || name.equals("CodexSnowRoof20261001");
+		weatherCycleScratchWorld = name.equals("CodexWeatherCycle20261001");
+		pauseScratchWorld = name.equals("CodexPause20261001");
+		waterScratchWorld = name.equals("CodexWater20261001");
+		glassRoofScratchWorld = name.equals("CodexGlassRoof20261001");
+		roofScratchWorld = name.equals("CodexRoof20261001") || name.equals("CodexSnowRoof20261001") || glassRoofScratchWorld;
+		flatWorld = !normalTerrain;
+		LOGGER.info("[DEVSHOT] {}: creating {} world '{}' seed {} (26.2 createFreshLevel)",
+				normalTerrain ? "CREATEWORLD" : "CREATEFLAT", normalTerrain ? "normal" : "superflat", name, seed);
 		try
 		{
 			LevelSettings settings = new LevelSettings(name, GameType.CREATIVE,
 					LevelSettings.DifficultySettings.DEFAULT, true, WorldDataConfiguration.DEFAULT);
-			WorldOptions options = new WorldOptions(seed, false, false);
+			WorldOptions options = new WorldOptions(seed, normalTerrain, false);
+			// FLAT: thin default superflat (surface y=-60) matching the 1.20.1 reference.
+			var preset = normalTerrain ? WorldPresets.NORMAL : WorldPresets.FLAT;
 			Function<HolderLookup.Provider, WorldDimensions> provider = registries -> registries
 					.lookupOrThrow(Registries.WORLD_PRESET)
-					.getOrThrow(WorldPresets.FLAT) // thin default superflat (1 bedrock + 2 dirt + 1 grass, surface y=-60) to match the 1.20.1 reference, NOT the thick FLAT_ALL_DIMENSIONS
+					.getOrThrow(preset)
 					.value()
 					.createWorldDimensions();
 			Screen parent = mc.gui.screen();
@@ -1113,6 +1426,8 @@ public final class DevShot
 
 	public static void onWorldFrame()
 	{
+		if ("1".equals(System.getenv("SIMPLECLOUDS_DEV"))) initializeExistingRoofProbe(Minecraft.getInstance());
+		if (PreviewRuntimeProbe.onWorldFrame()) return;
 		// A stale request file must never turn a normal play session into a test.
 		// Only the isolated developer launcher explicitly opts into automation.
 		if (!"1".equals(System.getenv("SIMPLECLOUDS_DEV")))
@@ -1121,9 +1436,14 @@ public final class DevShot
 			return;
 		Minecraft mc = Minecraft.getInstance();
 		Path request = mc.gameDirectory.toPath().resolve("devshot.request");
+		ServerConfigCommandProbe.tick(mc);
+		observePauseFrame(mc);
 		if (!checked)
 		{
 			checked = true;
+			dev.nonamecrackers2.simpleclouds.client.renderer.PipelineLifecycleProbe.install();
+			if ("1".equals(System.getenv("SIMPLECLOUDS_TEST_VANILLA_WEATHER")))
+				dev.nonamecrackers2.simpleclouds.common.config.SimpleCloudsConfig.CLIENT.renderCustomRain.set(false);
 			if (!Files.exists(request))
 			{
 				done = true;
@@ -1143,6 +1463,8 @@ public final class DevShot
 				framesLeft = Integer.parseInt(parts[0]);
 				framesTotal = framesLeft;
 				testNight = false;
+				matchedMotion = false;
+				matchedMotionStarted = false;
 				int numericSeen = 0;
 				for (int i2 = 1; i2 < parts.length; i2++)
 				{
@@ -1251,6 +1573,13 @@ public final class DevShot
 						SimpleCloudsRenderer.setDevStormFogDebug(1);
 						continue;
 					}
+					if (part.length() == 9 && part.regionMatches(true, 0, "FOGDEBUG", 0, 8)
+							&& part.charAt(8) >= '2' && part.charAt(8) <= '4')
+					{
+						// FOGDEBUG2 density, FOGDEBUG3 first fogged point, FOGDEBUG4 its shadow lookup.
+						SimpleCloudsRenderer.setDevStormFogDebug(part.charAt(8) - '0');
+						continue;
+					}
 					if (part.equalsIgnoreCase("NOFLASH"))
 					{
 						// Plan item 3: storm fog without bolt light (A/B against the default).
@@ -1335,6 +1664,79 @@ public final class DevShot
 						views.add(s5);
 						continue;
 					}
+					if (part.equalsIgnoreCase("BOLTFAR"))
+					{
+						// Bolts 1200/2500 blocks north starting 30 blocks above the camera, so
+						// their branches reach below the ground there (DH LOD terrain, beyond
+						// the vanilla render distance) - Jan's 2026-10-02 "lightning through
+						// the ground" report.
+						storm = true;
+						boltFar = true;
+						View b = new View("devshot-BF-01.png", 0.0F, 180.0F, 0, 0, 0);
+						b.seqCount = 24;
+						b.seqInterval = 5;
+						views.add(b);
+						continue;
+					}
+					if (part.equalsIgnoreCase("NODHBOLT"))
+					{
+						// A/B: disable the DH depth occlusion of lightning for this run.
+						dev.nonamecrackers2.simpleclouds.client.renderer.WorldEffects.devDisableDhLightningOcclusion = true;
+						continue;
+					}
+					if (part.equalsIgnoreCase("VANILLAFOG"))
+					{
+						// A/B: vanilla world fog instead of the screen-space pass for this run.
+						dev.nonamecrackers2.simpleclouds.common.config.SimpleCloudsConfig.CLIENT.fogMode.set(dev.nonamecrackers2.simpleclouds.client.world.FogRenderMode.VANILLA);
+						continue;
+					}
+					if (part.equalsIgnoreCase("NOCULL"))
+					{
+						// A/B: disable cloud frustum culling for this run.
+						dev.nonamecrackers2.simpleclouds.common.config.SimpleCloudsConfig.CLIENT.frustumCulling.set(false);
+						continue;
+					}
+					if (part.regionMatches(true, 0, "CAM:", 0, 4))
+					{
+						// CAM:x,y,z,pitch,yaw -- a fixed spot from a real save, transparency on then off.
+						String[] c = part.substring(4).split(",");
+						double cx = Double.parseDouble(c[0]), cy = Double.parseDouble(c[1]), cz = Double.parseDouble(c[2]);
+						float cp = Float.parseFloat(c[3]), cyaw = Float.parseFloat(c[4]);
+						for (String name : new String[] {"devshot-JAN-A.png", "devshot-JAN-B.png", "devshot-JAN-C.png", "devshot-JAN-D.png", "devshot-JAN-E.png", "devshot-JAN-F.png"})
+						{
+							View cam = new View(name, cp, cyaw, cx, cy, cz);
+							cam.pin = true;
+							views.add(cam);
+						}
+						continue;
+					}
+					if (part.equalsIgnoreCase("INCLOUD"))
+					{
+						// Inside the storm tower (y=900 at the cell centre), 30 degrees down.
+						storm = true;
+						views.add(new View("devshot-IC.png", 30.0F, 180.0F, 0, 0, 0));
+						views.add(new View("devshot-IC2.png", 0.0F, 180.0F, 0, 0, 0));
+						views.add(new View("devshot-IC3.png", 0.0F, 180.0F, 0, 0, 0));
+						// Looking down from inside the tower (Jan's 2026-10-04 screenshot), merge on / off.
+						views.add(new View("devshot-IC4.png", 75.0F, 180.0F, 0, 0, 0));
+						views.add(new View("devshot-IC5.png", 75.0F, 180.0F, 0, 0, 0));
+						// Low inside the storm, 45 degrees down (Jan's 2026-10-04 10:04 screenshot).
+						views.add(new View("devshot-ICL1.png", 45.0F, 180.0F, 0, 0, 0));
+						views.add(new View("devshot-ICL2.png", 45.0F, 180.0F, 0, 0, 0));
+						views.add(new View("devshot-ICL3.png", 45.0F, 180.0F, 0, 0, 0));
+						continue;
+					}
+					if (part.equalsIgnoreCase("STORMFAR"))
+					{
+						// Same storm fixture seen from far outside on the ground (Jan's
+						// 2026-10-02 report: rain shadow drawn over distant storm clouds).
+						// Mirrored in the 1.20.1 RefDevShot for a matched comparison.
+						storm = true;
+						views.add(new View("devshot-SF1.png", 0.0F, 180.0F, 0, 0, 0));
+						views.add(new View("devshot-SF2.png", 0.0F, 180.0F, 0, 0, 0));
+						views.add(new View("devshot-SF3.png", -10.0F, 180.0F, 0, 0, 0));
+						continue;
+					}
 					if (part.equalsIgnoreCase("UNDERSTORM"))
 					{
 						// Step 3: same storm fixture as STORM, but a single view U-01 from
@@ -1348,19 +1750,24 @@ public final class DevShot
 						views.add(u1);
 						continue;
 					}
-					if (part.equalsIgnoreCase("GRIDCROSS") || part.equalsIgnoreCase("GRIDSTORM") || part.equalsIgnoreCase("GRIDRAPID"))
+					if (part.equalsIgnoreCase("GRIDCROSS") || part.equalsIgnoreCase("GRIDSTORM") || part.equalsIgnoreCase("GRIDRAPID") || part.equalsIgnoreCase("RAINREPLAY"))
 					{
+						// Explicit diagnostic replay uses the fixed MATCHSHAKE origin.
+						// GRIDSTORM otherwise advances to the next negative cell every
+						// launch because the scratch world persists its previous player X.
+						if (part.equalsIgnoreCase("RAINREPLAY")) matchedMotion = true;
 						View motion = new View("devshot-SHAKE-01.png", -35.0F, 0.0F, 0, 0, 0);
 						motion.gridCross = true;
-						motion.gridStorm = part.equalsIgnoreCase("GRIDSTORM");
+						motion.gridStorm = part.equalsIgnoreCase("GRIDSTORM") || part.equalsIgnoreCase("RAINREPLAY");
 						motion.gridRapid = part.equalsIgnoreCase("GRIDRAPID");
 						motion.seqCount = 81;
 						motion.seqInterval = 2;
 						views.add(motion);
 						continue;
 					}
-					if (part.equalsIgnoreCase("SHAKE"))
+					if (part.equalsIgnoreCase("SHAKE") || part.equalsIgnoreCase("MATCHSHAKE"))
 					{
+						matchedMotion = part.equalsIgnoreCase("MATCHSHAKE");
 						View motion = new View("devshot-SHAKE-01.png", -35.0F, 0.0F, 0, 0, 0);
 						motion.seqCount = 41;
 						motion.seqInterval = 5;
@@ -1575,6 +1982,21 @@ public final class DevShot
 					: -1;
 		}
 
+		if (boltFar && !views.isEmpty() && viewIdx >= 0 && currentView().file1.startsWith("devshot-BF")
+				&& mc.level.getGameTime() >= boltFarNextTick)
+		{
+			int dist = boltFarIdx % 2 == 0 ? 1200 : 2500;
+			double px = mc.player.getX(), py = mc.player.getY(), pz = mc.player.getZ();
+			dev.nonamecrackers2.simpleclouds.client.renderer.WorldEffects effects =
+					SimpleCloudsRenderer.getOptionalInstance().map(SimpleCloudsRenderer::getWorldEffectsManager).orElse(null);
+			if (effects != null)
+				effects.spawnLightning(new net.minecraft.core.BlockPos((int) px, (int) (py + 30), (int) (pz - dist)),
+						false, 777 + boltFarIdx, 4, 2, 300.0F, 20.0F, 70.0F, 90.0F);
+			LOGGER.info("[DEVSHOT-LIGHTNING] BOLTFAR strike {} blocks north, 30 above the camera", dist);
+			boltFarIdx++;
+			boltFarNextTick = mc.level.getGameTime() + 20;
+		}
+
 		// Second/third shots of the motion view (E): fire on game-tick boundaries,
 		// not frames. A2: three shots (E1/E2/E3) 200 ticks (10 s) apart.
 		if (waitUntilTick > 0)
@@ -1596,8 +2018,13 @@ public final class DevShot
 				}
 				else if (pendingShot == 4)
 				{
+					if(!NativeRainRoofProbe.resume(mc))return;
 					// S5 sequence frame (devshot-S5-01.png is file1; 02..30 follow).
 					seqFrame++;
+					changeWeatherCycle(mc,seqFrame);
+					changePauseProbe(mc,seqFrame);
+					changeWaterProbe(mc,seqFrame);
+					changeRoofProbe(mc,seqFrame);
 					if (v.gridCross && (v.gridRapid ? seqFrame >= 21 && seqFrame <= 60 : seqFrame == 21 || seqFrame == 61))
 					{
 						v.x += v.gridRapid ? (seqFrame % 2 == 1 ? 4.0 : -4.0) : seqFrame == 21 ? 4.0 : -4.0;
@@ -1620,6 +2047,9 @@ public final class DevShot
 					}
 					String prefix = v.file1.substring(0, v.file1.length() - "01.png".length());
 					shoot(mc, String.format("%s%02d.png", prefix, seqFrame));
+					observeWeatherCycle(mc,seqFrame);
+					observeWaterProbe(mc,seqFrame);
+					observeRoofProbe(mc,seqFrame);
 					if (seqFrame < v.seqCount)
 					{
 						waitUntilTick = mc.level.getGameTime() + v.seqInterval;
@@ -1839,6 +2269,8 @@ public final class DevShot
 			return;
 		}
 		LOGGER.info("[DEVSHOT] CAPTURE-END: restoring camera pitch={} yaw={}; subsequent visibility telemetry is outside the fixed-view capture", savedXRot, savedYRot);
+		if("1".equals(System.getenv("SIMPLECLOUDS_DEV")) && "1".equals(System.getenv("SIMPLECLOUDS_TEST_CONFIG_COMMANDS")))
+			ServerConfigCommandProbe.finish();
 		mc.player.setXRot(savedXRot);
 		mc.player.setYRot(savedYRot);
 		done = true;
@@ -1846,6 +2278,19 @@ public final class DevShot
 
 	private static void shoot(Minecraft mc, String name)
 	{
+		if (matchedMotion) {
+			releaseMatchedMotion(mc);
+			var manager = CloudManager.get(mc.level);
+			LOGGER.info("[DEVSHOT] matched capture {} tick={} angle={} scroll={},{},{} viewport={}x{} camera={},{},{}",
+					name,mc.level.getGameTime(),manager.getScrollAngle(),manager.getScrollX(),manager.getScrollY(),manager.getScrollZ(),
+					mc.gameRenderer.mainRenderTarget().width,mc.gameRenderer.mainRenderTarget().height,
+					mc.player.getX(),mc.player.getY(),mc.player.getZ());
+			LOGGER.info("[DEVSHOT] matched cadence fps={} publishedCycles={} {}",mc.getFps(),
+					SimpleCloudsRenderer.getInstance().getPublishedBatchCount(),SimpleCloudsRenderer.getInstance().generationDiagnostic());
+			var actualCamera=mc.gameRenderer.mainCamera();
+			LOGGER.info("[DEVSHOT] matched inputs cloudHeight={} fov={} eye={} yaw={} pitch={} paused={}",
+				manager.getCloudHeight(),mc.options.fov().get(),actualCamera.position(),actualCamera.yRot(),actualCamera.xRot(),mc.isPaused());
+		}
 		// Pin the clock so standard views (and the motion test E1/E2) differ only by the
 		// cloud drift, not by the advancing sun (forceNoon is applied once at setup).
 		if (!noSpawn)

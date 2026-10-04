@@ -7,6 +7,7 @@ import org.joml.Matrix4f;
 import org.joml.Vector2f;
 
 import dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudsDrawPipeline;
+import net.fabricmc.fabric.api.tag.convention.v2.ConventionalBiomeTags;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
@@ -21,7 +22,7 @@ import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.BiomeManager;
 
 /**
- * Atmospheric (high cirrus-type) clouds -- full 26.2 port of the 1.20.1
+ * Atmospheric (high cirrus-type) clouds -- 26.3 adaptation of the 1.20.1
  * {@code AtmosphericCloudsRenderHandler}.
  *
  * <p>What it does: a purely visual 2D cloud layer drawn as a fullscreen pass
@@ -37,12 +38,10 @@ import net.minecraft.world.level.biome.BiomeManager;
  * <li>Full-screen pass on the main render target instead of a Forge post chain
  * (PostChain/EffectInstance don't exist in 26.2; the pass pattern used by the
  * storm fog / terrain shadow passes is the native equivalent).</li>
- * <li>The original's Forge biome tags (is_cold_overworld / is_dry_overworld /
- * is_plains) don't exist in 26.2, so the formation predicates use the biome's
- * base temperature + precipitation directly (same visual intent).</li>
- * <li>The ray direction is rebuilt in the shader from NDC + FOV + the view
- * matrix rotation (the original inverted the world-proj and model-view
- * matrices on the CPU per pass).</li>
+ * <li>Original Forge biome tags map to Fabric's conventional biome tags,
+ * retaining original formation precedence, density and scale.</li>
+ * <li>Original inverse projection/view ray reconstruction uses modern reversed-Z
+ * near/far endpoints.</li>
  * </ul>
  */
 public class AtmosphericCloudsRenderHandler
@@ -54,11 +53,11 @@ public class AtmosphericCloudsRenderHandler
 	private static final Formation DEFAULT = new Formation(b -> b.value().getBaseTemperature() < 2.0F, 0.6F, 1.0F, 1.0F);
 	private static final List<Formation> FORMATIONS = List.of(
 		// Cirrostratus-like: cold / dry / savanna
-		new Formation(b -> b.value().getBaseTemperature() < 0.5F || !b.value().hasPrecipitation() || b.is(BiomeTags.IS_SAVANNA), 0.3F, 1.0F, 30.0F),
+		new Formation(b -> b.is(ConventionalBiomeTags.IS_COLD_OVERWORLD) || b.is(ConventionalBiomeTags.IS_DRY_OVERWORLD) || b.is(BiomeTags.IS_SAVANNA), 0.3F, 1.0F, 30.0F),
 		// Cirrocumulus-like: hot
-		new Formation(b -> b.value().getBaseTemperature() > 0.8F, 0.8F, 10.0F, 10.0F),
-		// Cirrus-like: forest (the 26.2 vanilla tag; the original used is_plains||is_forest)
-		new Formation(b -> b.is(BiomeTags.IS_FOREST) || (b.value().getBaseTemperature() >= 0.5F && b.value().getBaseTemperature() <= 0.8F && b.value().hasPrecipitation()), 1.0F, 2.0F, 10.0F),
+		new Formation(b -> b.is(ConventionalBiomeTags.IS_HOT_OVERWORLD), 0.8F, 10.0F, 10.0F),
+		// Cirrus-like: plains / forest
+		new Formation(b -> b.is(ConventionalBiomeTags.IS_PLAINS) || b.is(BiomeTags.IS_FOREST), 1.0F, 2.0F, 10.0F),
 		DEFAULT);
 
 	private final Minecraft mc;
@@ -122,19 +121,18 @@ public class AtmosphericCloudsRenderHandler
 	}
 
 	/**
-	 * Draws the layer. Called by {@link SimpleCloudsRenderer} after the voxel
-	 * clouds (original: at the end of the DefaultPipeline render).
+	 * Draws the layer. Called by {@link SimpleCloudsRenderer} immediately after
+	 * the sky, before terrain and voxel clouds, as in the original pipeline.
 	 *
 	 * @param viewMatrix world -> camera (rotation part used for the rays)
 	 * @param partialTick for lerping the shift/transition animations
 	 * @param cloudR cloud color (vanilla cloud brightness, 0..1)
 	 * @param cloudG cloud color
 	 * @param cloudB cloud color
-	 * @param fovDeg the level projection's vertical FOV in degrees
-	 * @param aspect window width / height
+	 * @param projection the active world projection, including camera effects
 	 */
-	public void render(CloudsDrawPipeline pipeline, Matrix4f viewMatrix, float partialTick,
-			float cloudR, float cloudG, float cloudB, float fovDeg, float aspect)
+	public void render(CloudsDrawPipeline pipeline, Matrix4f viewMatrix, Matrix4f projection, float partialTick,
+			float cloudR, float cloudG, float cloudB)
 	{
 		if (this.formation == null)
 			return;
@@ -164,14 +162,14 @@ public class AtmosphericCloudsRenderHandler
 		}
 
 		// Pass 1: the current formation (density scaled down while transitioning).
-		pipeline.drawAtmosphericClouds(viewMatrix, this.formation.transform(yaw), shift,
-				1.0F - transition, this.formation.density(), cloudR, cloudG, cloudB, alpha, fovDeg, aspect);
+		pipeline.drawAtmosphericClouds(viewMatrix, projection, this.formation.transform(yaw), shift,
+				1.0F - transition, this.formation.density(), cloudR, cloudG, cloudB, alpha);
 		// Pass 2: the incoming formation while transitioning (full density at transition=1).
 		if (transition > 0.0F)
 		{
 			Formation incoming = this.nextFormation != null ? this.nextFormation : DEFAULT;
-			pipeline.drawAtmosphericClouds(viewMatrix, incoming.transform(yaw), shift,
-					transition, incoming.density(), cloudR, cloudG, cloudB, alpha, fovDeg, aspect);
+			pipeline.drawAtmosphericClouds(viewMatrix, projection, incoming.transform(yaw), shift,
+					transition, incoming.density(), cloudR, cloudG, cloudB, alpha);
 		}
 	}
 

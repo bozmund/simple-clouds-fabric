@@ -51,6 +51,7 @@ public class SimpleCloudsMod implements ModInitializer
 		// Common events
 		dev.nonamecrackers2.simpleclouds.common.event.SimpleCloudsEvents.register();
 		dev.nonamecrackers2.simpleclouds.common.event.CloudManagerEvents.register();
+		dev.nonamecrackers2.simpleclouds.common.event.DedicatedSleepProbe.register();
 
 		// Config listeners
 		dev.nonamecrackers2.simpleclouds.common.config.SimpleCloudsConfigListeners.registerListener();
@@ -58,6 +59,7 @@ public class SimpleCloudsMod implements ModInitializer
 		// Client init
 		if (net.fabricmc.loader.api.FabricLoader.getInstance().getEnvironmentType() == net.fabricmc.api.EnvType.CLIENT)
 		{
+			dev.nonamecrackers2.simpleclouds.client.packet.SimpleCloudsClientPacketRegistrations.register();
 			dev.nonamecrackers2.simpleclouds.client.event.SimpleCloudsClientEvents.register();
 		}
 	}

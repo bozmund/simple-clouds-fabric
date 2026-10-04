@@ -6,6 +6,7 @@ Requires Pillow. Camera/timing must be matched before comparing runs.
 from pathlib import Path
 import sys
 import re
+import argparse
 from PIL import Image, ImageChops
 
 def frame_number(path):
@@ -16,10 +17,16 @@ def frame_number(path):
     # Lexical sorting puts the first frame LAST, creating a false final jump.
     return int(match.group(2) or match.group(1))
 
-files = sorted(Path(sys.argv[1]).glob("devshot-SHAKE-*.png"), key=frame_number)
-if len(files) != 41:
-    raise SystemExit(f"Incomplete SHAKE sequence: expected 41 frames, got {len(files)}")
-if [frame_number(path) for path in files] != list(range(1, 42)):
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('directory', type=Path)
+parser.add_argument('--expected-frames', type=int, default=41)
+args = parser.parse_args()
+if args.expected_frames < 2:
+    parser.error('At least two frames required')
+files = sorted(args.directory.glob("devshot-SHAKE-*.png"), key=frame_number)
+if len(files) != args.expected_frames:
+    raise SystemExit(f"Incomplete SHAKE sequence: expected {args.expected_frames} frames, got {len(files)}")
+if [frame_number(path) for path in files] != list(range(1, args.expected_frames + 1)):
     raise SystemExit("SHAKE frame indices are missing or duplicated")
 changes = []
 previous = None

@@ -28,7 +28,6 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.LevelAccessor;
-import nonamecrackers2.crackerslib.common.command.ConfigCommandBuilder;
 
 /**
  * Fabric 26.2 port: uses Fabric's event system instead of Forge's.
@@ -49,20 +48,26 @@ public class SimpleCloudsEvents
 	public static void register()
 	{
 		// Custom cloud argument is registered by the common entrypoint before this callback.
-		CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) ->
+		CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
+				dev.nonamecrackers2.simpleclouds.common.command.ServerConfigCommands.register(dispatcher);
 				CloudCommands.register(dispatcher, "clouds",
 						net.minecraft.commands.Commands.hasPermission(net.minecraft.commands.Commands.LEVEL_GAMEMASTERS),
-						CloudCommandSource.SERVER, CloudTypeDataManager.getServerInstance()));
-		// ConfigCommandBuilder still needs its server-side port; do not register its
-		// client-only custom argument tree here.
+						CloudCommandSource.SERVER, CloudTypeDataManager.getServerInstance());
+		});
 
 		// Config loading: Forge's addSpec (deferred with the commands above) used to make
 		// Forge load + bind these specs; on Fabric we do it explicitly so isLoaded() works
 		// and ConfigValue.get() doesn't throw on player join.
-		ServerLifecycleEvents.SERVER_STARTING.register(server -> SimpleCloudsConfigLoader.loadServerConfigs());
+		ServerLifecycleEvents.SERVER_STARTING.register(SimpleCloudsConfigLoader::loadServerConfigs);
 		ServerLifecycleEvents.SERVER_STARTED.register(SimpleCloudsConfigListeners::setCurrentServer);
-		ServerLifecycleEvents.SERVER_STOPPED.register(server -> SimpleCloudsConfigListeners.setCurrentServer(null));
-		ServerTickEvents.END_SERVER_TICK.register(SimpleCloudsConfigListeners::tick);
+		ServerLifecycleEvents.SERVER_STOPPED.register(server -> {
+			SimpleCloudsConfigListeners.setCurrentServer(null);
+			SimpleCloudsConfigLoader.unloadServerConfig();
+		});
+		ServerTickEvents.END_SERVER_TICK.register(server -> {
+			SimpleCloudsConfigLoader.tickServerConfig(server);
+			SimpleCloudsConfigListeners.tick(server);
+		});
 		ServerLifecycleEvents.END_DATA_PACK_RELOAD.register((server, resources, success) -> {
 			if (!success)
 				return;
@@ -84,6 +89,8 @@ public class SimpleCloudsEvents
 		net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents.JOIN.register((handler, sender, server) ->
 		{
 			ServerPlayer player = handler.getPlayer();
+			ServerPlayNetworking.send(player, new dev.nonamecrackers2.simpleclouds.common.packet.impl.SendServerConfigPacket(
+					dev.nonamecrackers2.simpleclouds.common.config.ServerConfigSnapshot.capture()));
 			CloudTypeDataManager manager = CloudTypeDataManager.getServerInstance();
 			if (manager != null)
 				ServerPlayNetworking.send(player, new SendCloudTypesPacket(manager));

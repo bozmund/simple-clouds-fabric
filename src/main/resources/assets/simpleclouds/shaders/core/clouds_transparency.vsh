@@ -4,12 +4,9 @@
 #include <minecraft:dynamictransforms.glsl>
 #include <minecraft:projection.glsl>
 
-// 26.2 port of clouds_transparency.vsh (1.20.1 used an SSBO of TransparentCubeInfo;
-// here the per-instance attributes replace sides.data[gl_InstanceID], exactly as in
-// the opaque clouds.vsh port). Transparent voxels emit all six faces (no neighbor
-// culling, as in the original createTransparentCube).
+// Original indexed cube instancing with modern per-instance attributes instead
+// of an SSBO. One compact record per cube, no expansion into six face instances.
 layout(location = 0) in vec3 Position;
-layout(location = 1) in float Side;
 layout(location = 2) in vec3 SidePos;
 layout(location = 3) in float Radius;
 layout(location = 4) in float Brightness;
@@ -28,21 +25,17 @@ layout(std140) uniform CloudOffset {
 
 layout(location = 0) out vec4 vertexColor;
 layout(location = 1) out float fogDistance;
+layout(location = 2) out float vertexDistance;
 
-// GLSL ES 3.0: no C-style array init of the per-face transforms (see clouds.vsh).
-#include <simpleclouds:cloud_faces.glsl>
 #include <simpleclouds:cloud_cell_clip.glsl>
 
 void main()
 {
-	int side = int(Side);
-
-	vec3 transformedPos = applySideTransform(Position, side) * Radius + SidePos + Offset;
+	vec3 transformedPos = Position * Radius + SidePos + Offset;
 	vec4 finalPos = vec4(transformedPos, 1.0);
 	gl_Position = ProjMat * ModelViewMat * finalPos;
 	fogDistance = length((ModelViewMat * finalPos).xz);
-	// (The 1.20.1 vsh also out vertexDistance for the weighted-blend weight; the
-	// 26.2 slice blends with standard alpha, so it is dropped.)
+	vertexDistance = length((ModelViewMat * finalPos).xyz);
 
 	vertexColor = vec4(mix(DarknessColorModifier, vec3(1.0), Brightness), Alpha);
 	if (!cloudCellInsideClip(SidePos.xz)) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);

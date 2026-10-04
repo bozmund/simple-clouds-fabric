@@ -4,23 +4,19 @@
 // Atmospheric clouds (26.2 port of the 1.20.1 post/program/atmospheric_clouds.fsh):
 // a purely visual high cloud layer. Each fragment casts a ray up to a plane
 // HEIGHT above the camera and samples psrdnoise there, mixed in with the biome
-// formation's density/color. The ray direction is rebuilt from NDC + FOV + the
-// camera rotation (mat3 of the view matrix), which is exactly what the
-// original's InverseWorldProj/InverseModelView gave. The depth is read only to
-// find the sky: this pass runs after the whole level (MixinLevelRenderer, TAIL),
-// while the original drew the layer right after the sky, under terrain and
-// clouds -- without the test the streaks were painted over every block and
-// cloud above the horizon.
+// formation's density/color. Rays use the original inverse camera matrices,
+// with near/far NDC endpoints adapted to modern reversed-Z. This runs after
+// the sky and before terrain, voxel clouds and weather, as in the original.
 layout(location = 0) in vec2 texCoord;
 layout(location = 0) out vec4 fragColor;
 
 uniform sampler2D DiffuseSampler;
-uniform sampler2D DepthSampler;
 
 // Declared here (the device does NOT inject sampler/uniform declarations from
 // the bind group layout -- 26.2 GlProgram compiles the source as written).
 layout(std140) uniform AtmosphericPass {
-	mat4 ViewMat;        // world -> camera (rotation part used)
+	mat4 InverseWorldProjMat;
+	mat4 InverseModelViewMat;
 	mat2 Transform;      // formation scale + wind yaw
 	float PixelScale;
 	float SpanX;
@@ -29,8 +25,7 @@ layout(std140) uniform AtmosphericPass {
 	float FadeStart;
 	float ShiftMovement;
 	float CloudDensity;
-	float TanHalfFov;    // tan(fov/2); NDC -> camera-space ray
-	float Aspect;
+	float Height;
 	vec4 CloudColor;
 };
 
@@ -65,9 +60,9 @@ float psrdnoise(vec3 x, vec3 period, float alpha, out vec3 gradient)
 		i2 = floor(M * vec3(vx.z, vy.z, vz.z) + 0.5);
 		i3 = floor(M * vec3(vx.w, vy.w, vz.w) + 0.5);
 	}
-	vec4 hash = permute(permute(permute(vec4(i0.z, i1.z, i2.z, i3.z)))
+	vec4 hash = permute(permute(permute(vec4(i0.z, i1.z, i2.z, i3.z))
 		+ vec4(i0.y, i1.y, i2.y, i3.y))
-		+ vec4(i0.x, i1.x, i2.x, i3.x);
+		+ vec4(i0.x, i1.x, i2.x, i3.x));
 	vec4 theta = hash * 3.883222077;
 	vec4 sz = hash * -0.006920415 + 0.996539792;
 	vec4 psi = hash * 0.108705628;
@@ -109,13 +104,7 @@ float psrdnoise(vec3 x, vec3 period, float alpha, out vec3 gradient)
 
 void main()
 {
-	// Sky = the cleared depth only (26.2 clears to 0.0; reversed depth puts far geometry
-	// below 1e-4, so only the cleared value is safe -- same test as sky_flash.fsh).
-	// Terrain, clouds and entities keep their colour.
-	if (texture(DepthSampler, texCoord).r > 1.0e-7)
-		discard;
-
-	vec4 col = texture(DiffuseSampler, texCoord);
+	vec4 col = vec4(texture(DiffuseSampler, texCoord).rgb, 1.0);
 
 	if (CloudDensity <= 0.01)
 	{
@@ -123,12 +112,13 @@ void main()
 		return;
 	}
 
-	// NDC fragment -> camera-space ray (camera looks down -Z, so the forward
-	// component is negative), then to world space via the transpose of the view
-	// rotation.
+	// Original two-point unprojection; 26.3 reversed-Z has near=1, far=0.
 	vec2 uv = texCoord * 2.0 - 1.0;
-	vec3 dirCam = normalize(vec3(uv.x * Aspect, uv.y, -1.0 / TanHalfFov));
-	vec3 rayDir = transpose(mat3(ViewMat)) * dirCam;
+	vec4 nearPoint=InverseWorldProjMat * vec4(uv,1.0,1.0);
+	vec4 farPoint=InverseWorldProjMat * vec4(uv,0.0,1.0);
+	nearPoint/=nearPoint.w;
+	farPoint/=farPoint.w;
+	vec3 rayDir=normalize((InverseModelViewMat * farPoint).xyz - (InverseModelViewMat * nearPoint).xyz);
 
 	// A horizontal/downward ray never intersects the layer above the camera.
 	if (rayDir.y <= 0.00001)
@@ -136,7 +126,7 @@ void main()
 		fragColor = col;
 		return;
 	}
-	float rayLen = 5000.0 / rayDir.y; // plane 5000 blocks above the camera
+	float rayLen = Height / rayDir.y;
 	if (rayLen <= 0.0)
 	{
 		fragColor = col;

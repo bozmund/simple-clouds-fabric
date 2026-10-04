@@ -1,3 +1,4 @@
+import dev.nonamecrackers2.simpleclouds.client.renderer.v2.CloudGenerationInputs;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.List;
@@ -7,9 +8,9 @@ public class CpuChunkSeamTest
 {
     public static void main(String[] args)
     {
-        var layer = new CpuCloudGenerator.NoiseLayer(16, 3, 16,16,16,1,0,0);
-        var gen = new CpuCloudGenerator(List.of(new CpuCloudGenerator.CloudLayerGroup(List.of(layer),0,false,0,0,1)));
-        gen.setRegions(List.of(new CpuCloudGenerator.RegionMask(0,0,10000,1,0,0,1,0)));
+        var layer = new CloudGenerationInputs.NoiseLayer(16, 3, 16,16,16,1,0,0);
+        var gen = new CpuCloudGenerator(List.of(new CloudGenerationInputs.CloudLayerGroup(List.of(layer),0,false,0,0,1)));
+        gen.setRegions(List.of(new CloudGenerationInputs.RegionMask(0,0,10000,1,0,0,1,0)));
         for (int lod : new int[] {1,2,4,8})
         {
             var opaque = ByteBuffer.allocateDirect(4*1024*1024).order(ByteOrder.nativeOrder());

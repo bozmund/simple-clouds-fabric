@@ -9,10 +9,9 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.culling.Frustum;
 
 /**
- * 26.2 vertical-slice: the default pipeline no longer drives the legacy framebuffer
- * cloud rendering. Opaque cloud rendering is done directly in
- * {@link SimpleCloudsRenderer#renderInWorld} through the new GPU pipeline. The pipeline
- * hooks are kept as no-ops so the API stays intact while the full renderer is ported.
+ * Original stage ownership adapted to the modern GPU pipeline: afterSky owns cloud
+ * geometry/composition and beforeWeather owns screen-space fog. prepare/afterLevel
+ * intentionally remain empty, as in the original default pipeline.
  */
 public class DefaultPipeline implements CloudsRenderPipeline
 {
@@ -26,12 +25,16 @@ public class DefaultPipeline implements CloudsRenderPipeline
 	@Override
 	public void afterSky(Minecraft mc, SimpleCloudsRenderer renderer, PoseStack stack, Matrix4f projMat, float partialTick, double camX, double camY, double camZ, Frustum frustum)
 	{
-		// TODO(26.2): re-integrate atmospheric clouds + storm fog + transparency via the new pipeline.
+		renderer.renderCloudsAfterSky(stack, projMat, partialTick, camX, camY, camZ);
 	}
 
 	@Override
 	public void beforeWeather(Minecraft mc, SimpleCloudsRenderer renderer, PoseStack stack, Matrix4f projMat, float partialTick, double camX, double camY, double camZ, Frustum frustum)
 	{
+		if (dev.nonamecrackers2.simpleclouds.common.config.SimpleCloudsConfig.CLIENT.fogMode.get()
+				== dev.nonamecrackers2.simpleclouds.client.world.FogRenderMode.SCREEN_SPACE
+				&& mc.gameRenderer.mainCamera().getFluidInCamera() == net.minecraft.world.level.material.FogType.NONE)
+			renderer.doScreenSpaceWorldFog(stack, projMat, partialTick);
 	}
 
 	@Override

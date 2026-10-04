@@ -8,6 +8,17 @@ package dev.nonamecrackers2.simpleclouds.client;
 public final class FogColorCapturer
 {
 	private static final float[] COLOR = { 0.63F, 0.81F, 0.92F };
+	private static float start, end;
+	private static boolean rangesReady;
+
+	public static void captureRanges(float fogStart, float fogEnd)
+	{
+		start = fogStart; end = fogEnd;
+		rangesReady = Float.isFinite(start) && Float.isFinite(end);
+	}
+	public static boolean hasRanges() { return rangesReady; }
+	public static float start() { return start; }
+	public static float end() { return end; }
 
 	private FogColorCapturer()
 	{

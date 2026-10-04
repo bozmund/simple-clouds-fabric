@@ -1,16 +1,39 @@
-# Simple Clouds — Fabric 26.2 port
+# Simple Clouds — Fabric 26.3 port
 
 Unofficial port of [Simple Clouds](https://github.com/nonamecrackers2/simple-clouds) by
-**nonamecrackers2** to Minecraft 26.2 on Fabric, made for a personal modpack. It is not
+**nonamecrackers2** to Minecraft 26.3 on Fabric, made for a personal modpack. It is not
 affiliated with or endorsed by the original author; all credit for the mod goes to them.
 
-**Status: work in progress.** The port builds and runs, but visual parity with the 1.20.1
-original and the storm effects are still being tested. No release jars are published here.
+**Status: work in progress.** Functional, networking, integrated-weather and lifecycle
+tests are recorded in the master plan; performance/release acceptance is not complete.
+Jan performs final visual review during gameplay. No public release is published.
+
+- `plans/2026-09-27-MASTER-PORT-PLAN.md` — accepted scope and authoritative evidence
+- `plans/2026-10-01-REMAINING-PORT-EXECUTION.md` — scope adjustments and remaining work
+- `THIRD-PARTY-NOTICES.md`, `WEATHER-SOURCE-AND-RELINKING.md` — module sources/licenses/rebuild
+- `tools/prepare-private-handoff.sh` — private candidate/source package; does not install or publish
+
+Older implementation history (not the current acceptance checklist):
 
 - `plans-claude-handoff.md` — current state, rules and next steps (read first)
 - `PORT-PROGRESS-2026-09-14.md` — dated evidence log of every test run
 - `PORTING.md`, `VISUAL-PARITY-*.md`, `STORM-PLAN.md` — how the port was done
 - `dev-relaunch.sh`, `tools/` — isolated dev-client test runs and image metrics
+
+## Transparency performance
+
+On capable OpenGL4.0 backends the renderer uses the original weighted transparency
+equations in one indexed-blend MRT draw instead of drawing the same cubes twice.
+The original two-pass renderer remains the fallback where indexed blending is not
+supported. Geometry, noise, resolution and generation cadence are unchanged.
+Actual activation is logged as `[OIT-MRT]`; backend selection is `[OIT-BACKEND]`.
+
+For controlled A/B tests only, `SIMPLECLOUDS_DEV=1 SIMPLECLOUDS_TEST_OIT_MRT=0`
+selects the two-pass baseline. `auto` (the harness default) uses capability selection;
+`1` enables explicit candidate diagnostics. Full attachment parity readback additionally
+requires `SIMPLECLOUDS_TEST_OIT_MRT_PARITY=1` and its exact scratch fixture. Normal
+play does not enable readback diagnostics. Prior repeated1280x720 controlled scenes
+measured approximately15%FPS improvement; this is not a guarantee for every world.
 
 ## License
 

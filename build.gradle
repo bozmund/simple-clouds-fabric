@@ -1,4 +1,4 @@
-// Simple Clouds — Fabric 26.2 port.
+// Simple Clouds — Fabric 26.3 port.
 // Uses the NON-REMAP Loom plugin (Minecraft >= 26.1 ships unobfuscated).
 // Contains BOTH crackerslib and simple-clouds sources in one project
 // (Simple Clouds bundles crackerslib via jar-in-jar upstream; we combine here).
@@ -10,12 +10,42 @@ plugins {
 version = project.mod_version
 group = project.maven_group
 
+// Explicit development variant until C10 runtime acceptance is complete.
+def weatherFlag = providers.gradleProperty('integratedWeather').getOrElse('false')
+if (!(weatherFlag in ['true', 'false'])) throw new GradleException('Use -PintegratedWeather=true or false')
+def integratedWeather = weatherFlag == 'true'
+def weatherLibraries = layout.buildDirectory.dir('weather-libraries').get().asFile
+if (integratedWeather) {
+    ['particle-rain.jar', 'immersive-storms.jar', 'particle-rain.LICENSE', 'immersive-storms.LICENSE', 'GPL-3.0.LICENSE'].each { name ->
+        def input = new File(weatherLibraries, name)
+        if (!input.isFile() || java.nio.file.Files.isSymbolicLink(input.toPath()))
+            throw new GradleException("Missing/unsafe weather library input: ${input}; run bash tools/build-weather-libraries.sh")
+    }
+}
+
 base {
     archivesName = project.archives_base_name
 }
 
 repositories {
+    if (integratedWeather) {
+        // Loom 1.18 requires a module identity for nested artifacts. A local,
+        // artifact-only Ivy repository supplies it without rewriting upstream
+        // jars or fetching an unpinned replacement from an external repository.
+        exclusiveContent {
+            forRepository {
+                ivy {
+                    name = 'pinnedWeatherLibraries'
+                    url = weatherLibraries.toURI()
+                    patternLayout { artifact '[artifact].jar' }
+                    metadataSources { artifact() }
+                }
+            }
+            filter { includeGroup 'simpleclouds.pinned-weather' }
+        }
+    }
     mavenCentral()
+    maven { url = 'https://maven.isxander.dev/releases' }
     maven {
         url = "https://api.modrinth.com/maven"
     }
@@ -58,10 +88,31 @@ dependencies {
     // Distant Horizons API: used by the DH compat handler.
     // Distant Horizons API 7.1.0, built from DH main for 26.3 by the step 7 plan
     // (Modrinth's DistantHorizonsApi maven stops at 3.0.0, which is far behind DH).
-    compileOnly files("${System.getProperty('user.home')}/src/distant-horizons/coreSubProjects/api/build/libs/DistantHorizonsApi-7.1.0.jar")
+    // Override on another machine instead of depending on Jan's home layout.
+    def dhApiPath = providers.gradleProperty('dhApiJar').getOrElse("${System.getProperty('user.home')}/src/distant-horizons/coreSubProjects/api/build/libs/DistantHorizonsApi-7.1.0.jar")
+    if (!file(dhApiPath).isFile()) throw new GradleException("Missing DH API 7.1.0 JAR; pass -PdhApiJar=/absolute/path/DistantHorizonsApi-7.1.0.jar")
+    compileOnly files(dhApiPath)
+    if (integratedWeather) {
+        // Keep independent upstream namespaces/mod IDs/licenses. Fabric resolves a
+        // separately installed same-ID mod once, not a second initialization.
+        implementation 'simpleclouds.pinned-weather:particle-rain:4.0.0-beta.100'
+        implementation 'simpleclouds.pinned-weather:immersive-storms:1.8.0+26.3'
+        include 'simpleclouds.pinned-weather:particle-rain:4.0.0-beta.100'
+        include 'simpleclouds.pinned-weather:immersive-storms:1.8.0+26.3'
+        implementation 'dev.isxander:yet-another-config-lib:3.9.7+26.3-fabric'
+        include 'dev.isxander:yet-another-config-lib:3.9.7+26.3-fabric'
+    }
 }
 
 processResources {
+    // Original generated resources expose the same presets to client resource
+    // packs and server datapacks. Keep one canonical source, copy at build time.
+    from("src/main/resources/data/simpleclouds/cloud_types") {
+        into "assets/simpleclouds/cloud_types"
+    }
+    from("src/main/resources/data/simpleclouds/cloud_spawning") {
+        into "assets/simpleclouds/cloud_spawning"
+    }
     inputs.property "version", project.version
     filesMatching("fabric.mod.json") {
         expand "version": project.version
@@ -81,5 +132,14 @@ java {
 jar {
     from("LICENSE") {
         rename { "${it}_${project.archives_base_name}" }
+    }
+    from(files("LICENSE.md", "THIRD-PARTY-NOTICES.md", "WEATHER-SOURCE-AND-RELINKING.md")) {
+        into 'META-INF/licenses/simpleclouds'
+    }
+    if (integratedWeather) {
+        from(weatherLibraries) {
+            include '*.LICENSE'
+            into 'META-INF/licenses/simpleclouds-weather'
+        }
     }
 }

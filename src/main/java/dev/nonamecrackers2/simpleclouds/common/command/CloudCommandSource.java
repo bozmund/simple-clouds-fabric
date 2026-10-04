@@ -27,7 +27,6 @@ import dev.nonamecrackers2.simpleclouds.common.world.CloudManager;
 import dev.nonamecrackers2.simpleclouds.common.world.ServerCloudManager;
 import dev.nonamecrackers2.simpleclouds.common.world.SpawnRegion;
 import dev.nonamecrackers2.simpleclouds.common.world.SyncType;
-import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.arguments.IdentifierArgument;
 import net.minecraft.commands.arguments.coordinates.Vec2Argument;
@@ -43,6 +42,21 @@ import net.minecraft.world.phys.Vec2;
 
 public interface CloudCommandSource<S extends Level, T extends CloudManager<S>>
 {
+	/** Optional client adapter; common command classes must not link client-only types. */
+	interface ClientSourceAccess {
+		boolean supports(Object source);
+		void sendSuccess(Object source, Component message);
+		void sendError(Object source, Component message);
+		Level getLevel(Object source);
+		Vec2 getVec2Arg(CommandContext<?> context, String name) throws CommandSyntaxException;
+	}
+	final class ClientAccessHolder {
+		private static ClientSourceAccess access;
+		private ClientAccessHolder() {}
+	}
+	static void registerClientSourceAccess(ClientSourceAccess access) {
+		ClientAccessHolder.access=java.util.Objects.requireNonNull(access);
+	}
 	/**
 	 * 26.2: works for both the server source (CommandSourceStack) and the
 	 * Fabric client source (FabricClientCommandSource), so the same command
@@ -52,8 +66,8 @@ public interface CloudCommandSource<S extends Level, T extends CloudManager<S>>
 	{
 		if (source instanceof CommandSourceStack stack)
 			stack.sendSuccess(() -> message, broadcast);
-		else if (source instanceof FabricClientCommandSource client)
-			client.sendFeedback(message);
+		else if (ClientAccessHolder.access != null && ClientAccessHolder.access.supports(source))
+			ClientAccessHolder.access.sendSuccess(source,message);
 		else
 			throw new UnsupportedOperationException("Unsupported command source: " + source);
 	}
@@ -64,11 +78,8 @@ public interface CloudCommandSource<S extends Level, T extends CloudManager<S>>
 	{
 		if (context.getSource() instanceof CommandSourceStack)
 			return Vec2Argument.getVec2((CommandContext<CommandSourceStack>)(CommandContext<?>)context, name);
-		if (context.getSource() instanceof FabricClientCommandSource client)
-		{
-			var coordinates = context.getArgument(name, net.minecraft.commands.arguments.coordinates.WorldCoordinates.class);
-			return resolveClientVec2(coordinates, client.getPosition());
-		}
+		if (ClientAccessHolder.access != null && ClientAccessHolder.access.supports(context.getSource()))
+			return ClientAccessHolder.access.getVec2Arg(context,name);
 		throw new UnsupportedOperationException("Unsupported command source: " + context.getSource());
 	}
 
@@ -82,8 +93,8 @@ public interface CloudCommandSource<S extends Level, T extends CloudManager<S>>
 	{
 		if (source instanceof CommandSourceStack stack)
 			stack.sendFailure(message);
-		else if (source instanceof FabricClientCommandSource client)
-			client.sendError(message);
+		else if (ClientAccessHolder.access != null && ClientAccessHolder.access.supports(source))
+			ClientAccessHolder.access.sendError(source,message);
 		else
 			throw new UnsupportedOperationException("Unsupported command source: " + source);
 	}
@@ -92,8 +103,8 @@ public interface CloudCommandSource<S extends Level, T extends CloudManager<S>>
 	{
 		if (source instanceof CommandSourceStack stack)
 			return stack.getLevel();
-		if (source instanceof FabricClientCommandSource client)
-			return client.getLevel();
+		if (ClientAccessHolder.access != null && ClientAccessHolder.access.supports(source))
+			return ClientAccessHolder.access.getLevel(source);
 		throw new UnsupportedOperationException("Unsupported command source: " + source);
 	}
 

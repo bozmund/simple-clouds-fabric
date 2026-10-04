@@ -57,18 +57,14 @@ public class CloudTypeDataManager extends SimplePreparableReloadListener<Map<Ide
 	{
 		filler.push("cloud_types");
 		ImmutableMap.Builder<Identifier, JsonElement> builder = ImmutableMap.builder();
-		manager.listResources("cloud_types", id -> id.getPath().endsWith(".json")).forEach((id, resource) -> {
-			try
+		var converter = net.minecraft.resources.FileToIdConverter.json("cloud_types");
+		converter.listMatchingResources(manager).forEach((id, resource) -> {
+			try (var reader = resource.openAsReader())
 			{
-				JsonElement element = GSON.fromJson(resource.openAsReader(), JsonElement.class);
-				// 26.2 listResources keys are the FULL resource path
-				// (ns:cloud_types/file.json); the rest of the mod (spawn config
-				// "type" fields, config defaults, synced region ids) uses
-				// ns:<filename-without-extension> -- the key form 1.20.1's
-				// SimpleJsonResourceReloadListener produced. Normalize to that.
-				String path = id.getPath();
-				String name = path.substring(path.lastIndexOf('/') + 1, path.length() - ".json".length());
-				builder.put(Identifier.fromNamespaceAndPath(id.getNamespace(), name), element);
+				JsonElement element = GSON.fromJson(reader, JsonElement.class);
+				// Same converter as the original SimpleJsonResourceReloadListener:
+				// strip only cloud_types/ and .json, preserving nested datapack IDs.
+				builder.put(converter.fileToId(id), element);
 			}
 			catch (Exception e)
 			{

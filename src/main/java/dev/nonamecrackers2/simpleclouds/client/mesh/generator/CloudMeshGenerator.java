@@ -38,7 +38,6 @@ import dev.nonamecrackers2.simpleclouds.client.shader.buffer.ShaderStorageBuffer
 import dev.nonamecrackers2.simpleclouds.client.shader.compute.ComputeShader;
 import dev.nonamecrackers2.simpleclouds.common.cloud.CloudInfo;
 import dev.nonamecrackers2.simpleclouds.common.cloud.SimpleCloudsConstants;
-import dev.nonamecrackers2.simpleclouds.mixin.MixinFrustumAccessor;
 import net.minecraft.CrashReportCategory;
 import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.resources.Identifier;
@@ -65,7 +64,9 @@ public abstract class CloudMeshGenerator
 {
 	private static final Logger LOGGER = LogManager.getLogger("simpleclouds/CloudMeshGenerator");
 	
-	public static final Identifier MAIN_CUBE_MESH_GENERATOR = SimpleCloudsMod.id("cube_mesh");
+	// Preserve the original int-side/brightness/radius ABI independently of the
+	// experimental v2 shader's float-side/radius/brightness world-space ABI.
+	public static final Identifier MAIN_CUBE_MESH_GENERATOR = SimpleCloudsMod.id("original_cube_mesh");
 	public static final int MAX_NOISE_LAYERS = 4;
 	public static final int VERTICAL_CHUNK_SPAN = 8;
 	public static final int LOCAL_SIZE = 8;
@@ -101,6 +102,8 @@ public abstract class CloudMeshGenerator
 	protected final Supplier<Integer> meshGenIntervalCalculator;
 	protected int meshGenInterval = 1;
 	protected int tasksPerTick;
+	private long completedGenerationCycles;
+	private boolean generationCyclePrepared;
 	protected @Nullable ComputeShader shader;
 	
 	protected @Nullable InstanceableMesh sideMesh;
@@ -309,10 +312,14 @@ public abstract class CloudMeshGenerator
 	{
 		return this.meshGenInterval;
 	}
+
+	/** Observability only; does not impose a second scheduler or cadence. */
+	public long getCompletedGenerationCycles() { return this.completedGenerationCycles; }
 	
 	public void close()
 	{
 		RenderSystem.assertOnRenderThread();
+		this.closeCounterReadback();
 		
 		this.opaqueBufferBytesUsed = 0;
 		this.opaqueBufferSize = 0;
@@ -356,6 +363,8 @@ public abstract class CloudMeshGenerator
 	
 	public final RendererInitializeResult init(ResourceManager manager)
 	{
+		this.completedGenerationCycles = 0;
+		this.generationCyclePrepared = false;
 		RendererInitializeResult.Builder builder = RendererInitializeResult.builder();
 				
 		if (!RenderSystem.isOnRenderThread())
@@ -373,6 +382,7 @@ public abstract class CloudMeshGenerator
 		this.completedGenTasks.clear();
 		
 		LOGGER.debug("Beginning mesh generator initialization");
+		this.closeCounterReadback();
 		
 		if (this.shader != null)
 		{
@@ -483,6 +493,9 @@ public abstract class CloudMeshGenerator
 			);
 		}
 		
+		if ("1".equals(System.getenv("SIMPLECLOUDS_DEV")) && "1".equals(System.getenv("SIMPLECLOUDS_TEST_COUNTER_SNAPSHOT")))
+			this.counterReadback = new dev.nonamecrackers2.simpleclouds.client.renderer.v2.OriginalCounterReadback(
+					this.getLodConfig().getPreparedChunks().size() * 4, this.useTransparency);
 		this.shader.forUniform("TotalLodLevels", (id, loc) -> {
 			GL41.glProgramUniform1i(id, loc, this.lodConfig.getLods().length);
 		});
@@ -490,6 +503,12 @@ public abstract class CloudMeshGenerator
 		this.uploadFadeData();
 	}
 	
+	private dev.nonamecrackers2.simpleclouds.client.renderer.v2.OriginalCounterReadback counterReadback;
+	private void closeCounterReadback() {
+		if (this.counterReadback != null) this.counterReadback.close();
+		this.counterReadback = null;
+	}
+
 	private void uploadFadeData()
 	{
 		if (this.shader == null || !this.shader.isValid())
@@ -581,14 +600,20 @@ public abstract class CloudMeshGenerator
 		
 		if (this.chunkGenTasks.isEmpty()) //If we have no chunk gen tasks
 		{
+			long publicationStart = this.cpuTimings == null ? 0 : System.nanoTime();
 			this.meshGenStatus = this.finalizeMeshGen(); //Split the combined mesh data from the GPU, and store them in the VBOs for each chunk that was generated
+			if (this.cpuTimings != null) this.cpuTimings.end(0, publicationStart);
+			if (this.generationCyclePrepared) this.completedGenerationCycles++;
+			this.generationCyclePrepared = true;
 			this.completedGenTasks.clear(); //Clear the chunk gen tasks
 			
 			//Prepare the next batch of chunks to generate meshes for
 			this.meshGenInterval = this.meshGenIntervalCalculator.get();
 			if (this.meshGenInterval <= 0)
 				throw new RuntimeException("Mesh gen interval is <= 0");
+			long prepareStart = this.cpuTimings == null ? 0 : System.nanoTime();
 			this.tasksPerTick = this.prepareMeshGen(originX, originY, originZ, meshGenOffsetX, meshGenOffsetZ, frustum, this.meshGenInterval, partialTick);
+			if (this.cpuTimings != null) this.cpuTimings.end(1, prepareStart);
 		}
 		else
 		{
@@ -596,15 +621,21 @@ public abstract class CloudMeshGenerator
 		}
 		
 		//If there are mesh gen tasks, we do mesh genning
-		if (!this.chunkGenTasks.isEmpty())
+		if (!this.chunkGenTasks.isEmpty()) {
+			long dispatchStart = this.cpuTimings == null ? 0 : System.nanoTime();
 			this.doMeshGenning(this.tasksPerTick);
+			if (this.cpuTimings != null) this.cpuTimings.end(2, dispatchStart);
+		}
+		if (this.cpuTimings != null) this.cpuTimings.frame();
 	}
+
+	private final dev.nonamecrackers2.simpleclouds.client.renderer.v2.OriginalMeshCpuTimings cpuTimings =
+			dev.nonamecrackers2.simpleclouds.client.renderer.v2.OriginalMeshCpuTimings.createIfEnabled();
 	
 	private static CloudMeshGenerator.MeshGenStatus fixedIterateAndCopyToChunkBuffer(int copyBufferId, int copyBufferSizeBytes, Collection<MeshChunk> chunks, Function<MeshChunk, Integer> byteOffsetPerChunk, Function<MeshChunk, Integer> chunkBufferId, Function<MeshChunk, Integer> bytesToCopyPerChunk, Function<MeshChunk, Integer> bufferSizeBytesPerChunk)
 	{
 		CloudMeshGenerator.MeshGenStatus result = CloudMeshGenerator.MeshGenStatus.NORMAL;
 		
-		GlStateManager._glBindBuffer(GL31.GL_COPY_READ_BUFFER, copyBufferId);
 		
 		for (MeshChunk chunk : chunks)
 		{
@@ -627,8 +658,7 @@ public abstract class CloudMeshGenerator
 						continue;
 				}
 				
-				GlStateManager._glBindBuffer(GL31.GL_COPY_WRITE_BUFFER, chunkBufferId.apply(chunk));
-				GL31.glCopyBufferSubData(GL31.GL_COPY_READ_BUFFER, GL31.GL_COPY_WRITE_BUFFER, byteOffset, 0, bytesToCopy);
+				org.lwjgl.opengl.GL45.glCopyNamedBufferSubData(copyBufferId, chunkBufferId.apply(chunk), byteOffset, 0, bytesToCopy);
 			}
 		}
 		
@@ -639,7 +669,6 @@ public abstract class CloudMeshGenerator
 	{
 		CloudMeshGenerator.MeshGenStatus result = CloudMeshGenerator.MeshGenStatus.NORMAL;
 		
-		GlStateManager._glBindBuffer(GL31.GL_COPY_READ_BUFFER, copyBufferId);
 		
 		int currentBytes = 0;
 		for (MeshChunk chunk : chunks)
@@ -663,8 +692,7 @@ public abstract class CloudMeshGenerator
 					stop = true; // After copying this data over we will stop, since there is no more space in the copy buffer to read data from
 				}
 				
-				GlStateManager._glBindBuffer(GL31.GL_COPY_WRITE_BUFFER, chunkBufferId.apply(chunk));
-				GL31.glCopyBufferSubData(GL31.GL_COPY_READ_BUFFER, GL31.GL_COPY_WRITE_BUFFER, currentBytes, 0, lastBytesOffset);
+				org.lwjgl.opengl.GL45.glCopyNamedBufferSubData(copyBufferId, chunkBufferId.apply(chunk), currentBytes, 0, lastBytesOffset);
 				
 				currentBytes += totalBytes;
 				
@@ -686,7 +714,13 @@ public abstract class CloudMeshGenerator
 		
 		RenderSystem.assertOnRenderThread();
 		
-		GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT);
+		// Publication maps counters and copies shader-written mesh buffers.
+		GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_BUFFER_UPDATE_BARRIER_BIT);
+		if (this.counterReadback != null) {
+			long waitStart = this.cpuTimings == null ? 0 : System.nanoTime();
+			this.counterReadback.await();
+			if (this.cpuTimings != null) this.cpuTimings.end(3, waitStart);
+		}
 			
 		CloudMeshGenerator.MeshGenStatus opaqueResult = CloudMeshGenerator.MeshGenStatus.NORMAL;
 		CloudMeshGenerator.MeshGenStatus transparentResult = CloudMeshGenerator.MeshGenStatus.NORMAL;
@@ -728,16 +762,26 @@ public abstract class CloudMeshGenerator
 	private CloudMeshGenerator.MeshGenStatus copyMeshData(String totalCountBufferName, String countPerChunkBufferName, String elementBufferName, Function<MeshChunk, MeshChunk.BufferSet> bufferSetFunction, int bytesPerElement, int elementBufferSize)
 	{
 		CloudMeshGenerator.MeshGenStatus status = CloudMeshGenerator.MeshGenStatus.NORMAL;
+		long counterStart = this.cpuTimings == null ? 0 : System.nanoTime();
 		
 		if (!this.useFixedMeshDataSectionSize)
 		{
 			//Get the total amount of sides and indices across all chunks and reset
+			if (this.counterReadback != null)
+				this.clearCounterBuffer(totalCountBufferName, 4);
+			else
 			this.shader.getShaderStorageBuffer(totalCountBufferName).writeData(b -> {
 				b.putInt(0, 0);
 			}, 4, true); 
 		}
 		
 		//Get the amount of total sides each chunk has and reset each counter
+		if (this.counterReadback != null) {
+			var counts = this.counterReadback.counts(countPerChunkBufferName.equals(TRANSPARENT_CUBES_PER_CHUNK_NAME));
+			for (CloudMeshGenerator.ChunkGenTask generated : this.completedGenTasks)
+				bufferSetFunction.apply(generated.chunk()).setTotalElementCount(counts.getInt(generated.index() * 4));
+			this.clearCounterBuffer(countPerChunkBufferName, this.chunks.size() * 4);
+		} else
 		this.shader.getShaderStorageBuffer(countPerChunkBufferName).readWriteData(buffer -> 
 		{
 			for (CloudMeshGenerator.ChunkGenTask gennedChunk : this.completedGenTasks)
@@ -749,19 +793,26 @@ public abstract class CloudMeshGenerator
 				buffer.putInt(index, 0);
 			}
 		}, this.chunks.size() * 4);
+		if (this.cpuTimings != null) this.cpuTimings.end(3, counterStart);
 		
 		List<MeshChunk> completedChunks = this.completedGenTasks.stream().map(CloudMeshGenerator.ChunkGenTask::chunk).toList();
 		
 		int elementBufferId = this.shader.getShaderStorageBuffer(elementBufferName).getId();
+		long copyStart = this.cpuTimings == null ? 0 : System.nanoTime();
 		if (this.useFixedMeshDataSectionSize)
 			status = fixedIterateAndCopyToChunkBuffer(elementBufferId, elementBufferSize, completedChunks, bufferSetFunction.andThen(b -> b.getElementOffset() * bytesPerElement), bufferSetFunction.andThen(MeshChunk.BufferSet::getBufferId), bufferSetFunction.andThen(c -> c.getElementCount() * bytesPerElement), bufferSetFunction.andThen(MeshChunk.BufferSet::getBufferSize));
 		else
 			status = packedIterateAndCopyToChunkBuffer(elementBufferId, elementBufferSize, completedChunks, bufferSetFunction.andThen(MeshChunk.BufferSet::getBufferId), bufferSetFunction.andThen(c -> c.getElementCount() * bytesPerElement), bufferSetFunction.andThen(MeshChunk.BufferSet::getBufferSize));
 		
-		GlStateManager._glBindBuffer(GL31.GL_COPY_READ_BUFFER, 0);
-		GlStateManager._glBindBuffer(GL31.GL_COPY_WRITE_BUFFER, 0);
 		
+		if (this.cpuTimings != null) this.cpuTimings.end(4, copyStart);
 		return status;
+	}
+
+	private void clearCounterBuffer(String name, int bytes) {
+		org.lwjgl.opengl.GL45.glClearNamedBufferSubData(this.shader.getShaderStorageBuffer(name).getId(),
+				org.lwjgl.opengl.GL30.GL_R32UI, 0, bytes, org.lwjgl.opengl.GL30.GL_RED_INTEGER,
+				org.lwjgl.opengl.GL11.GL_UNSIGNED_INT, new int[] {0});
 	}
 	
 	/**
@@ -802,16 +853,10 @@ public abstract class CloudMeshGenerator
 	
 	protected void onOffGen()
 	{
-		//We read these SSBOs here to avoid weird frame spikes when in fullscreen V-Sync, not sure why it happens
-		if (!this.useFixedMeshDataSectionSize)
-			this.shader.getShaderStorageBuffer(TOTAL_SIDES_NAME).readWriteData(b -> {}, 4);
-		this.shader.getShaderStorageBuffer(SIDES_PER_CHUNK_NAME).readWriteData(buffer -> {}, this.chunks.size() * 4);
-		if (this.useTransparency)
-		{
-			if (!this.useFixedMeshDataSectionSize)
-				this.shader.getShaderStorageBuffer(TRANSPARENT_TOTAL_CUBES_NAME).readWriteData(b -> {}, 4);
-			this.shader.getShaderStorageBuffer(TRANSPARENT_CUBES_PER_CHUNK_NAME).readWriteData(buffer -> {}, this.chunks.size() * 4);
-		}
+		// The original fullscreen workaround mapped counters without using them.
+		// On Mony this stalls the render thread for the previous compute batch.
+		// Keep GPU ordering; only final publication reads/resets the counters.
+		GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT);
 	}
 	
 	/**
@@ -836,7 +881,9 @@ public abstract class CloudMeshGenerator
 		float maxX = (float)bounds.maxX + meshGenOffsetX;
 		float maxZ = (float)bounds.maxZ + meshGenOffsetZ;
 		
-		if (frustum == null || ((MixinFrustumAccessor)frustum).simpleclouds$cubeInFrustum(minX, bounds.minY, minZ, maxX, bounds.maxY, maxZ))
+		// 26.3 cubeInFrustum returns an intersection enum; public isVisible retains
+		// the original boolean inside/intersecting behavior without an accessor mixin.
+		if (frustum == null || frustum.isVisible(new AABB(minX, bounds.minY, minZ, maxX, bounds.maxY, maxZ)))
 		{
 			double nearestCornerX = Math.max(Math.max(bounds.minX, -bounds.maxX), 0.0D);
 			double nearestCornerZ = Math.max(Math.max(bounds.minZ, -bounds.maxZ), 0.0D);
@@ -880,6 +927,9 @@ public abstract class CloudMeshGenerator
 				break;
 			}
 		}
+		if (this.counterReadback != null && this.chunkGenTasks.isEmpty() && !this.completedGenTasks.isEmpty())
+			this.counterReadback.capture(this.shader.getShaderStorageBuffer(SIDES_PER_CHUNK_NAME).getId(),
+					this.useTransparency ? this.shader.getShaderStorageBuffer(TRANSPARENT_CUBES_PER_CHUNK_NAME).getId() : 0);
 	}
 	
 	protected void updateMeshChunkAfterGeneration(MeshChunk chunk, CloudMeshGenerator.ChunkGenTask task)
@@ -963,7 +1013,7 @@ public abstract class CloudMeshGenerator
 				
 				boolean render = true;
 				if (frustum != null)
-					render = ((MixinFrustumAccessor)frustum).simpleclouds$cubeInFrustum(chunk.getBoundsMinX(), chunk.getBoundsMinY(), chunk.getBoundsMinZ(), chunk.getBoundsMaxX(), chunk.getBoundsMaxY(), chunk.getBoundsMaxZ());
+					render = frustum.isVisible(new AABB(chunk.getBoundsMinX(), chunk.getBoundsMinY(), chunk.getBoundsMinZ(), chunk.getBoundsMaxX(), chunk.getBoundsMaxY(), chunk.getBoundsMaxZ()));
 				
 				if (render)
 				{
