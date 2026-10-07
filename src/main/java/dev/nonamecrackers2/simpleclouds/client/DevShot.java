@@ -113,6 +113,8 @@ public final class DevShot
 	// active, log the game's own FPS / frame time every 60 s of game time.
 	private static boolean fpsLog;
 	private static long fpsLogNextTick = -1;
+	// FPSLOGFAST: the same line every 200 ticks (10 s) for short A/B runs.
+	private static long fpsLogInterval = 1200;
 	// STORM token (storm plan step 0): the chosen formation center (cloud units)
 	// and the S5 forced-strike schedule (storm plan step 1 proof needs strikes at
 	// known distances: 200/1500/3000/8000 blocks north of the camera).
@@ -1628,11 +1630,12 @@ public final class DevShot
 							shotAngle = -20.0F;
 						continue;
 					}
-					if (part.equalsIgnoreCase("FPSLOG"))
+					if ((part.equalsIgnoreCase("FPSLOG") || part.equalsIgnoreCase("FPSLOGFAST")))
 					{
 						// Step 7 (real profile): periodic self-measured FPS so the
 						// performance check does not need keyboard input or the HUD.
 						fpsLog = true;
+						if (part.equalsIgnoreCase("FPSLOGFAST")) fpsLogInterval = 200;
 						continue;
 					}
 					if (part.equalsIgnoreCase("STORMGROW"))
@@ -1874,13 +1877,13 @@ public final class DevShot
 		// getFrameTimeNs() are Minecraft's own counters, independent of the
 		// devshot camera pinning.
 		if (fpsLog && fpsLogNextTick < 0)
-			fpsLogNextTick = mc.level.getGameTime() + 1200;
+			fpsLogNextTick = mc.level.getGameTime() + fpsLogInterval;
 		if (fpsLog && mc.level.getGameTime() >= fpsLogNextTick)
 		{
 			long frameNs = mc.getFrameTimeNs();
 			LOGGER.info("[DEVSHOT-FPS] fps={} frameNs={} ({} ms) tick {}", mc.getFps(), frameNs, frameNs / 1_000_000L,
 					mc.level.getGameTime());
-			fpsLogNextTick = mc.level.getGameTime() + 1200;
+			fpsLogNextTick = mc.level.getGameTime() + fpsLogInterval;
 		}
 
 		// Verification helper (automated loop only, i.e. devshot.request existed): the

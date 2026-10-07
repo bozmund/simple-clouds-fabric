@@ -266,7 +266,7 @@ for ((attempt=0;attempt<attempt_limit;attempt++)); do
     if [[ "${SIMPLECLOUDS_TEST_COUNTER_RELOAD:-0}" == 1 ]] && ! grep -q '\[COUNTER-RELOAD\] PASS two actual resource reloads' "$profile/logs/latest.log"; then
       echo 'Actual snapshot resource reload fixture not verified' >&2; exit 1
     fi
-    if [[ "$test_uncapped" == 1 ]] && ! grep -q '\[DEVSHOT\] MATCHSHAKE.*fpsCap=260' "$profile/logs/latest.log"; then
+    if [[ "$test_uncapped" == 1 && "$fixture" == MATCHSHAKE* ]] && ! grep -q '\[DEVSHOT\] MATCHSHAKE.*fpsCap=260' "$profile/logs/latest.log"; then
       echo 'Actual uncapped fixture not verified' >&2; exit 1
     fi
     if [[ -n "$shader_pack" ]] && { ! grep -q '\[PIPELINE-SELECTION\] shadersRunning=true' "$profile/logs/latest.log" || ! grep -q '\[SHADER-CLOUD-STAGE\] completed=true atmosphere=false' "$profile/logs/latest.log"; }; then
